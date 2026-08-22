@@ -66,6 +66,7 @@ SET_CPP(LoadingRing, bool, IsActive)
 	if (!SetPropertyField(property, _active, value)) return;
 	if (!applyingMetadata) return;
 	this->_animStartTick = ::GetTickCount64();
+	SynchronizeNativeAnimationWindowRegistration();
 	this->InvalidateVisual();
 }
 

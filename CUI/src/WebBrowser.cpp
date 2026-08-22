@@ -715,6 +715,23 @@ bool WebBrowser::RebindCompositionVisual()
 	return false;
 }
 
+bool WebBrowser::PrepareNativeCompositionVisual()
+{
+	if (!_dcompVisual && !RebindCompositionVisual()) return false;
+	return _dcompVisual != nullptr;
+}
+
+bool WebBrowser::SupportsNativeCompositionVisualLease() const noexcept
+{
+	return true;
+}
+
+IDCompositionVisual*
+WebBrowser::GetNativeCompositionVisual() const noexcept
+{
+	return _dcompVisual.Get();
+}
+
 bool WebBrowser::EnsureCompositionClipLayerCount(std::size_t count)
 {
 	if (!_dcompVisual || !_dcompBoundaryVisual || !_dcompContentVisual)
@@ -2469,6 +2486,13 @@ bool WebBrowser::ProcessInput(const InputReport& input)
 
 void WebBrowser::EnsureInitialized() {}
 bool WebBrowser::RebindCompositionVisual() { return false; }
+bool WebBrowser::PrepareNativeCompositionVisual() { return false; }
+bool WebBrowser::SupportsNativeCompositionVisualLease() const noexcept
+{
+	return false;
+}
+IDCompositionVisual*
+WebBrowser::GetNativeCompositionVisual() const noexcept { return nullptr; }
 bool WebBrowser::EnsureCompositionClipLayerCount(std::size_t) { return false; }
 bool WebBrowser::EnsureInteropInstalled() { return false; }
 void WebBrowser::EnsureControllerBounds() {}

@@ -173,6 +173,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="AnimationFixtureRunner.cpp" />
+    <ClCompile Include="AnimationPerformanceRunner.cpp" />
     <ClCompile Include="MediaElementRegressionTests.cpp" />
     <ClCompile Include="RichTextDocumentTests.cpp" />
     <ClCompile Include="RichTextBoxDocumentTests.cpp" />
@@ -198,6 +200,8 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="AnimationFixtureRunner.h" />
+    <ClInclude Include="AnimationPerformanceRunner.h" />
     <ClInclude Include="MediaElementRegressionTests.h" />
     <ClInclude Include="RichTextDocumentTests.h" />
     <ClInclude Include="RichTextBoxDocumentTests.h" />

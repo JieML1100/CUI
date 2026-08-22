@@ -1,4 +1,6 @@
-﻿#include "TestRunner.h"
+#include "TestRunner.h"
+#include "AnimationFixtureRunner.h"
+#include "AnimationPerformanceRunner.h"
 #include "MediaElementRegressionTests.h"
 #include "RichTextDocumentTests.h"
 #include "RichTextBoxDocumentTests.h"
@@ -63,6 +65,7 @@
 #include <PropertyPath.h>
 #include <Image.h>
 #include <PresentationInfrastructure.h>
+#include <PresentationRenderHost.h>
 #include <RadioButton.h>
 #include <ScrollViewer.h>
 #include <Slider.h>
@@ -2884,7 +2887,16 @@ namespace
 
 int main()
 {
+	if (const auto animationPerformanceResult =
+		TryRunAnimationPerformanceCommandLine())
+		return *animationPerformanceResult;
+	if (const auto animationFixtureResult =
+		TryRunAnimationFixtureCommandLine())
+		return *animationFixtureResult;
+
 	cui::test::Runner runner;
+	RegisterAnimationFixtureTests(runner);
+	RegisterAnimationPerformanceTests(runner);
 	RegisterMediaElementRegressionTests(runner);
 	RegisterRichTextDocumentTests(runner);
 	RegisterRichTextBoxDocumentTests(runner);
@@ -14320,6 +14332,13 @@ int main()
 			expectRejected(invalidView);
 		}
 		{
+			auto invalidStoryboards = storyboards;
+			invalidStoryboards.front().Timing.SpeedRatio = 0.0;
+			auto invalidView = view;
+			invalidView.Storyboards = invalidStoryboards;
+			expectRejected(invalidView);
+		}
+		{
 			auto invalidOperands = propertyOperands;
 			invalidOperands.front().TargetSlot = 1u;
 			auto invalidView = view;
@@ -14370,8 +14389,11 @@ int main()
 
 		cui::framework::InputAccess::PublishPointerOverState(
 			button, false, false);
+		CUI_EXPECT_TRUE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(button, beginTick + 600u));
 		CUI_EXPECT_FALSE(button.HasActiveVisualStateAnimations());
-		CUI_EXPECT_FALSE(button.HasPropertyValue(
+		CUI_EXPECT_TRUE(button.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
 		CUI_EXPECT_NEAR(0.6f, button.Background.Opacity, 0.0001f);
@@ -14470,13 +14492,18 @@ int main()
 		CUI_EXPECT_TRUE(rollbackButton.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
+		const auto rollbackStopTick = ::GetTickCount64();
 		cui::framework::InputAccess::PublishPointerOverState(
 			rollbackButton, false, false);
+		CUI_EXPECT_TRUE(rollbackButton.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(
+				rollbackButton, rollbackStopTick + 1u));
 		CUI_EXPECT_FALSE(rollbackButton.HasActiveVisualStateAnimations());
-		CUI_EXPECT_FALSE(rollbackButton.HasPropertyValue(
+		CUI_EXPECT_TRUE(rollbackButton.HasPropertyValue(
 			Control::CanvasTopProperty(),
 			DependencyPropertyValueSource::Animation));
-		CUI_EXPECT_FALSE(rollbackButton.HasPropertyValue(
+		CUI_EXPECT_TRUE(rollbackButton.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
 		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(rollbackButton), 0.0001f);
@@ -15015,6 +15042,10 @@ int main()
 			L"FontSize", BindingValue(2.0)));
 		CUI_EXPECT_TRUE(second.TrySetPropertyValue(
 			L"FontSize", BindingValue(3.0)));
+		std::vector<DeclarativeClockTimingEventArgs> secondTimingEvents;
+		auto secondTimingConnection = second.OnStoryboardTimingEvent.Subscribe(
+			[&](Control*, const DeclarativeClockTimingEventArgs& args)
+			{ secondTimingEvents.push_back(args); });
 		CUI_EXPECT_TRUE(first.SetDataContext(
 			BindingSourceReference(firstContext)));
 		CUI_EXPECT_TRUE(second.SetDataContext(
@@ -15025,11 +15056,23 @@ int main()
 			second, sheet));
 		CUI_EXPECT_FALSE(first.HasActiveVisualStateAnimations());
 		CUI_EXPECT_TRUE(second.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(second));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(second));
 		CUI_EXPECT_NEAR(2.0f, first.FontSize, 0.0001f);
 		CUI_EXPECT_NEAR(4.0f, second.FontSize, 0.0001f);
 
 		const auto secondTick = ::GetTickCount64();
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(second, secondTick + 50));
+		CUI_EXPECT_EQ(3ULL, secondTimingEvents.size());
+		CUI_EXPECT_TRUE(secondTimingEvents[0].OwnerKind
+			== DeclarativeClockOwnerKind::StyleTrigger);
+		CUI_EXPECT_TRUE(secondTimingEvents[0].ClockInstanceId != 0u);
+		CUI_EXPECT_EQ(secondTimingEvents[0].ClockInstanceId,
+			secondTimingEvents[1].ClockInstanceId);
+		CUI_EXPECT_EQ(secondTimingEvents[0].ClockInstanceId,
+			secondTimingEvents[2].ClockInstanceId);
 		CUI_EXPECT_TRUE(second.FontSize > 4.0f && second.FontSize < 12.0f);
 		const auto secondHalf = second.FontSize;
 		CUI_EXPECT_TRUE(cui::framework::StyleAccess::Refresh(second, false));
@@ -15039,24 +15082,40 @@ int main()
 
 		CUI_EXPECT_TRUE(firstContext->SetValue(L"Ready", true));
 		CUI_EXPECT_TRUE(first.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(first));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(first));
 		const auto firstTick = ::GetTickCount64();
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(first, firstTick + 50));
 		CUI_EXPECT_TRUE(first.FontSize > 4.0f && first.FontSize < 12.0f);
 		CUI_EXPECT_NEAR(12.0f, second.FontSize, 0.0001f);
 
 		CUI_EXPECT_TRUE(firstContext->SetValue(L"Ready", false));
+		CUI_EXPECT_TRUE(first.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(first, firstTick + 51));
 		CUI_EXPECT_FALSE(first.HasActiveVisualStateAnimations());
 		CUI_EXPECT_NEAR(2.0f, first.FontSize, 0.0001f);
-		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
 			first.GetPropertyValueSource(L"FontSize"));
 
 		CUI_EXPECT_TRUE(secondContext->SetValue(L"Ready", false));
+		CUI_EXPECT_TRUE(second.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(second, secondTick + 151));
 		CUI_EXPECT_NEAR(3.0f, second.FontSize, 0.0001f);
 		CUI_EXPECT_TRUE(secondContext->SetValue(L"Ready", true));
 		CUI_EXPECT_TRUE(second.HasActiveVisualStateAnimations());
 		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
 			second, nullptr));
+		(void)cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(second, secondTick + 152);
+		CUI_EXPECT_FALSE(cui::framework::PresentationAccess::
+			VisualStateAnimationAdvanceFailedForTesting(second));
 		CUI_EXPECT_FALSE(second.HasActiveVisualStateAnimations());
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(second));
 		CUI_EXPECT_NEAR(3.0f, second.FontSize, 0.0001f);
 
 		Button coexisting; ConfigureTestControl(coexisting, L"Coexisting", 0, 0);
@@ -15143,7 +15202,7 @@ int main()
             </BeginStoryboard>
           </DataTrigger.EnterActions>
           <DataTrigger.ExitActions>
-            <StopStoryboard BeginStoryboardName="ReadyPulse" />
+            <RemoveStoryboard BeginStoryboardName="ReadyPulse" />
           </DataTrigger.ExitActions>
         </DataTrigger>
       </Style.Triggers>
@@ -15180,7 +15239,7 @@ int main()
 			"<BeginStoryboard x:Name=\"ReadyPulse\">",
 			"Storyboard.TargetProperty=\"FontSize\"",
 			"<DataTrigger.ExitActions>",
-			"<StopStoryboard BeginStoryboardName=\"ReadyPulse\"" })
+			"<RemoveStoryboard BeginStoryboardName=\"ReadyPulse\"" })
 			CUI_EXPECT_TRUE(canonical.find(marker) != std::string::npos);
 		DesignerModel::DesignDocument xamlRoundTrip;
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
@@ -15190,7 +15249,7 @@ int main()
 		const auto snapshot =
 			DesignerModel::DesignDocumentSerializer::ToXml(document);
 		CUI_EXPECT_TRUE(snapshot.find("enterActions") != std::string::npos);
-		CUI_EXPECT_TRUE(snapshot.find("stopStoryboard") != std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find("removeStoryboard") != std::string::npos);
 		DesignerModel::DesignDocument snapshotRoundTrip;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
 			snapshot, snapshotRoundTrip, &error));
@@ -15218,6 +15277,12 @@ int main()
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
 			button->GetPropertyValueSource(L"FontSize"));
 		CUI_EXPECT_TRUE(dataContext->SetValue(L"Ready", false));
+		CUI_EXPECT_TRUE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(12.0f, button->FontSize, 0.0001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
+			button->GetPropertyValueSource(L"FontSize"));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*button, tick + 151));
 		CUI_EXPECT_FALSE(button->HasActiveVisualStateAnimations());
 		CUI_EXPECT_NEAR(2.0f, button->FontSize, 0.0001f);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
@@ -20299,7 +20364,7 @@ int main()
 
 	runner.Add("MediaElement snapshot migration moves legacy mediaFile into Source", []
 	{
-		CUI_EXPECT_EQ(43,
+		CUI_EXPECT_EQ(44,
 			DesignerModel::DesignDocument::CurrentSchemaVersion);
 
 		auto snapshotWithLegacyMediaFile = [](
@@ -20344,7 +20409,7 @@ int main()
 		std::wstring error;
 		DesignerModel::DesignDocument migrated;
 		const auto legacyOnly = snapshotWithLegacyMediaFile(std::nullopt);
-		CUI_EXPECT_TRUE(legacyOnly.find("version=\"43\"")
+		CUI_EXPECT_TRUE(legacyOnly.find("version=\"48\"")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
 			legacyOnly, migrated, &error));
@@ -21941,7 +22006,7 @@ int main()
 		}
 	});
 
-	runner.Add("UIA enumeration drops controls destroyed by a later lazy peer", []
+		runner.Add("UIA enumeration drops controls destroyed by a later lazy peer", []
 	{
 		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 		struct ComScope
@@ -22072,6 +22137,51 @@ int main()
 		::VariantClear(&victimId);
 
 		::DestroyWindow(form.Handle);
+	});
+
+	runner.Add("UIA provider membership resolves by ancestry without sibling enumeration", []
+	{
+		class CountingPeerLabel final : public Label
+		{
+		public:
+			int* PeerCreations = nullptr;
+
+		protected:
+			std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+			{
+				if (PeerCreations) ++*PeerCreations;
+				return std::make_unique<AutomationPeer>(
+					*this, AutomationControlType::Text, L"CountingPeerLabel");
+			}
+		};
+
+		Window form;
+		ConfigureTestControl(form, L"UIA ancestry membership host");
+		auto* panel = AddTestVisual<Panel>(form, 0, 0, 480, 240);
+		CUI_EXPECT_TRUE(panel != nullptr);
+		if (!panel) return;
+
+		int peerCreations = 0;
+		auto targetOwner = std::make_unique<CountingPeerLabel>();
+		auto* target = targetOwner.get();
+		target->PeerCreations = &peerCreations;
+		(void)panel->AddOwned(std::move(targetOwner));
+		for (size_t index = 0; index < 256; ++index)
+		{
+			auto sibling = std::make_unique<CountingPeerLabel>();
+			sibling->PeerCreations = &peerCreations;
+			(void)panel->AddOwned(std::move(sibling));
+		}
+
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+			ResolveAccessibleControlForTesting(form, target) == target);
+		CUI_EXPECT_EQ(0, peerCreations);
+
+		auto detached = panel->DetachVisualChild(target);
+		CUI_EXPECT_TRUE(detached.get() == target);
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+			ResolveAccessibleControlForTesting(form, target) == nullptr);
+		CUI_EXPECT_EQ(0, peerCreations);
 	});
 
 	runner.Add("Window exposes native UIA fragments and control patterns", []
@@ -27344,7 +27454,7 @@ int main()
 			canonical, reparsed, &error));
 		CUI_EXPECT_EQ(document, reparsed);
 		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(native.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("version=\"48\"") != std::string::npos);
 		DesignerModel::DesignDocument nativeRoundTrip;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
 			native, nativeRoundTrip, &error));
@@ -27504,7 +27614,7 @@ int main()
 			canonical, reparsed, &error));
 		CUI_EXPECT_EQ(document, reparsed);
 		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(native.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("version=\"48\"") != std::string::npos);
 		CUI_EXPECT_TRUE(native.find("dataType=\"Person\"")
 			!= std::string::npos);
 		DesignerModel::DesignDocument nativeRoundTrip;
@@ -27799,7 +27909,7 @@ int main()
 			canonical, reparsed, &error));
 		CUI_EXPECT_EQ(document, reparsed);
 		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(native.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("version=\"48\"") != std::string::npos);
 		DesignerModel::DesignDocument nativeRoundTrip;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
 			native, nativeRoundTrip, &error));
@@ -28365,17 +28475,17 @@ int main()
 		CUI_EXPECT_TRUE(canonical.find("{DynamicResource Accent}")
 			!= std::string::npos);
 		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(xml.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("version=\"48\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<localResources>") != std::string::npos);
 		DesignerModel::DesignDocument restored;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
 			xml, restored, &error));
 		CUI_EXPECT_TRUE(document == restored);
 		auto version25 = xml;
-		const auto versionAt = version25.find("version=\"43\"");
+		const auto versionAt = version25.find("version=\"48\"");
 		CUI_EXPECT_TRUE(versionAt != std::string::npos);
 		if (versionAt != std::string::npos)
-			version25.replace(versionAt, std::string("version=\"43\"").size(),
+			version25.replace(versionAt, std::string("version=\"48\"").size(),
 				"version=\"25\"");
 		DesignerModel::DesignDocument upgradedVersion25;
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
@@ -28784,7 +28894,7 @@ int main()
 		CUI_EXPECT_EQ(document, xamlRoundTrip);
 		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(
 			document);
-		CUI_EXPECT_TRUE(native.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("version=\"48\"") != std::string::npos);
 		CUI_EXPECT_TRUE(native.find("itemsPanelTemplateCount=\"2\"")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(native.find("groupStyleCount=\"2\"")
@@ -31401,10 +31511,10 @@ int main()
 			xml, xmlRoundTrip, &error));
 		CUI_EXPECT_TRUE(xmlRoundTrip == document);
 		auto version23 = xml;
-		const auto versionAt = version23.find("version=\"43\"");
+		const auto versionAt = version23.find("version=\"48\"");
 		CUI_EXPECT_TRUE(versionAt != std::string::npos);
 		if (versionAt != std::string::npos)
-			version23.replace(versionAt, std::string("version=\"43\"").size(),
+			version23.replace(versionAt, std::string("version=\"48\"").size(),
 				"version=\"23\"");
 		DesignerModel::DesignDocument upgradedVersion23;
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
@@ -31607,11 +31717,11 @@ int main()
 			xml, xmlRoundTrip, &error));
 		CUI_EXPECT_TRUE(xmlRoundTrip == document);
 		auto version24 = xml;
-		const auto version24At = version24.find("version=\"43\"");
+		const auto version24At = version24.find("version=\"48\"");
 		CUI_EXPECT_TRUE(version24At != std::string::npos);
 		if (version24At != std::string::npos)
 			version24.replace(version24At,
-				std::string("version=\"43\"").size(), "version=\"24\"");
+				std::string("version=\"48\"").size(), "version=\"24\"");
 		DesignerModel::DesignDocument upgradedVersion24;
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			version24, upgradedVersion24, &error));
@@ -31902,7 +32012,7 @@ int main()
 		}
 		CUI_EXPECT_TRUE(roundTrip == document);
 		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(native.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("version=\"48\"") != std::string::npos);
 		CUI_EXPECT_TRUE(native.find("TargetType=\"ListBoxItem\"")
 			!= std::string::npos);
 		DesignerModel::DesignDocument nativeRoundTrip;
@@ -31910,11 +32020,11 @@ int main()
 			native, nativeRoundTrip, &error));
 		CUI_EXPECT_TRUE(nativeRoundTrip == document);
 		auto version26 = native;
-		const auto version26At = version26.find("version=\"43\"");
+		const auto version26At = version26.find("version=\"48\"");
 		CUI_EXPECT_TRUE(version26At != std::string::npos);
 		if (version26At != std::string::npos)
 			version26.replace(version26At,
-				std::string("version=\"43\"").size(), "version=\"26\"");
+				std::string("version=\"48\"").size(), "version=\"26\"");
 		DesignerModel::DesignDocument upgradedVersion26;
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			version26, upgradedVersion26, &error));
@@ -33034,7 +33144,7 @@ int main()
 		CUI_EXPECT_TRUE(roundTrip == document);
 		const auto native =
 			DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(native.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("version=\"48\"") != std::string::npos);
 		CUI_EXPECT_TRUE(native.find("hierarchical=\"true\"")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(native.find("<itemsSource") != std::string::npos);
@@ -34844,6 +34954,11 @@ int main()
 				resource.Value.Text = L"1.5";
 		}
 		auto* previousCard = card;
+		const ControlWeakReference previousCardLifetime(card);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card) > 0u);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card) > 0u);
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
 			resourceReload, runtime, {}, &reloadMode, &error));
 		CUI_EXPECT_TRUE(reloadMode
@@ -34853,6 +34968,11 @@ int main()
 		caption = card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
 		CUI_EXPECT_TRUE(card != nullptr && chrome != nullptr && caption != nullptr);
 		CUI_EXPECT_TRUE(card != previousCard);
+		CUI_EXPECT_TRUE(previousCardLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card) > 0u);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card) > 0u);
 		CUI_EXPECT_EQ(std::wstring(L"Active"),
 			card ? card->GetCurrentVisualState(L"CommonStates") : L"");
 		if (chrome)
@@ -35640,9 +35760,9 @@ int main()
           <VisualStateManager.VisualStateGroups>
             <VisualStateGroup x:Name="ClockStates">
               <VisualStateGroup.Transitions>
-                <VisualTransition From="Idle" To="Duration">
-                  <VisualTransition.Storyboard>
-                    <Storyboard>
+				<VisualTransition From="Idle" To="Duration">
+				  <VisualTransition.Storyboard>
+					<Storyboard Duration="0:0:0.200">
                       <DoubleAnimation Storyboard.TargetName="caption"
                         Storyboard.TargetProperty="(Canvas.Top)"
 						From="2" To="10" Duration="0:0:0.100"
@@ -35780,6 +35900,10 @@ int main()
 			0.0001);
 		CUI_EXPECT_NEAR(0.25,
 			group.Transitions.front().Animations.front().AccelerationRatio, 0.0001);
+		CUI_EXPECT_FALSE(
+			group.Transitions.front().StoryboardTiming.DurationAutomatic);
+		CUI_EXPECT_EQ(200ULL,
+			group.Transitions.front().StoryboardTiming.DurationMilliseconds);
 
 		const auto canonical =
 			DesignerModel::XamlDocumentSerializer::ToXaml(document);
@@ -35864,20 +35988,38 @@ int main()
 
 		CUI_EXPECT_TRUE(card->GoToVisualState(
 			L"ClockStates", L"Duration", false, &error));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		const auto durationTick = ::GetTickCount64();
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, durationTick + 40));
 		CUI_EXPECT_TRUE(caption->Foreground.Color.r > baseColor.r);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, durationTick + 140));
 		CUI_EXPECT_TRUE(caption->Foreground.Color.r > baseColor.r);
 		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(*chrome), 0.001f);
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, durationTick + 260));
 		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_NEAR(baseColor.r, caption->Foreground.Color.r, 0.0001f);
 		CUI_EXPECT_NEAR(baseColor.g, caption->Foreground.Color.g, 0.0001f);
 		CUI_EXPECT_NEAR(baseColor.b, caption->Foreground.Color.b, 0.0001f);
 
 		CUI_EXPECT_TRUE(card->GoToVisualState(
 			L"ClockStates", L"Transform", false, &error));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerMaxDepthForTesting(*card));
 		const auto transformTick = ::GetTickCount64();
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, transformTick + 110));
 		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
@@ -35887,8 +36029,16 @@ int main()
 			CUI_EXPECT_NEAR(1.0f, operation.ScaleX, 0.001f);
 			CUI_EXPECT_TRUE(operation.ScaleY > 1.8f && operation.ScaleY < 2.3f);
 		}
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, transformTick + 220));
 		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		if (chrome->GetRenderTransform())
 		{
 			const auto& operation = chrome->GetRenderTransform()->Operations.front();
@@ -35898,6 +36048,10 @@ int main()
 
 		CUI_EXPECT_TRUE(card->GoToVisualState(
 			L"ClockStates", L"Idle", false, &error));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_TRUE(card->GoToVisualState(
 			L"ClockStates", L"Duration", true, &error));
 		const auto transitionTick = ::GetTickCount64();
@@ -36342,9 +36496,11 @@ int main()
 		(void)go(L"Idle");
 		tick = go(L"ColorBy");
 		finish(tick);
-		CUI_EXPECT_NEAR(32.0f / 255.0f, caption->Foreground.Color.r, 0.001f);
-		CUI_EXPECT_NEAR(48.0f / 255.0f, caption->Foreground.Color.g, 0.001f);
-		CUI_EXPECT_NEAR(64.0f / 255.0f, caption->Foreground.Color.b, 0.001f);
+		// WPF ColorAnimation performs By arithmetic in scRGB, then the CUI
+		// presentation value stores the equivalent extended-sRGB channels.
+		CUI_EXPECT_NEAR(0.10217085f, caption->Foreground.Color.r, 0.001f);
+		CUI_EXPECT_NEAR(0.15008150f, caption->Foreground.Color.g, 0.001f);
+		CUI_EXPECT_NEAR(0.20516945f, caption->Foreground.Color.b, 0.001f);
 		CUI_EXPECT_NEAR(1.0f, caption->Foreground.Color.a, 0.001f);
 
 		(void)go(L"Idle");
@@ -36733,9 +36889,9 @@ int main()
 		idle();
 		tick = go(L"ColorFrames");
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 200));
-		CUI_EXPECT_NEAR(48.0f / 255.0f, caption->Foreground.Color.r, 0.001f);
-		CUI_EXPECT_NEAR(64.0f / 255.0f, caption->Foreground.Color.g, 0.001f);
-		CUI_EXPECT_NEAR(80.0f / 255.0f, caption->Foreground.Color.b, 0.001f);
+		CUI_EXPECT_NEAR(0.13109871f, caption->Foreground.Color.r, 0.001f);
+		CUI_EXPECT_NEAR(0.17111229f, caption->Foreground.Color.g, 0.001f);
+		CUI_EXPECT_NEAR(0.22068592f, caption->Foreground.Color.b, 0.001f);
 		CUI_EXPECT_NEAR(1.0f, caption->Foreground.Color.a, 0.001f);
 
 		idle();
@@ -38438,7 +38594,8 @@ int main()
         <StackPanel x:Name="root">
           <TextBlock x:Name="linearLabel" Text="Linear">
             <Control.Foreground>
-              <LinearGradientBrush StartPoint="0.1,0.2" EndPoint="0.9,0.8" Opacity="0.8">
+              <LinearGradientBrush StartPoint="0.1,0.2" EndPoint="0.9,0.8" Opacity="0.8"
+                                   ColorInterpolationMode="ScRgbLinearInterpolation">
                 <GradientStop Color="#FFFF0000" Offset="0" />
                 <GradientStop Color="#FF0000FF" Offset="0.5" />
                 <GradientStop Color="#FF00FF00" Offset="1" />
@@ -38448,7 +38605,8 @@ int main()
           <TextBlock x:Name="radialLabel" Text="Radial">
             <Control.Foreground>
               <RadialGradientBrush Center="0.4,0.6" GradientOrigin="0.3,0.7"
-                                   RadiusX="0.8" RadiusY="0.6" Opacity="0.7">
+                                   RadiusX="0.8" RadiusY="0.6" Opacity="0.7"
+                                   ColorInterpolationMode="SRgbLinearInterpolation">
                 <GradientStop Color="#FF101010" Offset="0" />
                 <GradientStop Color="#FFFF00FF" Offset="1" />
               </RadialGradientBrush>
@@ -38565,7 +38723,8 @@ int main()
 			"<LinearColorKeyFrame ", "<SplineColorKeyFrame ",
 			"Storyboard.TargetProperty=\"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)\"",
 			"Storyboard.TargetProperty=\"(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)\"",
-			"To=\"{StaticResource HotStop}\"", "To=\"{StaticResource ShiftedOffset}\"" })
+			"To=\"{StaticResource HotStop}\"", "To=\"{StaticResource ShiftedOffset}\"",
+			"ColorInterpolationMode=\"ScRgbLinearInterpolation\"" })
 			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
 		CUI_EXPECT_TRUE(canonical.find("UIElement.Foreground") == std::string::npos);
 		CUI_EXPECT_TRUE(canonical.find("LinearGradientBrush.GradientStops")
@@ -38616,6 +38775,9 @@ int main()
 		auto expectLinearStructure = [&](const cui::drawing::Brush& brush)
 		{
 			CUI_EXPECT_EQ(cui::drawing::BrushKind::LinearGradient, brush.Kind);
+			CUI_EXPECT_EQ(
+				cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation,
+				brush.ColorInterpolationMode);
 			CUI_EXPECT_EQ(3ULL, brush.GradientStops.size());
 			CUI_EXPECT_NEAR(0.8f, brush.Opacity, 0.0001f);
 			CUI_EXPECT_NEAR(0.1f, brush.StartPoint.x, 0.0001f);
@@ -38640,7 +38802,7 @@ int main()
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 100));
 		expectLinearStructure(readLinear());
 		expectColor(readLinear().GradientStops[0].Color,
-			D2D1_COLOR_F{ 1.0f, 0.5f, 0.0f, 1.0f }, 0.04f);
+			D2D1_COLOR_F{ 1.0f, 0.73535698f, 0.0f, 1.0f }, 0.04f);
 		CUI_EXPECT_NEAR(0.625f, readLinear().GradientStops[1].Offset, 0.03f);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 200));
 		expectColor(readLinear().GradientStops[0].Color,
@@ -38652,6 +38814,9 @@ int main()
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 100));
 		const auto& radialBrush = readRadial();
 		CUI_EXPECT_EQ(cui::drawing::BrushKind::RadialGradient, radialBrush.Kind);
+		CUI_EXPECT_EQ(
+			cui::drawing::GradientColorInterpolationMode::SRgbLinearInterpolation,
+			radialBrush.ColorInterpolationMode);
 		CUI_EXPECT_EQ(2ULL, radialBrush.GradientStops.size());
 		CUI_EXPECT_NEAR(0.7f, radialBrush.Opacity, 0.0001f);
 		CUI_EXPECT_NEAR(0.4f, radialBrush.Center.x, 0.0001f);
@@ -38674,7 +38839,7 @@ int main()
 		tick = go(L"Stop");
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 50));
 		expectColor(readLinear().GradientStops[0].Color,
-			D2D1_COLOR_F{ 1.0f, 0.5f, 0.5f, 1.0f }, 0.04f);
+			D2D1_COLOR_F{ 1.0f, 0.73535698f, 0.73535698f, 1.0f }, 0.04f);
 		CUI_EXPECT_NEAR(0.7f, readLinear().GradientStops[1].Offset, 0.03f);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 100));
 		expectColor(readLinear().GradientStops[0].Color,
@@ -38836,6 +39001,42 @@ int main()
 		invalidOffsetGroup.States.push_back(std::move(invalidOffsetState));
 		CUI_EXPECT_FALSE(cui::framework::XamlAccess::DefineVisualStateGroups(shortGradient,
 			{ std::move(invalidOffsetGroup) }, &error));
+
+		D2DGraphics::InitOptions graphicsOptions;
+		graphicsOptions.kind = D2DGraphics::SurfaceKind::Offscreen;
+		graphicsOptions.width = 101;
+		graphicsOptions.height = 1;
+		D2DGraphics graphics(graphicsOptions);
+		auto interpolationGamma = [&](
+			cui::drawing::GradientColorInterpolationMode mode)
+		{
+			auto brush = readLinear();
+			brush.ColorInterpolationMode = mode;
+			Microsoft::WRL::ComPtr<ID2D1Brush> native;
+			native.Attach(brush.CreateBrush(graphics, D2D1::SizeF(101.0f, 1.0f)));
+			CUI_EXPECT_TRUE(native != nullptr);
+			Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> linearBrush;
+			CUI_EXPECT_TRUE(SUCCEEDED(native.As(&linearBrush)));
+			Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> stops;
+			if (linearBrush) linearBrush->GetGradientStopCollection(&stops);
+			CUI_EXPECT_TRUE(stops != nullptr);
+			return stops ? stops->GetColorInterpolationGamma() : D2D1_GAMMA_2_2;
+		};
+		CUI_EXPECT_EQ(D2D1_GAMMA_2_2, interpolationGamma(
+			cui::drawing::GradientColorInterpolationMode::SRgbLinearInterpolation));
+		CUI_EXPECT_EQ(D2D1_GAMMA_1_0, interpolationGamma(
+			cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation));
+
+		auto invalidInterpolation = canonical;
+		invalidAt = invalidInterpolation.find("ScRgbLinearInterpolation");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidInterpolation.replace(invalidAt,
+				std::string("ScRgbLinearInterpolation").size(), "LinearRgb");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidInterpolation, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
 	});
 
 	runner.Add("Brush Transform and RelativeTransform follow WPF coordinate order", []
@@ -39090,8 +39291,12 @@ int main()
 			readBrush().RelativeTransform->Operations[0].Angle, 0.2f);
 		CUI_EXPECT_NEAR(14.0f,
 			readBrush().Transform->Operations[0].X, 0.2f);
-		CUI_EXPECT_NEAR(0.5f, readBrush().GradientStops[0].Color.r, 0.03f);
-		CUI_EXPECT_NEAR(0.5f, readBrush().GradientStops[0].Color.g, 0.03f);
+		// WPF Color animation interpolates scRGB channels. The Brush transfer
+		// value for a 0.5 scRGB channel is approximately 0.735357 sRGB.
+		CUI_EXPECT_NEAR(0.735357f,
+			readBrush().GradientStops[0].Color.r, 0.03f);
+		CUI_EXPECT_NEAR(0.735357f,
+			readBrush().GradientStops[0].Color.g, 0.03f);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 200));
 		CUI_EXPECT_NEAR(50.0f,
 			readBrush().RelativeTransform->Operations[0].Angle, 0.001f);
@@ -39408,8 +39613,8 @@ int main()
 
 		auto tick = go(L"Animate");
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 100));
-		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.r, 0.03f);
-		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.g, 0.03f);
+		CUI_EXPECT_NEAR(0.73535698f, readBrush(solid).Color.r, 0.03f);
+		CUI_EXPECT_NEAR(0.73535698f, readBrush(solid).Color.g, 0.03f);
 		CUI_EXPECT_NEAR(0.65f, readBrush(solid).Opacity, 0.03f);
 		CUI_EXPECT_NEAR(0.2f, readBrush(linear).StartPoint.x, 0.03f);
 		CUI_EXPECT_NEAR(0.3f, readBrush(linear).StartPoint.y, 0.03f);
@@ -39442,8 +39647,8 @@ int main()
 		(void)go(L"Idle");
 		tick = go(L"Explicit", true);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 50));
-		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.r, 0.03f);
-		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.b, 0.03f);
+		CUI_EXPECT_NEAR(0.73535698f, readBrush(solid).Color.r, 0.03f);
+		CUI_EXPECT_NEAR(0.73535698f, readBrush(solid).Color.b, 0.03f);
 		CUI_EXPECT_NEAR(0.8f, readBrush(linear).EndPoint.x, 0.03f);
 		CUI_EXPECT_NEAR(0.8f, readBrush(radial).RadiusY, 0.03f);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 100));
@@ -42570,6 +42775,520 @@ int main()
 		CUI_EXPECT_NEAR(25.0f, fittedRadii.BottomLeft, 0.001f);
 	});
 
+	runner.Add("Animation DComp scene-layer property staging stays backend-only and fail-closed", []
+	{
+		struct NativeWindow final
+		{
+			HWND Value = nullptr;
+			~NativeWindow()
+			{
+				if (Value && ::IsWindow(Value)) (void)::DestroyWindow(Value);
+			}
+		} window;
+		window.Value = ::CreateWindowExW(
+			0, L"STATIC", L"CUI DComp animation backend probe",
+			WS_POPUP, -32'000, -32'000, 160, 120,
+			nullptr, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+		CUI_EXPECT_TRUE(window.Value != nullptr);
+		if (!window.Value) return;
+
+		PresentationRenderHost host;
+		CUI_EXPECT_TRUE(host.Attach(window.Value, 144u));
+		CUI_EXPECT_TRUE(host.EnsureComposition());
+		CUI_EXPECT_TRUE(host.UsesComposition());
+		CUI_EXPECT_TRUE(host.AcquireSceneLayer(0u, 10, 0) != nullptr);
+
+		PresentationRenderHost::SceneLayerVisualProperties staged;
+		staged.PhysicalTransform = D2D1::Matrix3x2F(
+			0.8f, 0.6f, -0.6f, 0.8f, 18.0f, 54.0f);
+		staged.Opacity = 0.375f;
+		CUI_EXPECT_TRUE(host.StageSceneLayerVisualProperties(0u, staged));
+		PresentationRenderHost::SceneLayerVisualProperties observed;
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(staged, observed);
+		CUI_EXPECT_TRUE(host.CommitComposition());
+		staged.HasClip = true;
+		staged.PhysicalClip = D2D1::RectF(4.0f, 6.0f, 80.0f, 90.0f);
+		CUI_EXPECT_TRUE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.CommitComposition());
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(staged, observed);
+
+		const auto committed = observed;
+		staged.PhysicalClip.right = 3.0f;
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		staged = committed;
+		staged.PhysicalClip.top =
+			std::numeric_limits<float>::quiet_NaN();
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(committed, observed);
+		staged = committed;
+		staged.Opacity = std::numeric_limits<float>::quiet_NaN();
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(committed, observed);
+		staged = committed;
+		staged.Opacity = -0.001f;
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		staged.Opacity = 1.001f;
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(committed, observed);
+		staged = committed;
+		staged.PhysicalTransform._31 =
+			std::numeric_limits<float>::infinity();
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(committed, observed);
+
+		staged = committed;
+		staged.HasClip = false;
+		staged.TransformedClipChain = {
+			{ D2D1::RectF(0.0f, 0.0f, 60.0f, 60.0f),
+				14.0f, 10.0f,
+				D2D1::Matrix3x2F::Rotation(20.0f,
+					D2D1::Point2F(30.0f, 30.0f))
+					* D2D1::Matrix3x2F::Translation(110.0f, 70.0f) },
+			{ D2D1::RectF(0.0f, 0.0f, 50.0f, 50.0f),
+				0.0f, 0.0f,
+				D2D1::Matrix3x2F::Rotation(-35.0f,
+					D2D1::Point2F(25.0f, 25.0f))
+					* D2D1::Matrix3x2F::Translation(135.0f, 75.0f) } };
+		CUI_EXPECT_TRUE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.CommitComposition());
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(staged, observed);
+		const auto transformedCommitted = observed;
+		staged.HasClip = true;
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		staged = transformedCommitted;
+		staged.TransformedClipChain.front().RadiusX = -0.001f;
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		staged = transformedCommitted;
+		staged.TransformedClipChain.front().RadiusY =
+			std::numeric_limits<float>::quiet_NaN();
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		staged = transformedCommitted;
+		staged.TransformedClipChain.back().LocalToRootPhysical =
+			D2D1::Matrix3x2F::Scale(0.0f, 1.0f);
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(0u, staged));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(transformedCommitted, observed);
+
+		const PresentationRenderHost::SceneLayerVisualProperties identity;
+		CUI_EXPECT_TRUE(host.StageSceneLayerVisualProperties(0u, identity));
+		CUI_EXPECT_TRUE(host.CommitComposition());
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(identity, observed);
+		CUI_EXPECT_FALSE(host.StageSceneLayerVisualProperties(1u, identity));
+		host.TrimSceneLayers(0u);
+		CUI_EXPECT_FALSE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_TRUE(host.AcquireSceneLayer(0u, 10, 0) != nullptr);
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(0u, observed));
+		CUI_EXPECT_EQ(identity, observed);
+		host.Detach();
+	});
+
+	runner.Add("Animation composition isolation supports nested and rejects native subtrees", []
+	{
+		struct NativeCompositionProbe final : Control
+		{
+			PresentationSurfaceKind GetPresentationSurfaceKind()
+				const noexcept override
+			{
+				return PresentationSurfaceKind::NativeComposition;
+			}
+		};
+
+		Canvas root;
+		auto* target = static_cast<Canvas*>(
+			root.AddOwned(std::make_unique<Canvas>()));
+		auto* child = target ? static_cast<Canvas*>(
+			target->AddOwned(std::make_unique<Canvas>())) : nullptr;
+		auto* sibling = root.AddOwned(std::make_unique<Control>());
+		CUI_EXPECT_TRUE(target != nullptr);
+		CUI_EXPECT_TRUE(child != nullptr);
+		CUI_EXPECT_TRUE(sibling != nullptr);
+		if (!target || !child || !sibling) return;
+		root.Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 160.0f });
+		target->Arrange(cui::core::Rect{ 20.0f, 18.0f, 80.0f, 60.0f });
+		child->Arrange(cui::core::Rect{ 5.0f, 4.0f, 24.0f, 20.0f });
+		sibling->Arrange(cui::core::Rect{ 130.0f, 20.0f, 40.0f, 30.0f });
+
+		PresentationScene scene;
+		std::array<Control*, 1> roots{ &root };
+		std::array<Control*, 1> isolated{ target };
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_FALSE(scene.RequiresComposition());
+		PresentationNodeSnapshot rootSnapshot;
+		PresentationNodeSnapshot targetSnapshot;
+		PresentationNodeSnapshot childSnapshot;
+		PresentationNodeSnapshot siblingSnapshot;
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(&root, rootSnapshot));
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(child, childSnapshot));
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(sibling, siblingSnapshot));
+		CUI_EXPECT_FALSE(rootSnapshot.CompositionIsolated);
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolationRoot);
+		CUI_EXPECT_TRUE(childSnapshot.CompositionIsolated);
+		CUI_EXPECT_FALSE(childSnapshot.CompositionIsolationRoot);
+		CUI_EXPECT_EQ(targetSnapshot.SegmentIndex, childSnapshot.SegmentIndex);
+		CUI_EXPECT_TRUE(rootSnapshot.SegmentIndex
+			!= targetSnapshot.SegmentIndex);
+		CUI_EXPECT_TRUE(siblingSnapshot.SegmentIndex
+			!= targetSnapshot.SegmentIndex);
+
+		std::array<Control*, 2> nested{ target, child };
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, nested));
+		CUI_EXPECT_EQ(4ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_FALSE(scene.RequiresComposition());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(child, childSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolationRoot);
+		CUI_EXPECT_EQ(1ULL, targetSnapshot.CompositionIsolationDepth);
+		CUI_EXPECT_TRUE(childSnapshot.CompositionIsolated);
+		CUI_EXPECT_TRUE(childSnapshot.CompositionIsolationRoot);
+		CUI_EXPECT_EQ(2ULL, childSnapshot.CompositionIsolationDepth);
+		CUI_EXPECT_TRUE(targetSnapshot.SegmentIndex
+			!= childSnapshot.SegmentIndex);
+
+		auto* native = target->AddOwned(
+			std::make_unique<NativeCompositionProbe>());
+		CUI_EXPECT_TRUE(native != nullptr);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_TRUE(scene.RequiresComposition());
+		CUI_EXPECT_EQ(2ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_FALSE(targetSnapshot.CompositionIsolated);
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, nested));
+		CUI_EXPECT_EQ(2ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(child, childSnapshot));
+		CUI_EXPECT_FALSE(targetSnapshot.CompositionIsolated);
+		CUI_EXPECT_FALSE(childSnapshot.CompositionIsolated);
+
+		auto detachedNative = target->DetachVisualChild(native);
+		CUI_EXPECT_TRUE(detachedNative.get() == native);
+		root.ClipToBounds = true;
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_FALSE(scene.RequiresComposition());
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+
+		cui::drawing::Transform scaledTarget;
+		cui::drawing::TransformOperation targetScale;
+		targetScale.Kind = cui::drawing::TransformKind::Scale;
+		targetScale.ScaleX = 1.1f;
+		targetScale.ScaleY = 1.0f;
+		scaledTarget.Operations.push_back(targetScale);
+		target->SetRenderTransform(scaledTarget);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+
+		target->ClearRenderTransform();
+		root.ClipToBounds = false;
+		cui::drawing::Geometry roundedAncestorClip;
+		roundedAncestorClip.Kind = cui::drawing::GeometryKind::Rectangle;
+		roundedAncestorClip.Rect = D2D1::RectF(0.0f, 0.0f, 200.0f, 140.0f);
+		roundedAncestorClip.RadiusX = 14.0f;
+		roundedAncestorClip.RadiusY = 10.0f;
+		root.SetClip(roundedAncestorClip);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+
+		cui::drawing::Geometry ellipseAncestorClip;
+		ellipseAncestorClip.Kind = cui::drawing::GeometryKind::Ellipse;
+		ellipseAncestorClip.Center = D2D1::Point2F(100.0f, 70.0f);
+		ellipseAncestorClip.RadiusX = 90.0f;
+		ellipseAncestorClip.RadiusY = 60.0f;
+		root.SetClip(ellipseAncestorClip);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+
+		cui::drawing::Geometry pathAncestorClip;
+		pathAncestorClip.Kind = cui::drawing::GeometryKind::Path;
+		cui::drawing::PathFigure pathFigure;
+		pathFigure.StartPoint = D2D1::Point2F(10.0f, 10.0f);
+		pathFigure.IsClosed = true;
+		cui::drawing::PathSegment pathLine;
+		pathLine.Kind = cui::drawing::PathSegmentKind::Line;
+		pathLine.Point = D2D1::Point2F(190.0f, 10.0f);
+		pathFigure.Segments.push_back(pathLine);
+		pathLine.Point = D2D1::Point2F(100.0f, 130.0f);
+		pathFigure.Segments.push_back(pathLine);
+		pathAncestorClip.Figures.push_back(std::move(pathFigure));
+		root.SetClip(pathAncestorClip);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+
+		cui::drawing::Geometry groupAncestorClip;
+		groupAncestorClip.Kind = cui::drawing::GeometryKind::Group;
+		groupAncestorClip.FillRule = cui::drawing::GeometryFillRule::EvenOdd;
+		cui::drawing::Geometry groupRectangle;
+		groupRectangle.Kind = cui::drawing::GeometryKind::Rectangle;
+		groupRectangle.Rect = D2D1::RectF(10.0f, 10.0f, 190.0f, 130.0f);
+		groupAncestorClip.Children.push_back(groupRectangle);
+		groupAncestorClip.Children.push_back(ellipseAncestorClip);
+		root.SetClip(groupAncestorClip);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_EQ(3ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_TRUE(targetSnapshot.CompositionIsolated);
+		root.ClearClip();
+
+		cui::drawing::Transform singularAncestor;
+		cui::drawing::TransformOperation singularScale;
+		singularScale.Kind = cui::drawing::TransformKind::Scale;
+		singularScale.ScaleX = 0.0f;
+		singularScale.ScaleY = 1.0f;
+		singularAncestor.Operations.push_back(singularScale);
+		root.SetRenderTransform(singularAncestor);
+		scene.InvalidateStructure();
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_FALSE(scene.RequiresComposition());
+		CUI_EXPECT_EQ(1ULL, scene.DrawingLayerCount());
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, targetSnapshot));
+		CUI_EXPECT_FALSE(targetSnapshot.CompositionIsolated);
+	});
+
+	runner.Add("Animation isolated scene stages the exact physical DComp transform", []
+	{
+		struct NativeCompositionProbe final : Control
+		{
+			PresentationSurfaceKind GetPresentationSurfaceKind()
+				const noexcept override
+			{
+				return PresentationSurfaceKind::NativeComposition;
+			}
+		};
+		struct NativeWindow final
+		{
+			HWND Value = nullptr;
+			~NativeWindow()
+			{
+				if (Value && ::IsWindow(Value)) (void)::DestroyWindow(Value);
+			}
+		} window;
+		window.Value = ::CreateWindowExW(
+			0, L"STATIC", L"CUI isolated transform probe",
+			WS_POPUP, -32'000, -32'000, 200, 150,
+			nullptr, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+		CUI_EXPECT_TRUE(window.Value != nullptr);
+		if (!window.Value) return;
+
+		Canvas root;
+		root.Arrange(cui::core::Rect{ 0.0f, 0.0f, 200.0f, 130.0f });
+		auto* target = static_cast<Canvas*>(
+			root.AddOwned(std::make_unique<Canvas>()));
+		auto* native = root.AddOwned(
+			std::make_unique<NativeCompositionProbe>());
+		CUI_EXPECT_TRUE(target != nullptr);
+		CUI_EXPECT_TRUE(native != nullptr);
+		if (!target || !native) return;
+		target->Arrange(cui::core::Rect{ 24.0f, 18.0f, 80.0f, 50.0f });
+		native->Arrange(cui::core::Rect{ 120.0f, 20.0f, 40.0f, 30.0f });
+		cui::drawing::Transform transform;
+		cui::drawing::TransformOperation scale;
+		scale.Kind = cui::drawing::TransformKind::Scale;
+		scale.ScaleX = 1.2f;
+		scale.ScaleY = 0.8f;
+		transform.Operations.push_back(scale);
+		cui::drawing::TransformOperation translate;
+		translate.Kind = cui::drawing::TransformKind::Translate;
+		translate.X = 9.0f;
+		translate.Y = -4.0f;
+		transform.Operations.push_back(translate);
+		target->SetRenderTransform(transform);
+
+		PresentationScene scene;
+		std::array<Control*, 1> roots{ &root };
+		std::array<Control*, 1> isolated{ target };
+		CUI_EXPECT_TRUE(scene.Synchronize(roots, {}, isolated));
+		CUI_EXPECT_TRUE(scene.RequiresComposition());
+		PresentationNodeSnapshot snapshot;
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, snapshot));
+		CUI_EXPECT_TRUE(snapshot.CompositionIsolationRoot);
+
+		PresentationRenderHost host;
+		CUI_EXPECT_TRUE(host.Attach(window.Value, 144u));
+		CUI_EXPECT_TRUE(host.EnsureComposition());
+		CUI_EXPECT_TRUE(scene.PrepareComposition(host, 17, 1.5f));
+		CUI_EXPECT_TRUE(scene.TryGetNodeSnapshot(target, snapshot));
+		PresentationRenderHost::SceneLayerVisualProperties properties;
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerVisualProperties(
+			snapshot.SegmentIndex, properties));
+		PresentationRenderHost::SceneLayerSurfaceProperties surface;
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerSurfaceProperties(
+			snapshot.SegmentIndex, surface));
+		CUI_EXPECT_FALSE(surface.FullWindow);
+		CUI_EXPECT_EQ(126u, surface.PhysicalWidth);
+		CUI_EXPECT_EQ(82u, surface.PhysicalHeight);
+		CUI_EXPECT_EQ(surface.PhysicalWidth,
+			snapshot.CompositionSurfacePhysicalWidth);
+		CUI_EXPECT_EQ(surface.PhysicalHeight,
+			snapshot.CompositionSurfacePhysicalHeight);
+		const auto expected = D2D1::Matrix3x2F::Translation(
+			snapshot.CompositionSurfaceOriginDip.x * 1.5f,
+			snapshot.CompositionSurfaceOriginDip.y * 1.5f)
+			* cui::dcomp_detail::DipTransformToPhysicalPixels(
+				snapshot.CompositionTransform, 1.5f);
+		CUI_EXPECT_NEAR(expected._11,
+			properties.PhysicalTransform._11, 0.0001f);
+		CUI_EXPECT_NEAR(expected._12,
+			properties.PhysicalTransform._12, 0.0001f);
+		CUI_EXPECT_NEAR(expected._21,
+			properties.PhysicalTransform._21, 0.0001f);
+		CUI_EXPECT_NEAR(expected._22,
+			properties.PhysicalTransform._22, 0.0001f);
+		CUI_EXPECT_NEAR(expected._31,
+			properties.PhysicalTransform._31, 0.0001f);
+		CUI_EXPECT_NEAR(expected._32,
+			properties.PhysicalTransform._32, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, properties.Opacity, 0.0001f);
+		CUI_EXPECT_TRUE(host.CommitComposition());
+
+		// DPI changes resize only the isolated backing surface. A later window
+		// resize must not silently promote it back to a full-window swap chain.
+		host.SetDpi(192u);
+		CUI_EXPECT_TRUE(scene.PrepareComposition(host, 17, 2.0f));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerSurfaceProperties(
+			snapshot.SegmentIndex, surface));
+		CUI_EXPECT_FALSE(surface.FullWindow);
+		CUI_EXPECT_EQ(168u, surface.PhysicalWidth);
+		CUI_EXPECT_EQ(108u, surface.PhysicalHeight);
+		host.Resize(320u, 240u);
+		CUI_EXPECT_TRUE(scene.PrepareComposition(host, 17, 2.0f));
+		CUI_EXPECT_TRUE(host.TryGetSceneLayerSurfaceProperties(
+			snapshot.SegmentIndex, surface));
+		CUI_EXPECT_FALSE(surface.FullWindow);
+		CUI_EXPECT_EQ(168u, surface.PhysicalWidth);
+		CUI_EXPECT_EQ(108u, surface.PhysicalHeight);
+		host.Detach();
+	});
+
+	runner.Add("Animation isolated base recording removes exactly one root transform", []
+	{
+		Canvas root;
+		root.Arrange(cui::core::Rect{ 40.0f, 25.0f, 200.0f, 120.0f });
+		cui::drawing::Transform rootTransform;
+		cui::drawing::TransformOperation rootScale;
+		rootScale.Kind = cui::drawing::TransformKind::Scale;
+		rootScale.ScaleX = 1.25f;
+		rootScale.ScaleY = 0.75f;
+		rootTransform.Operations.push_back(rootScale);
+		cui::drawing::TransformOperation rootTranslate;
+		rootTranslate.Kind = cui::drawing::TransformKind::Translate;
+		rootTranslate.X = 13.0f;
+		rootTranslate.Y = -7.0f;
+		rootTransform.Operations.push_back(rootTranslate);
+		root.SetRenderTransform(rootTransform);
+
+		auto* child = root.AddOwned(std::make_unique<Control>());
+		auto* sibling = root.AddOwned(std::make_unique<Control>());
+		CUI_EXPECT_TRUE(child != nullptr);
+		CUI_EXPECT_TRUE(sibling != nullptr);
+		if (!child || !sibling) return;
+		child->Arrange(cui::core::Rect{ 15.0f, 10.0f, 30.0f, 20.0f });
+		sibling->Arrange(cui::core::Rect{ 70.0f, 15.0f, 25.0f, 15.0f });
+		cui::drawing::Transform childTransform;
+		cui::drawing::TransformOperation childRotate;
+		childRotate.Kind = cui::drawing::TransformKind::Rotate;
+		childRotate.Angle = 20.0f;
+		childTransform.Operations.push_back(childRotate);
+		child->SetRenderTransform(childTransform);
+
+		auto matrix = [](D2D1_MATRIX_3X2_F value)
+		{
+			return D2D1::Matrix3x2F(
+				value._11, value._12, value._21,
+				value._22, value._31, value._32);
+		};
+		auto sameMatrix = [](const D2D1_MATRIX_3X2_F& left,
+			const D2D1_MATRIX_3X2_F& right)
+		{
+			return left._11 == right._11 && left._12 == right._12
+				&& left._21 == right._21 && left._22 == right._22
+				&& left._31 == right._31 && left._32 == right._32;
+		};
+		const auto rootNormal = matrix(root.GetLocalToRenderTransform());
+		const auto childNormal = matrix(child->GetLocalToRenderTransform());
+		const auto siblingNormal = matrix(sibling->GetLocalToRenderTransform());
+		D2D1::Matrix3x2F rootBase;
+		D2D1::Matrix3x2F childBase;
+		D2D1::Matrix3x2F siblingBase;
+		{
+			cui::framework::PresentationAccess::
+				RenderTransformSuppressionScope suppress(root);
+			rootBase = matrix(cui::framework::PresentationAccess::
+				LocalToRenderTransformForRecording(root));
+			childBase = matrix(cui::framework::PresentationAccess::
+				LocalToRenderTransformForRecording(*child));
+			siblingBase = matrix(cui::framework::PresentationAccess::
+				LocalToRenderTransformForRecording(*sibling));
+			CUI_EXPECT_TRUE(sameMatrix(
+				root.GetLocalToRenderTransform(), rootNormal));
+			CUI_EXPECT_TRUE(sameMatrix(
+				child->GetLocalToRenderTransform(), childNormal));
+			CUI_EXPECT_TRUE(sameMatrix(
+				sibling->GetLocalToRenderTransform(), siblingNormal));
+		}
+		CUI_EXPECT_FALSE(sameMatrix(rootBase, rootNormal));
+		CUI_EXPECT_FALSE(sameMatrix(childBase, childNormal));
+		CUI_EXPECT_FALSE(sameMatrix(siblingBase, siblingNormal));
+		// Ordinary coordinate queries stay normal inside the recording scope;
+		// only the explicit recording matrix removes the isolated root transform.
+
+		auto inverseBase = rootBase;
+		CUI_EXPECT_TRUE(inverseBase.Invert());
+		const auto compositor = inverseBase * rootNormal;
+		const std::array<D2D1_POINT_2F, 3> rootPoints{
+			D2D1::Point2F(0.0f, 0.0f),
+			D2D1::Point2F(35.0f, 12.0f),
+			D2D1::Point2F(180.0f, 90.0f) };
+		for (const auto point : rootPoints)
+		{
+			const auto expected = rootNormal.TransformPoint(point);
+			const auto actual = compositor.TransformPoint(
+				rootBase.TransformPoint(point));
+			CUI_EXPECT_NEAR(expected.x, actual.x, 0.001f);
+			CUI_EXPECT_NEAR(expected.y, actual.y, 0.001f);
+		}
+		const std::array<D2D1_POINT_2F, 2> childPoints{
+			D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(20.0f, 10.0f) };
+		for (const auto point : childPoints)
+		{
+			const auto expected = childNormal.TransformPoint(point);
+			const auto actual = compositor.TransformPoint(
+				childBase.TransformPoint(point));
+			CUI_EXPECT_NEAR(expected.x, actual.x, 0.001f);
+			CUI_EXPECT_NEAR(expected.y, actual.y, 0.001f);
+		}
+		CUI_EXPECT_TRUE(sameMatrix(
+			root.GetLocalToRenderTransform(), rootNormal));
+		CUI_EXPECT_TRUE(sameMatrix(
+			child->GetLocalToRenderTransform(), childNormal));
+	});
+
 	runner.Add("ScrollViewer brings transformed descendants into the rendered viewport", []
 	{
 		Window host;
@@ -45015,7 +45734,7 @@ int main()
 		document.NextStableId = 17;
 
 		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(xml.find("version=\"43\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("version=\"48\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("nextId=\"17\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find(
 			"<codeBehind class=\"Acme::Views::SchemaWindow\" relativeBasePath=\"generated/SchemaWindow\"")
@@ -45090,7 +45809,7 @@ int main()
 			unsupported, upgraded, &error));
 
 		const std::string duplicateId =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"3\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"3\">"
 			"<controls>"
 			"<control id=\"1\" name=\"a\" type=\"Canvas\" order=\"0\"><properties type=\"object\"/></control>"
 			"<control id=\"1\" name=\"b\" type=\"Button\" order=\"1\"><properties type=\"object\"/></control>"
@@ -45098,14 +45817,14 @@ int main()
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			duplicateId, upgraded, &error));
 		const std::string danglingParent =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"3\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"3\">"
 			"<controls>"
 			"<control id=\"1\" parentId=\"2\" name=\"a\" type=\"Button\" order=\"0\"><properties type=\"object\"/></control>"
 			"</controls></designDocument>";
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			danglingParent, upgraded, &error));
 		const std::string parentCycle =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"3\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"3\">"
 			"<controls>"
 			"<control id=\"1\" parentId=\"2\" name=\"a\" type=\"Canvas\" order=\"0\"><properties type=\"object\"/></control>"
 			"<control id=\"2\" parentId=\"1\" name=\"b\" type=\"Canvas\" order=\"0\"><properties type=\"object\"/></control>"
@@ -45113,7 +45832,7 @@ int main()
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			parentCycle, upgraded, &error));
 		const std::string regressedHighWater =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"1\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"1\">"
 			"<controls>"
 			"<control id=\"1\" name=\"a\" type=\"Button\" order=\"0\"><properties type=\"object\"/></control>"
 			"</controls></designDocument>";
@@ -45121,13 +45840,13 @@ int main()
 			regressedHighWater, upgraded, &error));
 
 		const std::string absoluteCodeBehind =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"1\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"1\">"
 			"<codeBehind class=\"WindowCode\" relativeBasePath=\"C:/outside/WindowCode\"/>"
 			"<controls></controls></designDocument>";
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			absoluteCodeBehind, upgraded, &error));
 		const std::string missingCodeClass =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"1\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"1\">"
 			"<codeBehind relativeBasePath=\"WindowCode\"/>"
 			"<controls></controls></designDocument>";
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
@@ -54349,6 +55068,29 @@ class FreshWindow : public FreshWindowGenerated {};
 			expectRegisteredProgramRejected(invalidProgram);
 		}
 		{
+			auto invalidStoryboards = storyboards;
+			invalidStoryboards.front().Timing.AccelerationRatio = 0.75;
+			invalidStoryboards.front().Timing.DecelerationRatio = 0.5;
+			auto invalidProgram = program;
+			invalidProgram.Storyboards = invalidStoryboards;
+			expectRegisteredProgramRejected(invalidProgram);
+		}
+		{
+			auto invalidStates = states;
+			invalidStates.front().StoryboardTiming.SpeedRatio = 0.0;
+			auto invalidProgram = program;
+			invalidProgram.States = invalidStates;
+			expectRegisteredProgramRejected(invalidProgram);
+		}
+		{
+			auto invalidTransitions = transitions;
+			invalidTransitions.front().StoryboardTiming.FillBehavior =
+				static_cast<DeclarativeTimelineFillBehavior>(UINT8_MAX);
+			auto invalidProgram = program;
+			invalidProgram.Transitions = invalidTransitions;
+			expectRegisteredProgramRejected(invalidProgram);
+		}
+		{
 			const std::array<uint32_t, 1> unexpectedConditionOperands{ 0u };
 			auto mismatchedGroups = groups;
 			mismatchedGroups.front().ConditionOperands = { 0u, 1u };
@@ -54400,6 +55142,9 @@ class FreshWindow : public FreshWindowGenerated {};
 				AdvanceVisualStateAnimations(delayedHost, delayedTick + 100u));
 			CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(delayedTarget), 0.0001f);
 			CUI_EXPECT_TRUE(delayedHost.RaiseDeclarativeEvent(stopEvent));
+			CUI_EXPECT_TRUE(delayedHost.HasActiveVisualStateAnimations());
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				AdvanceVisualStateAnimations(delayedHost, delayedTick + 101u));
 			CUI_EXPECT_FALSE(delayedHost.HasActiveVisualStateAnimations());
 		}
 
@@ -54501,16 +55246,24 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::CanvasLeftProperty(),
 			DependencyPropertyValueSource::Animation));
-		CUI_EXPECT_FALSE(target.HasPropertyValue(
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::CanvasTopProperty(),
 			DependencyPropertyValueSource::Animation));
-		CUI_EXPECT_FALSE(target.HasPropertyValue(
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.25f, target.Background.Opacity, 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, transitionTick + 750u));
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
 		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(target), 0.0001f);
 		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
-		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
-			AdvanceVisualStateAnimations(host, transitionTick + 750u));
 		CUI_EXPECT_TRUE(Canvas::GetLeft(target) > transitionMidpoint
 			&& Canvas::GetLeft(target) < 7.0f);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
@@ -54530,10 +55283,10 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
 		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(target), 0.0001f);
 		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
-		CUI_EXPECT_FALSE(target.HasPropertyValue(
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::CanvasTopProperty(),
 			DependencyPropertyValueSource::Animation));
-		CUI_EXPECT_FALSE(target.HasPropertyValue(
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
 		expectSolidRedBackground();
@@ -54557,28 +55310,37 @@ class FreshWindow : public FreshWindowGenerated {};
 			&& target.Background.Opacity < 0.75f);
 		expectSolidRedBackground();
 		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(pauseEvent));
-		const auto pausedTop = Canvas::GetTop(target);
-		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
 		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::CanvasTopProperty(),
 			DependencyPropertyValueSource::Animation));
 		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
-		CUI_EXPECT_FALSE(cui::framework::PresentationAccess::
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
 			AdvanceVisualStateAnimations(host, beginTick + 500u));
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		const auto pausedTop = Canvas::GetTop(target);
+		CUI_EXPECT_FALSE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 600u));
 		CUI_EXPECT_NEAR(pausedTop, Canvas::GetTop(target), 0.0001f);
 		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(resumeEvent));
 		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
 			AdvanceVisualStateAnimations(host, beginTick + 750u));
+		CUI_EXPECT_NEAR(pausedTop, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 800u));
 		CUI_EXPECT_TRUE(Canvas::GetTop(target) > pausedTop);
 		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(stopEvent));
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 801u));
 		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
-		CUI_EXPECT_FALSE(target.HasPropertyValue(
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::CanvasTopProperty(),
 			DependencyPropertyValueSource::Animation));
-		CUI_EXPECT_FALSE(target.HasPropertyValue(
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
 			Control::BackgroundProperty(),
 			DependencyPropertyValueSource::Animation));
 		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(target), 0.0001f);
@@ -54590,6 +55352,9 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(target), 0.0001f);
 		CUI_EXPECT_NEAR(0.25f, target.Background.Opacity, 0.0001f);
 		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(stopEvent));
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 802u));
 		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
 		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
 	});
@@ -54800,6 +55565,12 @@ class FreshWindow : public FreshWindowGenerated {};
 			const auto transitionTick = ::GetTickCount64();
 			CUI_EXPECT_TRUE(host.GoToVisualState(
 				groupToken, stateB, true, &error));
+			const auto layerStacksBeforeFailure =
+				cui::framework::PresentationAccess::
+					VisualStateAnimationLayerStackCountForTesting(host);
+			const auto layersBeforeFailure =
+				cui::framework::PresentationAccess::
+					VisualStateAnimationLayerCountForTesting(host);
 			target.Background = incompatibleBackground;
 			error.clear();
 			CUI_EXPECT_FALSE(host.GoToVisualState(
@@ -54807,6 +55578,14 @@ class FreshWindow : public FreshWindowGenerated {};
 			CUI_EXPECT_FALSE(error.empty());
 			CUI_EXPECT_TRUE(host.GetCurrentVisualState(groupToken) == stateB);
 			CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				VisualStateAnimationClockIdentityValidForTesting(host));
+			CUI_EXPECT_EQ(layerStacksBeforeFailure,
+				cui::framework::PresentationAccess::
+					VisualStateAnimationLayerStackCountForTesting(host));
+			CUI_EXPECT_EQ(layersBeforeFailure,
+				cui::framework::PresentationAccess::
+					VisualStateAnimationLayerCountForTesting(host));
 			CUI_EXPECT_TRUE(target.HasPropertyValue(
 				Control::CanvasLeftProperty(),
 				DependencyPropertyValueSource::Animation));
@@ -54845,8 +55624,18 @@ class FreshWindow : public FreshWindowGenerated {};
         <ComponentEvent Name="Start" />
         <ComponentEvent Name="Pause" />
         <ComponentEvent Name="Resume" />
-        <ComponentEvent Name="Stop" />
-        <ComponentEvent Name="Flash" />
+			<ComponentEvent Name="Stop" />
+			<ComponentEvent Name="Remove" />
+			<ComponentEvent Name="Seek" />
+			<ComponentEvent Name="Speed" />
+			<ComponentEvent Name="Skip" />
+			<ComponentEvent Name="Flash" />
+			<ComponentEvent Name="ComposeStart" />
+			<ComponentEvent Name="ComposeStop" />
+			<ComponentEvent Name="ComposeRemove" />
+			<ComponentEvent Name="ComposeUpperStart" />
+			<ComponentEvent Name="ComposeUpperStop" />
+			<ComponentEvent Name="ComposeUpperRemove" />
       </ComponentDefinition.Events>
       <ComponentDefinition.Template>
         <StackPanel x:Name="PART_Root">
@@ -54891,10 +55680,24 @@ class FreshWindow : public FreshWindowGenerated {};
             <EventTrigger RoutedEvent="Resume">
               <ResumeStoryboard BeginStoryboardName="Pulse" />
             </EventTrigger>
-            <EventTrigger RoutedEvent="Stop">
+			<EventTrigger RoutedEvent="Stop">
               <StopStoryboard BeginStoryboardName="Pulse" />
             </EventTrigger>
-            <EventTrigger RoutedEvent="Flash">
+			<EventTrigger RoutedEvent="Remove">
+			  <RemoveStoryboard BeginStoryboardName="Pulse" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="Seek">
+			  <SeekStoryboard BeginStoryboardName="Pulse"
+				Offset="0:0:0.750" Origin="BeginTime" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="Speed">
+			  <SetStoryboardSpeedRatio BeginStoryboardName="Pulse"
+				SpeedRatio="2" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="Skip">
+			  <SkipStoryboardToFill BeginStoryboardName="Pulse" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="Flash">
               <BeginStoryboard x:Name="NoHold">
                 <Storyboard>
                   <DoubleAnimation Storyboard.TargetName="target"
@@ -54902,7 +55705,37 @@ class FreshWindow : public FreshWindowGenerated {};
                     To="9" Duration="0:0:0" FillBehavior="Stop" />
                 </Storyboard>
               </BeginStoryboard>
-            </EventTrigger>
+			</EventTrigger>
+			<EventTrigger RoutedEvent="ComposeStart">
+			  <BeginStoryboard x:Name="ComposePulse" HandoffBehavior="Compose">
+				<Storyboard>
+				  <DoubleAnimation Storyboard.TargetName="target"
+					Storyboard.TargetProperty="(Canvas.Left)"
+					From="20" To="30" Duration="0:0:1" />
+				</Storyboard>
+			  </BeginStoryboard>
+			</EventTrigger>
+			<EventTrigger RoutedEvent="ComposeStop">
+			  <StopStoryboard BeginStoryboardName="ComposePulse" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="ComposeRemove">
+			  <RemoveStoryboard BeginStoryboardName="ComposePulse" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="ComposeUpperStart">
+			  <BeginStoryboard x:Name="ComposeUpperPulse" HandoffBehavior="Compose">
+				<Storyboard>
+				  <DoubleAnimation Storyboard.TargetName="target"
+					Storyboard.TargetProperty="(Canvas.Left)"
+					From="40" To="50" Duration="0:0:1" />
+				</Storyboard>
+			  </BeginStoryboard>
+			</EventTrigger>
+			<EventTrigger RoutedEvent="ComposeUpperStop">
+			  <StopStoryboard BeginStoryboardName="ComposeUpperPulse" />
+			</EventTrigger>
+			<EventTrigger RoutedEvent="ComposeUpperRemove">
+			  <RemoveStoryboard BeginStoryboardName="ComposeUpperPulse" />
+			</EventTrigger>
           </StackPanel.Triggers>
           <TextBlock x:Name="target" Text="Idle"
             Canvas.Left="2" />
@@ -54921,7 +55754,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(1ULL, document.Components.size());
 		const auto& component = document.Components.front();
 		CUI_EXPECT_EQ(1ULL, component.VisualStateGroups.size());
-		CUI_EXPECT_EQ(5ULL, component.EventTriggers.size());
+		CUI_EXPECT_EQ(15ULL, component.EventTriggers.size());
 		CUI_EXPECT_EQ(std::wstring(L"Start"),
 			component.EventTriggers[0].EventName);
 		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Begin,
@@ -54938,6 +55771,28 @@ class FreshWindow : public FreshWindowGenerated {};
 			component.EventTriggers[2].Actions[0].Kind);
 		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Stop,
 			component.EventTriggers[3].Actions[0].Kind);
+		const auto seekTrigger = std::find_if(
+			component.EventTriggers.begin(), component.EventTriggers.end(),
+			[](const auto& trigger) { return trigger.EventName == L"Seek"; });
+		CUI_EXPECT_TRUE(seekTrigger != component.EventTriggers.end());
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Seek,
+			seekTrigger->Actions.front().Kind);
+		CUI_EXPECT_EQ(750ULL,
+			seekTrigger->Actions.front().SeekOffsetMilliseconds);
+		const auto speedTrigger = std::find_if(
+			component.EventTriggers.begin(), component.EventTriggers.end(),
+			[](const auto& trigger) { return trigger.EventName == L"Speed"; });
+		CUI_EXPECT_TRUE(speedTrigger != component.EventTriggers.end());
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::SetSpeedRatio,
+			speedTrigger->Actions.front().Kind);
+		CUI_EXPECT_NEAR(2.0,
+			speedTrigger->Actions.front().SpeedRatio, 0.000001);
+		const auto skipTrigger = std::find_if(
+			component.EventTriggers.begin(), component.EventTriggers.end(),
+			[](const auto& trigger) { return trigger.EventName == L"Skip"; });
+		CUI_EXPECT_TRUE(skipTrigger != component.EventTriggers.end());
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::SkipToFill,
+			skipTrigger->Actions.front().Kind);
 
 		const auto canonical =
 			DesignerModel::XamlDocumentSerializer::ToXaml(document);
@@ -54947,7 +55802,17 @@ class FreshWindow : public FreshWindowGenerated {};
 			"<BeginStoryboard x:Name=\"Pulse\">",
 			"<PauseStoryboard BeginStoryboardName=\"Pulse\"",
 			"<ResumeStoryboard BeginStoryboardName=\"Pulse\"",
-			"<StopStoryboard BeginStoryboardName=\"Pulse\"" })
+			"<StopStoryboard BeginStoryboardName=\"Pulse\"",
+			"<RemoveStoryboard BeginStoryboardName=\"Pulse\"",
+			"<SeekStoryboard BeginStoryboardName=\"Pulse\" Offset=\"0:00:00.750\" Origin=\"BeginTime\"",
+			"<SetStoryboardSpeedRatio BeginStoryboardName=\"Pulse\" SpeedRatio=\"2\"",
+			"<SkipStoryboardToFill BeginStoryboardName=\"Pulse\"",
+			"HandoffBehavior=\"Compose\"",
+			"<StopStoryboard BeginStoryboardName=\"ComposePulse\"",
+			"<RemoveStoryboard BeginStoryboardName=\"ComposePulse\"",
+			"<BeginStoryboard x:Name=\"ComposeUpperPulse\" HandoffBehavior=\"Compose\"",
+			"<StopStoryboard BeginStoryboardName=\"ComposeUpperPulse\"",
+			"<RemoveStoryboard BeginStoryboardName=\"ComposeUpperPulse\"" })
 			CUI_EXPECT_TRUE(canonical.find(marker) != std::string::npos);
 		DesignerModel::DesignDocument xamlRoundTrip;
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
@@ -54958,6 +55823,14 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(snapshot.find("componentEventTrigger")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(snapshot.find("pauseStoryboard")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find("seekStoryboard")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find(
+			"setStoryboardSpeedRatio beginStoryboardName=\"Pulse\" speedRatio=\"2\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find(
+			"skipStoryboardToFill beginStoryboardName=\"Pulse\"")
 			!= std::string::npos);
 		DesignerModel::DesignDocument snapshotRoundTrip;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
@@ -54984,11 +55857,33 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::VisualState,
 			target->GetPropertyValueSource(L"Canvas.Left"));
+		std::vector<DeclarativeClockTimingEventArgs> componentTimingEvents;
+		auto componentTimingConnection = card->OnStoryboardTimingEvent.Subscribe(
+			[&](Control*, const DeclarativeClockTimingEventArgs& args)
+			{ componentTimingEvents.push_back(args); });
 
 		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Start"));
 		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(*card));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		const auto startTick = ::GetTickCount64();
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, startTick + 250));
+		CUI_EXPECT_EQ(3ULL, componentTimingEvents.size());
+		CUI_EXPECT_TRUE(componentTimingEvents[0].OwnerKind
+			== DeclarativeClockOwnerKind::ComponentStoryboard);
+		CUI_EXPECT_TRUE(componentTimingEvents[0].ClockInstanceId != 0u);
+		const auto firstComponentClockId =
+			componentTimingEvents[0].ClockInstanceId;
+		CUI_EXPECT_EQ(firstComponentClockId,
+			componentTimingEvents[1].ClockInstanceId);
+		CUI_EXPECT_EQ(firstComponentClockId,
+			componentTimingEvents[2].ClockInstanceId);
 		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > 2.0f
 			&& Canvas::GetLeft(*target) < 10.0f);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
@@ -54996,6 +55891,9 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
 
 		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Pause"));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, startTick + 251));
 		const auto pausedRadius = Canvas::GetLeft(*target);
 		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
 		CUI_EXPECT_FALSE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, startTick + 900));
@@ -55005,10 +55903,19 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Resume"));
 		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, startTick + 700));
+		CUI_EXPECT_NEAR(pausedRadius,
+			Canvas::GetLeft(*target), 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, startTick + 716));
 		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > pausedRadius);
+		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, startTick + 950));
 		CUI_EXPECT_EQ(std::wstring(L"Running"), target->Text);
 		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, startTick + 2000));
 		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_NEAR(10.0f, Canvas::GetLeft(*target), 0.0001f);
 		CUI_EXPECT_EQ(std::wstring(L"Done"), target->Text);
 		CUI_EXPECT_TRUE(card->TrySetPropertyValue(L"IsHot", BindingValue(true)));
@@ -55017,15 +55924,210 @@ class FreshWindow : public FreshWindowGenerated {};
 			target->GetPropertyValueSource(L"Canvas.Left"));
 
 		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Stop"));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, startTick + 2001));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			VisualStateAnimationClockIdentityValidForTesting(*card));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_NEAR(6.0f, Canvas::GetLeft(*target), 0.0001f);
 		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
+			target->GetPropertyValueSource(L"Canvas.Left"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
+			target->GetPropertyValueSource(L"Text"));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Remove"));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, startTick + 2002));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::VisualState,
 			target->GetPropertyValueSource(L"Canvas.Left"));
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
 			target->GetPropertyValueSource(L"Text"));
+
+		constexpr unsigned long long seekOrigin = 2'500'000ull;
+		const auto previousSeekClock = cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, seekOrigin);
+		componentTimingEvents.clear();
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Start"));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, seekOrigin + 100));
+		CUI_EXPECT_TRUE(componentTimingEvents.size() >= 3u);
+		CUI_EXPECT_TRUE(componentTimingEvents[0].OwnerKind
+			== DeclarativeClockOwnerKind::ComponentStoryboard);
+		CUI_EXPECT_TRUE(componentTimingEvents[0].ClockInstanceId != 0u);
+		CUI_EXPECT_TRUE(componentTimingEvents[0].ClockInstanceId
+			!= firstComponentClockId);
+		const auto valueBeforeSeek = Canvas::GetLeft(*target);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Speed"));
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Seek"));
+		CUI_EXPECT_NEAR(valueBeforeSeek,
+			Canvas::GetLeft(*target), 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, seekOrigin + 101));
+		CUI_EXPECT_NEAR(8.0f, Canvas::GetLeft(*target), 0.0001f);
+		const auto seekClock = cui::framework::PresentationAccess::
+			QuerySingleVisualStateAnimationRootForTesting(*card);
+		CUI_EXPECT_TRUE(seekClock.has_value());
+		CUI_EXPECT_EQ(750ULL,
+			seekClock ? seekClock->CurrentTimeMilliseconds.value_or(0ull) : 0ull);
+		CUI_EXPECT_NEAR(2.0,
+			seekClock ? seekClock->GlobalSpeed.value_or(0.0) : 0.0,
+			0.000001);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Skip"));
+		const auto pendingSkipClock = cui::framework::PresentationAccess::
+			QuerySingleVisualStateAnimationRootForTesting(*card);
+		CUI_EXPECT_TRUE(pendingSkipClock == seekClock);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, seekOrigin + 102));
+		const auto skippedClock = cui::framework::PresentationAccess::
+			QuerySingleVisualStateAnimationRootForTesting(*card);
+		CUI_EXPECT_TRUE(skippedClock.has_value());
+		CUI_EXPECT_EQ(DeclarativeClockState::Filling,
+			skippedClock ? skippedClock->State : DeclarativeClockState::Stopped);
+		CUI_EXPECT_EQ(1000ULL,
+			skippedClock ? skippedClock->CurrentTimeMilliseconds.value_or(0ull) : 0ull);
+		CUI_EXPECT_NEAR(10.0f, Canvas::GetLeft(*target), 0.0001f);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Remove"));
+		CUI_EXPECT_FALSE(cui::framework::PresentationAccess::
+			QuerySingleVisualStateAnimationRootForTesting(*card).has_value());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, seekOrigin + 103));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		(void)cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, previousSeekClock);
+
+		constexpr unsigned long long composeOrigin = 3'000'000ull;
+		const auto previousComposeClock = cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, composeOrigin);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Start"));
+		const auto composeStartTick = composeOrigin;
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, composeStartTick + 250));
+		(void)cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, composeOrigin + 250);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"ComposeStart"));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerMaxDepthForTesting(*card));
+		CUI_EXPECT_NEAR(20.0f, Canvas::GetLeft(*target), 0.001f);
+		const auto composeTick = composeOrigin + 250;
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, composeTick + 200));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > 21.0f
+			&& Canvas::GetLeft(*target) < 23.0f);
+		(void)cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, composeTick + 200);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"ComposeUpperStart"));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(4ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerMaxDepthForTesting(*card));
+		CUI_EXPECT_NEAR(40.0f, Canvas::GetLeft(*target), 0.001f);
+		const auto upperTick = composeTick + 200;
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 250));
+		const auto upperBeforeMiddleStop = Canvas::GetLeft(*target);
+		CUI_EXPECT_TRUE(upperBeforeMiddleStop > 42.0f
+			&& upperBeforeMiddleStop < 43.0f);
+		(void)cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, upperTick + 250);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"ComposeStop"));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(4ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerMaxDepthForTesting(*card));
+		CUI_EXPECT_NEAR(upperBeforeMiddleStop,
+			Canvas::GetLeft(*target), 0.001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 500));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > 44.0f
+			&& Canvas::GetLeft(*target) < 46.0f);
+		(void)cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, upperTick + 500);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"ComposeUpperStop"));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(4ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerMaxDepthForTesting(*card));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > 44.0f
+			&& Canvas::GetLeft(*target) < 46.0f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 501));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > 2.0f
+			&& Canvas::GetLeft(*target) <= 10.0f);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Stop"));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 502));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(4ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(6.0f, Canvas::GetLeft(*target), 0.001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
+			target->GetPropertyValueSource(L"Canvas.Left"));
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"ComposeRemove"));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 503));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(3ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"ComposeUpperRemove"));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 504));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(2ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Remove"));
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*card, upperTick + 505));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(0ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
+		(void)cui::framework::PresentationAccess::
+			ExchangeVisualStateAnimationClockOverrideForTesting(
+				*card, previousComposeClock);
+
 		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Flash"));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationRootClockCountForTesting(*card));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerStackCountForTesting(*card));
+		CUI_EXPECT_EQ(1ULL, cui::framework::PresentationAccess::
+			VisualStateAnimationLayerCountForTesting(*card));
 		CUI_EXPECT_NEAR(6.0f, Canvas::GetLeft(*target), 0.0001f);
-		CUI_EXPECT_EQ(DependencyPropertyValueSource::VisualState,
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
 			target->GetPropertyValueSource(L"Canvas.Left"));
 
 		auto resourceReload = document;
@@ -55060,6 +56162,17 @@ class FreshWindow : public FreshWindowGenerated {};
 			invalidReference, unchanged, &error));
 		CUI_EXPECT_EQ(document, unchanged);
 		CUI_EXPECT_TRUE(error.find(L"BeginStoryboard") != std::wstring::npos);
+
+		auto indefiniteSkip = document;
+		indefiniteSkip.Components.front().EventTriggers.front()
+			.Actions.front().Animations.front().RepeatBehavior =
+			DesignerRepeatBehaviorKind::Forever;
+		DesignerModel::RuntimeDocument rejectedIndefiniteRuntime;
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Load(
+			indefiniteSkip, rejectedIndefiniteRuntime, {}, &error));
+		CUI_EXPECT_TRUE(error.find(L"SkipStoryboardToFill")
+			!= std::wstring::npos);
+		CUI_EXPECT_TRUE(error.find(L"Forever") != std::wstring::npos);
 
 		auto invalidSnapshot = document;
 		invalidSnapshot.Components.front().EventTriggers[3]
@@ -57177,7 +58290,7 @@ class FreshWindow : public FreshWindowGenerated {};
 
 		const auto snapshot =
 			DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(snapshot.find("version=\"43\"")
+		CUI_EXPECT_TRUE(snapshot.find("version=\"48\"")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(snapshot.find("commandTarget")
 			!= std::string::npos);
@@ -59070,10 +60183,10 @@ class FreshWindow : public FreshWindowGenerated {};
 		current.Nodes.push_back(std::move(tab));
 
 		auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(current);
-		const auto version = snapshot.find("version=\"43\"");
+		const auto version = snapshot.find("version=\"48\"");
 		CUI_EXPECT_TRUE(version != std::string::npos);
 		if (version != std::string::npos)
-			snapshot.replace(version, std::string("version=\"43\"").size(),
+			snapshot.replace(version, std::string("version=\"48\"").size(),
 				"version=\"30\"");
 		DesignerModel::DesignDocument parsed;
 		error.clear();
@@ -59220,6 +60333,60 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(arranged.Content, composed.Content);
 		CUI_EXPECT_EQ(arranged.Geometry, composed.Geometry);
 		CUI_EXPECT_TRUE(composed.Composition > arranged.Composition);
+	});
+
+	runner.Add("Animation DP roots classify layout content and geometry invalidation", []
+	{
+		using cui::framework::DependencyPropertyAccess;
+
+		Canvas layoutParent;
+		ConfigureTestControl(layoutParent, 0, 0, 240, 160);
+		auto* layoutTarget = static_cast<Canvas*>(
+			layoutParent.AddOwned(std::make_unique<Canvas>()));
+		CUI_EXPECT_TRUE(layoutTarget != nullptr);
+		layoutParent.Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 160.0f } });
+		layoutParent.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 240.0f, 160.0f });
+		CUI_EXPECT_FALSE(layoutParent.GetComputedLayout().NeedsMeasure());
+		CUI_EXPECT_FALSE(layoutParent.GetComputedLayout().NeedsArrange());
+		const auto layoutRevisions = layoutTarget->GetPresentationRevisions();
+		CUI_EXPECT_TRUE(DependencyPropertyAccess::SetValue(
+			*layoutTarget, Control::CanvasLeftProperty(), BindingValue(12.0f),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(layoutParent.GetComputedLayout().NeedsMeasure());
+		CUI_EXPECT_TRUE(layoutParent.GetComputedLayout().NeedsArrange());
+		const auto layoutAfter = layoutTarget->GetPresentationRevisions();
+		CUI_EXPECT_EQ(layoutRevisions.Content, layoutAfter.Content);
+		CUI_EXPECT_EQ(layoutRevisions.Geometry, layoutAfter.Geometry);
+		CUI_EXPECT_EQ(layoutRevisions.Composition, layoutAfter.Composition);
+
+		Canvas painted;
+		ConfigureTestControl(painted, 0, 0, 100, 60);
+		const auto paintedBefore = painted.GetPresentationRevisions();
+		CUI_EXPECT_TRUE(DependencyPropertyAccess::SetValue(
+			painted, Panel::BackgroundProperty(),
+			BindingValue(cui::drawing::MakeSolidColorBrush(
+				D2D1::ColorF(0x336699))),
+			DependencyPropertyValueSource::Animation));
+		const auto paintedAfter = painted.GetPresentationRevisions();
+		CUI_EXPECT_EQ(paintedBefore.Content + 1u, paintedAfter.Content);
+		CUI_EXPECT_EQ(paintedBefore.Geometry, paintedAfter.Geometry);
+		CUI_EXPECT_EQ(paintedBefore.Composition, paintedAfter.Composition);
+
+		Canvas clipped;
+		ConfigureTestControl(clipped, 0, 0, 100, 60);
+		cui::drawing::Geometry clip;
+		clip.Kind = cui::drawing::GeometryKind::Rectangle;
+		clip.Rect = D2D1::RectF(4.0f, 5.0f, 80.0f, 40.0f);
+		const auto clippedBefore = clipped.GetPresentationRevisions();
+		CUI_EXPECT_TRUE(DependencyPropertyAccess::SetValue(
+			clipped, Control::ClipProperty(), BindingValue(clip),
+			DependencyPropertyValueSource::Animation));
+		const auto clippedAfter = clipped.GetPresentationRevisions();
+		CUI_EXPECT_EQ(clippedBefore.Content, clippedAfter.Content);
+		CUI_EXPECT_EQ(clippedBefore.Geometry + 1u, clippedAfter.Geometry);
+		CUI_EXPECT_EQ(clippedBefore.Composition, clippedAfter.Composition);
 	});
 
 	runner.Add("Adjacent hover damage clears locally without painting interior frame edges", []
@@ -79369,7 +80536,7 @@ class FreshWindow : public FreshWindowGenerated {};
 	runner.Add("Current design snapshots reject undeclared structure", []
 	{
 		const std::string undeclaredAttributes =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"2\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"2\">"
 			"<window name=\"MainWindow\" type=\"Window\" xamlNamespace=\"urn:cui\" "
 			"xamlName=\"Window\"><properties type=\"object\"/><events type=\"object\"/>"
 			"<bindings type=\"object\"/></window>"
@@ -79386,7 +80553,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::wstring::npos);
 
 		const std::string undeclaredChildren =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"2\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"2\">"
 			"<window name=\"MainWindow\" type=\"Window\" xamlNamespace=\"urn:cui\" "
 			"xamlName=\"Window\"><properties type=\"object\"/><events type=\"object\"/>"
 			"<bindings type=\"object\"/></window>"
@@ -79402,7 +80569,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::wstring::npos);
 
 		const std::string undeclaredRootAttribute =
-			"<designDocument schema=\"cui.designer\" version=\"43\" "
+			"<designDocument schema=\"cui.designer\" version=\"48\" "
 			"nextId=\"1\" future=\"true\">"
 			"<window name=\"MainWindow\" type=\"Window\" "
 			"xamlNamespace=\"urn:cui\" xamlName=\"Window\"/>"
@@ -79414,7 +80581,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::wstring::npos);
 
 		const std::string duplicateWindowState =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"1\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"1\">"
 			"<window name=\"MainWindow\" type=\"Window\" "
 			"xamlNamespace=\"urn:cui\" xamlName=\"Window\">"
 			"<properties type=\"object\"/><properties type=\"object\"/>"
@@ -79426,7 +80593,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::wstring::npos);
 
 		const std::string legacyStateTrigger =
-			"<designDocument schema=\"cui.designer\" version=\"43\" nextId=\"1\">"
+			"<designDocument schema=\"cui.designer\" version=\"48\" nextId=\"1\">"
 			"<window name=\"MainWindow\" type=\"Window\" "
 			"xamlNamespace=\"urn:cui\" xamlName=\"Window\"/>"
 			"<styleSheet><rules><rule type=\"Button\"><triggers>"

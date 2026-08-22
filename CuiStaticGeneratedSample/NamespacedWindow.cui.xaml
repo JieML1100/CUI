@@ -9,36 +9,248 @@
       Width="800" Height="600">
   <Window.Resources>
     <Color x:Key="StaticTemplateAccent">#FF336699</Color>
+    <Storyboard x:Key="StaticAuthorClickStoryboard"
+                BeginTime="0:0:0.010" Duration="0:0:0.250"
+                SpeedRatio="1.25" AccelerationRatio="0.1"
+                DecelerationRatio="0.2" RepeatBehavior="2x"
+                AutoReverse="true">
+      <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+                       Storyboard.TargetProperty="(Canvas.Left)"
+                       From="0" To="30"
+                       Duration="0:0:0.200"
+                       AutoReverse="True"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+	                   Storyboard.TargetProperty="Opacity"
+	                   From="1" To="0.5" Duration="0:0:0.200"/>
+	  <PointAnimationUsingPath Storyboard.TargetName="StaticAuthorChrome"
+	                           Storyboard.TargetProperty="RenderTransformOrigin"
+	                           Duration="0:0:0.200">
+		<PointAnimationUsingPath.PathGeometry>
+		  <PathGeometry Figures="M0,0 L.15,0 .15,0 Q.3,1.2 .45,.6 A.5,.3 25 0 1 .85,1 C.9,1.1 .95,.9 1,1 Z M2,-1 L2.3,-.6 C2.5,-.2 2.8,-.4 3,0">
+			<PathGeometry.Transform>
+			  <TransformGroup>
+				<ScaleTransform ScaleX="1.25" ScaleY="0.75"
+				                CenterX="0.2" CenterY="0.2"/>
+				<SkewTransform AngleX="12.5" AngleY="-7.25"
+				               CenterX="0.1" CenterY="-0.1"/>
+				<RotateTransform Angle="17.5" CenterX="0.5" CenterY="0.5"/>
+				<TranslateTransform X="0.1" Y="-0.15"/>
+			  </TransformGroup>
+			</PathGeometry.Transform>
+		  </PathGeometry>
+		</PointAnimationUsingPath.PathGeometry>
+	  </PointAnimationUsingPath>
+	  <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+	                   Storyboard.TargetProperty="(UIElement.Clip).(Geometry.Transform).(TranslateTransform.X)"
+	                   From="0.05" To="0.25" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+	                   Storyboard.TargetProperty="(Border.BorderBrush).(Brush.Transform).(RotateTransform.Angle)"
+	                   From="5" To="25" Duration="0:0:0.200"/>
+	  <ColorAnimation Storyboard.TargetName="StaticAuthorChrome"
+	                  Storyboard.TargetProperty="(Border.BorderBrush).(SolidColorBrush.Color)"
+	                  From="#FF224466" To="#FF66AA44" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+	                   Storyboard.TargetProperty="(Border.BorderBrush).(Brush.Opacity)"
+	                   From="0.9" To="0.45" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticGradientChrome"
+	                  Storyboard.TargetProperty="(Border.Background).(LinearGradientBrush.StartPoint)"
+	                  From="0.1,0.2" To="0.4,0.5" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticGradientChrome"
+	                  Storyboard.TargetProperty="(Border.Background).(LinearGradientBrush.EndPoint)"
+	                  From="0.9,0.8" To="0.6,0.5" Duration="0:0:0.200"/>
+	  <ColorAnimation Storyboard.TargetName="StaticGradientChrome"
+	                  Storyboard.TargetProperty="(Border.Background).(GradientBrush.GradientStops)[0].(GradientStop.Color)"
+	                  From="#FF102030" To="#FFE08020" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticGradientChrome"
+	                   Storyboard.TargetProperty="(Border.Background).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+	                   From="0.9" To="0.65" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticRadialChrome"
+	                  Storyboard.TargetProperty="(Border.Background).(RadialGradientBrush.GradientOrigin)"
+	                  From="0.35,0.65" To="0.45,0.55" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticRadialChrome"
+	                  Storyboard.TargetProperty="(Border.Background).(RadialGradientBrush.Center)"
+	                  From="0.45,0.55" To="0.55,0.45" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRadialChrome"
+	                   Storyboard.TargetProperty="(Border.Background).(RadialGradientBrush.RadiusX)"
+	                   From="0.75" To="1.15" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRadialChrome"
+	                   Storyboard.TargetProperty="(Border.Background).(RadialGradientBrush.RadiusY)"
+	                   From="0.65" To="1.05" Duration="0:0:0.200"/>
+	  <RectAnimation Storyboard.TargetName="StaticRectangleGeometry"
+	                 Storyboard.TargetProperty="(UIElement.Clip).(RectangleGeometry.Rect)"
+	                 From="1,2,30,40" To="5,6,50,60" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRectangleGeometry"
+	                   Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.RadiusX)"
+	                   From="3.5" To="9.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticGeometryGroup"
+	                   Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.RadiusY)"
+	                   From="4.5" To="10.5" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticGeometryGroup"
+	                  Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(EllipseGeometry.Center)"
+	                  From="20.5,30.5" To="40.5,10.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticEllipseGeometry"
+	                   Storyboard.TargetProperty="(UIElement.Clip).(EllipseGeometry.RadiusX)"
+	                   From="8.5" To="18.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticGeometryGroup"
+	                   Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[2].(EllipseGeometry.RadiusY)"
+	                   From="9.5" To="19.5" Duration="0:0:0.200"/>
+	  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="StaticPathGeometry"
+	                                 Storyboard.TargetProperty="(UIElement.Clip).(PathGeometry.FillRule)"
+	                                 Duration="0:0:0.200">
+		<DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Nonzero"/>
+		<DiscreteObjectKeyFrame KeyTime="0:0:0.200" Value="EvenOdd"/>
+	  </ObjectAnimationUsingKeyFrames>
+	  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="StaticGeometryGroup"
+	                                 Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.FillRule)"
+	                                 Duration="0:0:0.200">
+		<DiscreteObjectKeyFrame KeyTime="0:0:0" Value="EvenOdd"/>
+		<DiscreteObjectKeyFrame KeyTime="0:0:0.200" Value="Nonzero"/>
+	  </ObjectAnimationUsingKeyFrames>
+	  <PointAnimation Storyboard.TargetName="StaticPathGeometry"
+	                  Storyboard.TargetProperty="(UIElement.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)"
+	                  From="1,2" To="11,12" Duration="0:0:0.200"/>
+	  <BooleanAnimationUsingKeyFrames Storyboard.TargetName="StaticPathGeometry"
+	                                  Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.IsClosed)"
+	                                  Duration="0:0:0.200">
+		<DiscreteBooleanKeyFrame KeyTime="0:0:0" Value="false"/>
+		<DiscreteBooleanKeyFrame KeyTime="0:0:0.200" Value="true"/>
+	  </BooleanAnimationUsingKeyFrames>
+	  <BooleanAnimationUsingKeyFrames Storyboard.TargetName="StaticGeometryGroup"
+	                                  Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[3].(PathGeometry.Figures)[0].(PathFigure.IsFilled)"
+	                                  Duration="0:0:0.200">
+		<DiscreteBooleanKeyFrame KeyTime="0:0:0" Value="true"/>
+		<DiscreteBooleanKeyFrame KeyTime="0:0:0.200" Value="false"/>
+	  </BooleanAnimationUsingKeyFrames>
+	  <PointAnimation Storyboard.TargetName="StaticPathGeometry"
+	                  Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[0].(LineSegment.Point)"
+	                  From="10,12" To="30,32" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticPathGeometry"
+	                  Storyboard.TargetProperty="(UIElement.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[1].(BezierSegment.Point1)"
+	                  From="21,22" To="41,42" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticGeometryGroup"
+	                  Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[3].(PathGeometry.Figures)[0].(PathFigure.Segments)[1].(BezierSegment.Point2)"
+	                  From="23,24" To="43,44" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticPathGeometry"
+	                  Storyboard.TargetProperty="(UIElement.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[1].(BezierSegment.Point3)"
+	                  From="25,26" To="45,46" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticPathGeometry"
+	                  Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[2].(QuadraticBezierSegment.Point1)"
+	                  From="30,31" To="50,51" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticGeometryGroup"
+	                  Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[3].(PathGeometry.Figures)[0].(PathFigure.Segments)[2].(QuadraticBezierSegment.Point2)"
+	                  From="33,34" To="53,54" Duration="0:0:0.200"/>
+	  <PointAnimation Storyboard.TargetName="StaticPathGeometry"
+	                  Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.Point)"
+	                  From="40,41" To="60,61" Duration="0:0:0.200"/>
+	  <SizeAnimation Storyboard.TargetName="StaticGeometryGroup"
+	                 Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[3].(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.Size)"
+	                 From="11,12" To="21,22" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticPathGeometry"
+	                   Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.RotationAngle)"
+	                   From="25" To="85" Duration="0:0:0.200"/>
+	  <BooleanAnimationUsingKeyFrames Storyboard.TargetName="StaticGeometryGroup"
+	                                  Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[3].(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.IsLargeArc)"
+	                                  Duration="0:0:0.200">
+		<DiscreteBooleanKeyFrame KeyTime="0:0:0" Value="false"/>
+		<DiscreteBooleanKeyFrame KeyTime="0:0:0.200" Value="true"/>
+	  </BooleanAnimationUsingKeyFrames>
+	  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="StaticPathGeometry"
+	                                 Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.SweepDirection)"
+	                                 Duration="0:0:0.200">
+		<DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Counterclockwise"/>
+		<DiscreteObjectKeyFrame KeyTime="0:0:0.200" Value="Clockwise"/>
+	  </ObjectAnimationUsingKeyFrames>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformDirect"
+	                   Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
+	                   From="7.25" To="17.25" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformGroup"
+	                   Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(TranslateTransform.Y)"
+	                   From="-3.5" To="6.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformGroup"
+	                   Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)"
+	                   From="0.75" To="1.75" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformGroup"
+	                   Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.CenterX)"
+	                   From="2.5" To="12.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformGroup"
+	                   Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.CenterY)"
+	                   From="-1.5" To="8.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformGroup"
+	                   Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[2].(RotateTransform.CenterX)"
+	                   From="4.5" To="14.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticGeometryTransformRecursive"
+	                   Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(Geometry.Transform).(TransformGroup.Children)[1].(RotateTransform.CenterY)"
+	                   From="-2.5" To="7.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticBrushTransformGroup"
+	                   Storyboard.TargetProperty="(Panel.Background).(Brush.Transform).(TransformGroup.Children)[0].(SkewTransform.AngleX)"
+	                   From="12.5" To="32.5" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticBrushRelativeTransformGroup"
+	                   Storyboard.TargetProperty="(Border.Background).(Brush.RelativeTransform).(TransformGroup.Children)[1].(SkewTransform.AngleY)"
+	                   From="-7.25" To="12.75" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticRenderTransformGroup"
+	                   Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[3].(SkewTransform.CenterX)"
+	                   From="1.25" To="11.25" Duration="0:0:0.200"/>
+	  <DoubleAnimation Storyboard.TargetName="StaticGeometryTransformDirect"
+	                   Storyboard.TargetProperty="(Control.Clip).(Geometry.Transform).(SkewTransform.CenterY)"
+	                   From="-1.75" To="8.25" Duration="0:0:0.200"/>
+	  <MatrixAnimationUsingKeyFrames Storyboard.TargetName="StaticBrushTransformGroup"
+	                                 Storyboard.TargetProperty="(Panel.Background).(Brush.Transform).(TransformGroup.Children)[1].(MatrixTransform.Matrix)"
+	                                 Duration="0:0:0.200">
+		<DiscreteMatrixKeyFrame KeyTime="0:0:0" Value="1,0,0,1,5,6"/>
+		<DiscreteMatrixKeyFrame KeyTime="0:0:0.200" Value="1.5,0.1,0.2,1.75,15,26"/>
+	  </MatrixAnimationUsingKeyFrames>
+    </Storyboard>
+    <Storyboard x:Key="StaticAuthorDefaultedStoryboard"
+                BeginTime="0:0:0.005" Duration="0:0:0.100"
+                SpeedRatio="1.25">
+      <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+                       Storyboard.TargetProperty="(Canvas.Top)"
+                       To="4" Duration="0:0:0.080"/>
+    </Storyboard>
+    <Storyboard x:Key="StaticAuthorDefaultedTransitionStoryboard">
+      <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+                       Storyboard.TargetProperty="(Canvas.Left)"
+                       From="0" To="6" Duration="0:0:0.120"/>
+    </Storyboard>
     <ControlTemplate x:Key="StaticAuthorButtonTemplate"
                      TargetType="Button">
       <Border x:Name="StaticAuthorChrome"
               Background="{StaticResource StaticTemplateAccent}"
               BorderThickness="2"
               Padding="{TemplateBinding Padding}">
+		<Control.Clip>
+		  <RectangleGeometry Rect="0,0,1,1">
+			<Geometry.Transform>
+			  <TranslateTransform X="0.05" Y="-0.1"/>
+			</Geometry.Transform>
+		  </RectangleGeometry>
+		</Control.Clip>
+		<Control.BorderBrush>
+		  <SolidColorBrush Color="#FF224466">
+			<Brush.Transform>
+			  <RotateTransform Angle="5" CenterX="0.5" CenterY="0.5"/>
+			</Brush.Transform>
+		  </SolidColorBrush>
+		</Control.BorderBrush>
         <Border.Triggers>
           <EventTrigger RoutedEvent="Click">
-            <BeginStoryboard x:Name="StaticAuthorClickClock">
-              <Storyboard>
-                <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
-                                 Storyboard.TargetProperty="(Canvas.Left)"
-                                 From="0" To="30"
-                                 Duration="0:0:0.200"
-                                 AutoReverse="True"/>
-              </Storyboard>
-            </BeginStoryboard>
+            <BeginStoryboard x:Name="StaticAuthorClickClock"
+                             Storyboard="{StaticResource StaticAuthorClickStoryboard}"/>
           </EventTrigger>
         </Border.Triggers>
         <VisualStateManager.VisualStateGroups>
           <VisualStateGroup x:Name="AuthorCommonStates">
             <VisualStateGroup.Transitions>
               <VisualTransition From="Normal" To="Defaulted"
-                                GeneratedDuration="0:0:0.120">
+                                GeneratedDuration="0:0:0.120"
+                                Storyboard="{StaticResource StaticAuthorDefaultedTransitionStoryboard}">
                 <VisualTransition.GeneratedEasingFunction>
                   <QuadraticEase EasingMode="EaseInOut"/>
                 </VisualTransition.GeneratedEasingFunction>
               </VisualTransition>
             </VisualStateGroup.Transitions>
-            <VisualState x:Name="Defaulted">
+            <VisualState x:Name="Defaulted"
+                         Storyboard="{StaticResource StaticAuthorDefaultedStoryboard}">
               <VisualState.StateTriggers>
                 <StateTrigger Property="IsDefault" Value="true"/>
               </VisualState.StateTriggers>
@@ -46,13 +258,6 @@
                 <Setter TargetName="StaticAuthorChrome"
                         Property="Background" Value="#FFEAF2FF"/>
               </VisualState.Setters>
-              <VisualState.Storyboard>
-                <Storyboard>
-                  <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
-                                   Storyboard.TargetProperty="(Canvas.Top)"
-                                   To="4" Duration="0:0:0.080"/>
-                </Storyboard>
-              </VisualState.Storyboard>
             </VisualState>
             <VisualState x:Name="Normal">
               <VisualState.Setters>
@@ -67,6 +272,148 @@
                             ContentSource="Content"/>
           <Button x:Name="StaticNestedButton"
                   Content="nested Generic.xaml host"/>
+		  <Border x:Name="StaticGradientChrome" Width="32" Height="8">
+			<Control.Background>
+			  <LinearGradientBrush StartPoint="0.1,0.2" EndPoint="0.9,0.8"
+			                       ColorInterpolationMode="ScRgbLinearInterpolation">
+				<GradientStop Color="#FF102030" Offset="0.1"/>
+				<GradientStop Color="#FFC0D0E0" Offset="0.9"/>
+			  </LinearGradientBrush>
+			</Control.Background>
+		  </Border>
+		  <Border x:Name="StaticRadialChrome" Width="32" Height="8">
+			<Control.Background>
+			  <RadialGradientBrush Center="0.45,0.55"
+			                       GradientOrigin="0.35,0.65"
+			                       RadiusX="0.75" RadiusY="0.65">
+				<GradientStop Color="#FF204060" Offset="0.1"/>
+				<GradientStop Color="#FFB07030" Offset="0.9"/>
+			  </RadialGradientBrush>
+			</Control.Background>
+		  </Border>
+		  <Border x:Name="StaticRectangleGeometry" Width="32" Height="8">
+			<Control.Clip>
+			  <RectangleGeometry Rect="1,2,30,40" RadiusX="3.5" RadiusY="4.5"/>
+			</Control.Clip>
+		  </Border>
+		  <Border x:Name="StaticEllipseGeometry" Width="32" Height="8">
+			<Control.Clip>
+			  <EllipseGeometry Center="20.5,30.5" RadiusX="8.5" RadiusY="9.5"/>
+			</Control.Clip>
+		  </Border>
+		  <Border x:Name="StaticPathGeometry" Width="32" Height="8">
+			<Control.Clip>
+			  <PathGeometry FillRule="Nonzero">
+				<PathFigure StartPoint="1,2" IsClosed="false" IsFilled="true">
+				  <LineSegment Point="10,12"/>
+				  <BezierSegment Point1="21,22" Point2="23,24" Point3="25,26"/>
+				  <QuadraticBezierSegment Point1="30,31" Point2="33,34"/>
+				  <ArcSegment Point="40,41" Size="11,12" RotationAngle="25"
+				              IsLargeArc="false" SweepDirection="Counterclockwise"/>
+				</PathFigure>
+			  </PathGeometry>
+			</Control.Clip>
+		  </Border>
+		  <Border x:Name="StaticGeometryGroup" Width="32" Height="8">
+			<Control.Clip>
+			  <GeometryGroup FillRule="EvenOdd">
+				<GeometryGroup.Children>
+				  <RectangleGeometry Rect="1,2,30,40" RadiusX="3.5" RadiusY="4.5"/>
+				  <GeometryGroup>
+					<GeometryGroup.Children>
+					  <EllipseGeometry Center="20.5,30.5" RadiusX="8.5" RadiusY="9.5"/>
+					</GeometryGroup.Children>
+				  </GeometryGroup>
+				  <EllipseGeometry Center="20.5,30.5" RadiusX="8.5" RadiusY="9.5"/>
+				  <PathGeometry FillRule="Nonzero">
+					<PathFigure StartPoint="1,2" IsClosed="false" IsFilled="true">
+					  <LineSegment Point="10,12"/>
+					  <BezierSegment Point1="21,22" Point2="23,24" Point3="25,26"/>
+					  <QuadraticBezierSegment Point1="30,31" Point2="33,34"/>
+					  <ArcSegment Point="40,41" Size="11,12" RotationAngle="25"
+					              IsLargeArc="false" SweepDirection="Counterclockwise"/>
+					</PathFigure>
+				  </PathGeometry>
+				</GeometryGroup.Children>
+			  </GeometryGroup>
+			</Control.Clip>
+		  </Border>
+		  <Border x:Name="StaticRenderTransformDirect" Width="32" Height="8">
+			<Control.RenderTransform>
+			  <TranslateTransform X="7.25" Y="-3.25"/>
+			</Control.RenderTransform>
+		  </Border>
+		  <Border x:Name="StaticRenderTransformGroup" Width="32" Height="8">
+			<Control.RenderTransform>
+			  <TransformGroup>
+				<TranslateTransform X="2.25" Y="-3.5"/>
+				<ScaleTransform ScaleX="1.25" ScaleY="0.75"
+				                CenterX="2.5" CenterY="-1.5"/>
+				<RotateTransform Angle="17.5" CenterX="4.5" CenterY="-0.75"/>
+				<SkewTransform AngleX="12.5" AngleY="-7.25"
+				               CenterX="1.25" CenterY="-0.25"/>
+			  </TransformGroup>
+			</Control.RenderTransform>
+		  </Border>
+		  <Border x:Name="StaticGeometryTransformRecursive" Width="32" Height="8">
+			<Control.Clip>
+			  <GeometryGroup>
+				<GeometryGroup.Children>
+				  <RectangleGeometry Rect="0,0,3,4"/>
+				  <GeometryGroup>
+					<GeometryGroup.Children>
+					  <RectangleGeometry Rect="0,0,100,60">
+						<Geometry.Transform>
+						  <TransformGroup>
+							<TranslateTransform X="100" Y="-100"/>
+							<RotateTransform Angle="17.5" CenterX="0.5" CenterY="-2.5"/>
+						  </TransformGroup>
+						</Geometry.Transform>
+					  </RectangleGeometry>
+					</GeometryGroup.Children>
+				  </GeometryGroup>
+				</GeometryGroup.Children>
+			  </GeometryGroup>
+			</Control.Clip>
+		  </Border>
+		  <Border x:Name="StaticGeometryTransformDirect" Width="32" Height="8">
+			<Control.Clip>
+			  <RectangleGeometry Rect="0,0,100,60">
+				<Geometry.Transform>
+				  <SkewTransform AngleX="12.5" AngleY="-7.25"
+				                 CenterX="0.5" CenterY="-1.75"/>
+				</Geometry.Transform>
+			  </RectangleGeometry>
+			</Control.Clip>
+		  </Border>
+		  <Canvas x:Name="StaticBrushTransformGroup" Width="32" Height="8">
+			<Control.Background>
+			  <SolidColorBrush Color="#FF336699">
+				<Brush.Transform>
+				  <TransformGroup>
+					<SkewTransform AngleX="12.5" AngleY="-7.25"
+					               CenterX="0.5" CenterY="-0.25"/>
+					<MatrixTransform Matrix="1,0,0,1,5,6"/>
+				  </TransformGroup>
+				</Brush.Transform>
+			  </SolidColorBrush>
+			</Control.Background>
+		  </Canvas>
+		  <Border x:Name="StaticBrushRelativeTransformGroup" Width="32" Height="8">
+			<Control.Background>
+			  <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+				<Brush.RelativeTransform>
+				  <TransformGroup>
+					<TranslateTransform X="100" Y="-100"/>
+					<SkewTransform AngleX="12.5" AngleY="-7.25"
+					               CenterX="0.5" CenterY="-0.25"/>
+				  </TransformGroup>
+				</Brush.RelativeTransform>
+				<GradientStop Color="#FF102030" Offset="0"/>
+				<GradientStop Color="#FFD0E0F0" Offset="1"/>
+			  </LinearGradientBrush>
+			</Control.Background>
+		  </Border>
         </StackPanel>
       </Border>
     </ControlTemplate>
@@ -79,6 +426,11 @@
                           ContentSource="Content"/>
       </Border>
     </ControlTemplate>
+    <Storyboard x:Key="StaticStyleDefaultStoryboard">
+      <DoubleAnimation Storyboard.TargetProperty="FontSize"
+                       From="14" To="18"
+                       Duration="0:0:0.100"/>
+    </Storyboard>
     <Style x:Key="StaticAuthorButtonStyle" TargetType="Button">
       <Setter Property="Template"
               Value="{StaticResource StaticAuthorButtonTemplate}"/>
@@ -86,13 +438,8 @@
       <Style.Triggers>
         <Trigger Property="IsDefault" Value="true">
           <Trigger.EnterActions>
-            <BeginStoryboard x:Name="StaticStyleDefaultClock">
-              <Storyboard>
-                <DoubleAnimation Storyboard.TargetProperty="FontSize"
-                                 From="14" To="18"
-                                 Duration="0:0:0.100"/>
-              </Storyboard>
-            </BeginStoryboard>
+            <BeginStoryboard x:Name="StaticStyleDefaultClock"
+                             Storyboard="{StaticResource StaticStyleDefaultStoryboard}"/>
           </Trigger.EnterActions>
           <Trigger.ExitActions>
             <StopStoryboard BeginStoryboardName="StaticStyleDefaultClock"/>

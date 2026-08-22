@@ -80,6 +80,8 @@ public:
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
+	bool HasRetainedNativeAnimation() override
+	{ return HasRetainedCaretBlinkAnimation(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 protected:
 	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };

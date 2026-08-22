@@ -338,7 +338,7 @@ struct CompiledStyleResourceOp
 };
 
 /** Private generated-code contract version; not a stable plugin ABI. */
-inline constexpr uint32_t CompiledStyleProgramViewVersion = 5;
+inline constexpr uint32_t CompiledStyleProgramViewVersion = 18;
 
 /**
  * Non-owning process-lifetime layout emitted by the AOT compiler. Generated
@@ -363,7 +363,9 @@ struct CompiledStyleProgramView
 	std::span<const uint32_t> ObjectPathChildIndices;
 	std::span<const CompiledStoryboardObjectPathOp> ObjectPaths;
 	std::span<const CompiledInteractionKeyFrameOp> KeyFrames;
+	std::span<const DeclarativePathAnimationSegment> PathSegments;
 	std::span<const CompiledInteractionAnimationOp> Animations;
+	std::span<const CompiledInteractionTimelineGroupOp> TimelineGroups;
 	std::span<const CompiledInteractionStoryboardOp> Storyboards;
 	std::span<const CompiledInteractionActionOp> Actions;
 	/** Source-ordered rules. Groups are consecutive selector-identity runs. */

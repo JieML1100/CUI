@@ -5,6 +5,7 @@
 #include "StyleInfrastructure.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -265,7 +266,7 @@ namespace
 	bool ValidCompiledAnimationKind(DeclarativeAnimationKind value) noexcept
 	{
 		return static_cast<uint8_t>(value)
-			<= static_cast<uint8_t>(DeclarativeAnimationKind::Object);
+			<= static_cast<uint8_t>(DeclarativeAnimationKind::Single);
 	}
 
 	bool ValidCompiledKeyFrameKind(DeclarativeKeyFrameKind value) noexcept
@@ -277,7 +278,25 @@ namespace
 	bool ValidCompiledEasingKind(DeclarativeEasingKind value) noexcept
 	{
 		return static_cast<uint8_t>(value)
-			<= static_cast<uint8_t>(DeclarativeEasingKind::Sine);
+			<= static_cast<uint8_t>(DeclarativeEasingKind::Quintic);
+	}
+
+	bool ValidCompiledEasingParameters(
+		DeclarativeEasingKind kind,
+		DeclarativeEasingParameters parameters) noexcept
+	{
+		if (!std::isfinite(parameters.Primary)
+			|| !std::isfinite(parameters.Secondary)) return false;
+		if (kind == DeclarativeEasingKind::Bounce
+			|| kind == DeclarativeEasingKind::Elastic)
+			return std::trunc(parameters.Secondary) == parameters.Secondary
+				&& parameters.Secondary >= static_cast<double>((std::numeric_limits<int>::min)())
+				&& parameters.Secondary <= static_cast<double>((std::numeric_limits<int>::max)());
+		if (kind == DeclarativeEasingKind::Back
+			|| kind == DeclarativeEasingKind::Exponential
+			|| kind == DeclarativeEasingKind::Power)
+			return parameters.Secondary == 0.0;
+		return parameters.Primary == 0.0 && parameters.Secondary == 0.0;
 	}
 
 	bool ValidCompiledEasingMode(DeclarativeEasingMode value) noexcept
@@ -290,7 +309,32 @@ namespace
 		DeclarativeStoryboardActionKind value) noexcept
 	{
 		return static_cast<uint8_t>(value)
-			<= static_cast<uint8_t>(DeclarativeStoryboardActionKind::Stop);
+			<= static_cast<uint8_t>(
+				DeclarativeStoryboardActionKind::SkipToFill);
+	}
+
+	bool ValidCompiledStoryboardTiming(
+		const DeclarativeStoryboardTimingDefinition& timing) noexcept
+	{
+		if (static_cast<uint8_t>(timing.RepeatBehavior)
+			> static_cast<uint8_t>(DeclarativeRepeatBehaviorKind::Forever)
+			|| static_cast<uint8_t>(timing.FillBehavior)
+				> static_cast<uint8_t>(DeclarativeTimelineFillBehavior::Stop)
+			|| !std::isfinite(timing.SpeedRatio) || timing.SpeedRatio <= 0.0
+			|| !std::isfinite(timing.AccelerationRatio)
+			|| timing.AccelerationRatio < 0.0
+			|| timing.AccelerationRatio > 1.0
+			|| !std::isfinite(timing.DecelerationRatio)
+			|| timing.DecelerationRatio < 0.0
+			|| timing.DecelerationRatio > 1.0
+			|| timing.AccelerationRatio + timing.DecelerationRatio > 1.0)
+			return false;
+		if (timing.RepeatBehavior == DeclarativeRepeatBehaviorKind::Count)
+			return std::isfinite(timing.RepeatCount)
+				&& timing.RepeatCount > 0.0;
+		if (timing.RepeatBehavior == DeclarativeRepeatBehaviorKind::Duration)
+			return timing.RepeatDurationMilliseconds > 0;
+		return true;
 	}
 
 	bool ValidCompiledObjectPath(
@@ -301,7 +345,11 @@ namespace
 			static_cast<uint8_t>(
 				CompiledStoryboardObjectPathFlags::RelativeTransform)
 			| static_cast<uint8_t>(
-				CompiledStoryboardObjectPathFlags::HasPathSegment);
+				CompiledStoryboardObjectPathFlags::HasPathSegment)
+			| static_cast<uint8_t>(
+				CompiledStoryboardObjectPathFlags::DirectTransform);
+		const bool direct = HasCompiledStoryboardObjectPathFlag(
+			path.Flags, CompiledStoryboardObjectPathFlags::DirectTransform);
 		return static_cast<uint8_t>(path.Kind)
 				<= static_cast<uint8_t>(
 					CompiledStoryboardObjectPathKind::BrushTransform)
@@ -311,6 +359,12 @@ namespace
 			&& (static_cast<uint8_t>(path.Flags) & ~knownFlags) == 0
 			&& path.Reserved == 0
 			&& path.Identity != 0
+			&& (!direct || (path.Index0 == 0
+				&& (path.Kind == CompiledStoryboardObjectPathKind::Transform
+					|| path.Kind
+						== CompiledStoryboardObjectPathKind::GeometryTransform
+					|| path.Kind
+						== CompiledStoryboardObjectPathKind::BrushTransform)))
 			&& ValidCompiledInteractionRange(
 				path.ChildIndices, program.ObjectPathChildIndices.size());
 	}
@@ -333,7 +387,9 @@ namespace
 			&& ValidCompiledSpan(program.ObjectPathChildIndices)
 			&& ValidCompiledSpan(program.ObjectPaths)
 			&& ValidCompiledSpan(program.KeyFrames)
+			&& ValidCompiledSpan(program.PathSegments)
 			&& ValidCompiledSpan(program.Animations)
+			&& ValidCompiledSpan(program.TimelineGroups)
 			&& ValidCompiledSpan(program.Storyboards)
 			&& ValidCompiledSpan(program.Actions)
 			&& ValidCompiledSpan(program.Rules)
@@ -403,7 +459,9 @@ namespace
 				|| !program.ObjectPathChildIndices.empty()
 				|| !program.ObjectPaths.empty()
 				|| !program.KeyFrames.empty()
+				|| !program.PathSegments.empty()
 				|| !program.Animations.empty()
+				|| !program.TimelineGroups.empty()
 				|| !program.Storyboards.empty()
 				|| !program.Actions.empty())) return false;
 		if (usesFlatActions)
@@ -419,6 +477,8 @@ namespace
 				if (!ValidCompiledKeyFrameKind(keyFrame.Kind)
 					|| !ValidCompiledEasingKind(keyFrame.Easing)
 					|| !ValidCompiledEasingMode(keyFrame.EasingMode)
+					|| !ValidCompiledEasingParameters(
+						keyFrame.Easing, keyFrame.EasingParameters)
 					|| keyFrame.ValueIndex >= values.size()) return false;
 				if (keyFrame.Kind == DeclarativeKeyFrameKind::Spline
 					&& (!std::isfinite(keyFrame.KeySplineX1)
@@ -436,6 +496,18 @@ namespace
 			}
 			std::vector<uint32_t> keyFrameOwners(
 				program.KeyFrames.size(), CompiledStyleInvalidIndex);
+			std::vector<uint32_t> pathSegmentOwners(
+				program.PathSegments.size(), CompiledStyleInvalidIndex);
+			for (const auto& segment : program.PathSegments)
+				if (static_cast<uint8_t>(segment.Kind)
+						> static_cast<uint8_t>(
+							DeclarativePathSegmentKind::CubicBezier)
+					|| !std::isfinite(segment.Point1.x)
+					|| !std::isfinite(segment.Point1.y)
+					|| !std::isfinite(segment.Point2.x)
+					|| !std::isfinite(segment.Point2.y)
+					|| !std::isfinite(segment.Point3.x)
+					|| !std::isfinite(segment.Point3.y)) return false;
 			for (size_t animationIndex = 0;
 				animationIndex < program.Animations.size(); ++animationIndex)
 			{
@@ -448,6 +520,8 @@ namespace
 				if (!ValidCompiledAnimationKind(animation.Kind)
 					|| !ValidCompiledEasingKind(animation.Easing)
 					|| !ValidCompiledEasingMode(animation.EasingMode)
+					|| !ValidCompiledEasingParameters(
+						animation.Easing, animation.EasingParameters)
 					|| animation.OperandIndex >= program.PropertyOperands.size()
 					|| (animation.ObjectPathIndex
 						!= CompiledInteractionInvalidIndex
@@ -457,6 +531,8 @@ namespace
 					|| !validOptionalValue(animation.ByValueIndex)
 					|| !ValidCompiledInteractionRange(
 						animation.KeyFrames, program.KeyFrames.size())
+					|| !ValidCompiledInteractionRange(
+						animation.PathSegments, program.PathSegments.size())
 					|| static_cast<uint8_t>(animation.RepeatBehavior)
 						> static_cast<uint8_t>(
 							DeclarativeRepeatBehaviorKind::Forever)
@@ -481,6 +557,43 @@ namespace
 						== DeclarativeRepeatBehaviorKind::Duration
 					&& animation.RepeatDurationMilliseconds == 0) return false;
 				const bool hasKeyFrames = animation.KeyFrames.Count != 0;
+				const bool hasPath = animation.Path.Enabled;
+				if (hasPath != (animation.PathSegments.Count != 0)
+					|| !std::isfinite(animation.Path.Start.x)
+					|| !std::isfinite(animation.Path.Start.y)
+					|| static_cast<uint8_t>(animation.Path.Source)
+						> static_cast<uint8_t>(DeclarativePathAnimationSource::Angle))
+					return false;
+				if (hasPath)
+				{
+					bool hasAcceptedSegment = false;
+					bool movePending = false;
+					for (uint32_t offset = 0;
+						offset < animation.PathSegments.Count; ++offset)
+					{
+						const auto& segment = program.PathSegments[
+							animation.PathSegments.Offset + offset];
+						if (segment.Kind == DeclarativePathSegmentKind::Move)
+						{
+							if (!hasAcceptedSegment || movePending) return false;
+							movePending = true;
+						}
+						else
+						{
+							hasAcceptedSegment = true;
+							movePending = false;
+						}
+					}
+					if (movePending) return false;
+				}
+				for (uint32_t offset = 0;
+					offset < animation.PathSegments.Count; ++offset)
+				{
+					auto& owner = pathSegmentOwners[
+						animation.PathSegments.Offset + offset];
+					if (owner != CompiledStyleInvalidIndex) return false;
+					owner = static_cast<uint32_t>(animationIndex);
+				}
 				for (uint32_t offset = 0;
 					offset < animation.KeyFrames.Count; ++offset)
 				{
@@ -510,34 +623,83 @@ namespace
 			if (std::any_of(keyFrameOwners.begin(), keyFrameOwners.end(),
 				[](uint32_t owner)
 				{ return owner == CompiledStyleInvalidIndex; })) return false;
+			if (std::any_of(pathSegmentOwners.begin(), pathSegmentOwners.end(),
+				[](uint32_t owner)
+				{ return owner == CompiledStyleInvalidIndex; })) return false;
 			std::vector<uint32_t> animationOwners(
 				program.Animations.size(), CompiledStyleInvalidIndex);
+			std::vector<uint32_t> timelineGroupOwners(
+				program.TimelineGroups.size(), CompiledStyleInvalidIndex);
 			for (size_t storyboardIndex = 0;
 				storyboardIndex < program.Storyboards.size(); ++storyboardIndex)
 			{
 				const auto& storyboard = program.Storyboards[storyboardIndex];
 				if (!ValidCompiledInteractionRange(
 						storyboard.Animations, program.Animations.size())
-					|| storyboard.Animations.Count == 0) return false;
-				for (uint32_t leftOffset = 0;
-					leftOffset < storyboard.Animations.Count; ++leftOffset)
+					|| !ValidCompiledInteractionRange(
+						storyboard.TimelineGroups,
+						program.TimelineGroups.size())
+					|| (storyboard.Animations.Count == 0
+						&& storyboard.TimelineGroups.Count == 0)
+					|| !ValidCompiledStoryboardTiming(storyboard.Timing))
+					return false;
+				std::vector<uint32_t> storyboardAnimations;
+				auto claimAnimation = [&](uint32_t animationIndex)
 				{
-					auto& animationOwner = animationOwners[
-						storyboard.Animations.Offset + leftOffset];
+					if (animationIndex >= animationOwners.size()) return false;
+					auto& animationOwner = animationOwners[animationIndex];
 					if (animationOwner != CompiledStyleInvalidIndex) return false;
 					animationOwner = static_cast<uint32_t>(storyboardIndex);
+					storyboardAnimations.push_back(animationIndex);
+					return true;
+				};
+				for (uint32_t offset = 0;
+					offset < storyboard.Animations.Count; ++offset)
+					if (!claimAnimation(storyboard.Animations.Offset + offset))
+						return false;
+				std::function<bool(CompiledInteractionRange)> claimGroups;
+				claimGroups = [&](CompiledInteractionRange range)
+				{
+					if (!ValidCompiledInteractionRange(
+						range, program.TimelineGroups.size())) return false;
+					for (uint32_t offset = 0; offset < range.Count; ++offset)
+					{
+						const auto groupIndex = range.Offset + offset;
+						auto& groupOwner = timelineGroupOwners[groupIndex];
+						if (groupOwner != CompiledStyleInvalidIndex) return false;
+						groupOwner = static_cast<uint32_t>(storyboardIndex);
+						const auto& group = program.TimelineGroups[groupIndex];
+						if (!ValidCompiledInteractionRange(
+								group.Animations, program.Animations.size())
+							|| !ValidCompiledInteractionRange(group.Children,
+								program.TimelineGroups.size())
+							|| !ValidCompiledStoryboardTiming(group.Timing))
+							return false;
+						for (uint32_t animationOffset = 0;
+							animationOffset < group.Animations.Count;
+							++animationOffset)
+							if (!claimAnimation(group.Animations.Offset
+								+ animationOffset)) return false;
+						if (!claimGroups(group.Children)) return false;
+					}
+					return true;
+				};
+				if (!claimGroups(storyboard.TimelineGroups)) return false;
+				for (size_t leftOffset = 0;
+					leftOffset < storyboardAnimations.size(); ++leftOffset)
+				{
 					const auto& left = program.Animations[
-						storyboard.Animations.Offset + leftOffset];
+						storyboardAnimations[leftOffset]];
 					const auto& leftOperand =
 						program.PropertyOperands[left.OperandIndex];
 					const uint64_t leftPath = left.ObjectPathIndex
 						== CompiledInteractionInvalidIndex ? 0
 						: program.ObjectPaths[left.ObjectPathIndex].Identity;
-					for (uint32_t rightOffset = 0;
+					for (size_t rightOffset = 0;
 						rightOffset < leftOffset; ++rightOffset)
 					{
 						const auto& right = program.Animations[
-							storyboard.Animations.Offset + rightOffset];
+							storyboardAnimations[rightOffset]];
 						const auto& rightOperand =
 							program.PropertyOperands[right.OperandIndex];
 						if (leftOperand.Property.Identity()
@@ -552,11 +714,51 @@ namespace
 			}
 			if (std::any_of(animationOwners.begin(), animationOwners.end(),
 				[](uint32_t owner)
-				{ return owner == CompiledStyleInvalidIndex; })) return false;
+					{ return owner == CompiledStyleInvalidIndex; })) return false;
+			if (std::any_of(timelineGroupOwners.begin(),
+				timelineGroupOwners.end(), [](uint32_t owner)
+					{ return owner == CompiledStyleInvalidIndex; })) return false;
 			for (const auto& action : program.Actions)
 				if (!ValidCompiledActionKind(action.Kind)
 					|| action.StoryboardIndex >= program.Storyboards.size())
 					return false;
+			for (const auto& action : program.Actions)
+				if (action.Kind == DeclarativeStoryboardActionKind::SkipToFill)
+				{
+					const auto& storyboard = program.Storyboards[
+						action.StoryboardIndex];
+					if (storyboard.Timing.RepeatBehavior
+						== DeclarativeRepeatBehaviorKind::Forever)
+						return false;
+					const auto range = storyboard.Animations;
+					for (uint32_t offset = 0; offset < range.Count; ++offset)
+						if (program.Animations[range.Offset + offset].RepeatBehavior
+							== DeclarativeRepeatBehaviorKind::Forever)
+							return false;
+					std::function<bool(CompiledInteractionRange)> groupForever;
+					groupForever = [&](CompiledInteractionRange groups)
+					{
+						for (uint32_t groupOffset = 0;
+							groupOffset < groups.Count; ++groupOffset)
+						{
+							const auto& group = program.TimelineGroups[
+								groups.Offset + groupOffset];
+							if (group.Timing.RepeatBehavior
+								== DeclarativeRepeatBehaviorKind::Forever)
+								return true;
+							for (uint32_t animationOffset = 0;
+								animationOffset < group.Animations.Count;
+								++animationOffset)
+								if (program.Animations[group.Animations.Offset
+									+ animationOffset].RepeatBehavior
+									== DeclarativeRepeatBehaviorKind::Forever)
+									return true;
+							if (groupForever(group.Children)) return true;
+						}
+						return false;
+					};
+					if (groupForever(storyboard.TimelineGroups)) return false;
+				}
 		}
 
 		std::vector<uint32_t> actionOwners(

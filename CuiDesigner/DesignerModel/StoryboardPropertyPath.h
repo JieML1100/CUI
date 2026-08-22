@@ -590,8 +590,9 @@ inline bool TryResolvePathGeometryAnimationPath(
 		if (StoryboardPathEquals(property, L"IsClosed")
 			|| StoryboardPathEquals(property, L"IsFilled"))
 		{
-			if (animationKind != DesignerAnimationKind::Object)
-				return fail(L"PathFigure 布尔成员只接受 ObjectAnimationUsingKeyFrames。");
+			if (animationKind != DesignerAnimationKind::Object
+				&& animationKind != DesignerAnimationKind::Boolean)
+				return fail(L"PathFigure 布尔成员只接受 ObjectAnimationUsingKeyFrames 或 BooleanAnimationUsingKeyFrames。");
 			const bool closed = StoryboardPathEquals(property, L"IsClosed");
 			const char* key = closed ? "closed" : "filled";
 			if (!figure.contains(key) || !figure[key].is_boolean())
@@ -681,8 +682,9 @@ inline bool TryResolvePathGeometryAnimationPath(
 		}
 		if (StoryboardPathEquals(property, L"IsLargeArc"))
 		{
-			if (animationKind != DesignerAnimationKind::Object)
-				return fail(L"ArcSegment.IsLargeArc 只接受 ObjectAnimationUsingKeyFrames。");
+			if (animationKind != DesignerAnimationKind::Object
+				&& animationKind != DesignerAnimationKind::Boolean)
+				return fail(L"ArcSegment.IsLargeArc 只接受 ObjectAnimationUsingKeyFrames 或 BooleanAnimationUsingKeyFrames。");
 			if (!segment.contains("large") || !segment["large"].is_boolean())
 				return fail(L"动画目标的 ArcSegment.IsLargeArc 无效。");
 			return assign(StoryboardObjectPathKind::PathGeometryBool,
@@ -730,26 +732,31 @@ inline bool TryResolveGeometryTransformAnimationPath(
 		return false;
 	const auto geometryOwner = StoryboardPathLocalType(
 		path.Segments[leafStart].OwnerType);
-	if (path.Segments.size() != leafStart + 4
+	const bool direct = path.Segments.size() == leafStart + 2
+		&& path.Segments[leafStart + 1].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property;
+	const bool grouped = path.Segments.size() == leafStart + 4
+		&& path.Segments[leafStart + 1].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& path.Segments[leafStart + 2].Kind
+			== cui::xaml::PropertyPathSegmentKind::Index
+		&& path.Segments[leafStart + 3].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& StoryboardPathEquals(
+			StoryboardPathLocalType(path.Segments[leafStart + 1].OwnerType),
+			L"TransformGroup")
+		&& StoryboardPathEquals(path.Segments[leafStart + 1].Name, L"Children");
+	if ((!direct && !grouped)
 		|| path.Segments[leafStart].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[leafStart + 1].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[leafStart + 2].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Index
-		|| path.Segments[leafStart + 3].Kind
 			!= cui::xaml::PropertyPathSegmentKind::Property
 		|| (!StoryboardPathEquals(geometryOwner, L"Geometry")
 			&& !StoryboardPathEquals(geometryOwner, L"RectangleGeometry")
 			&& !StoryboardPathEquals(geometryOwner, L"EllipseGeometry")
 			&& !StoryboardPathEquals(geometryOwner, L"PathGeometry")
 			&& !StoryboardPathEquals(geometryOwner, L"GeometryGroup"))
-		|| !StoryboardPathEquals(path.Segments[leafStart].Name, L"Transform")
-		|| !StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[leafStart + 1].OwnerType),
-			L"TransformGroup")
-		|| !StoryboardPathEquals(path.Segments[leafStart + 1].Name, L"Children"))
+		|| !StoryboardPathEquals(path.Segments[leafStart].Name, L"Transform"))
 		return fail(L"Geometry Transform 动画路径必须是 "
+			L"(Control.Clip)...(Geometry.Transform).(TransformType.Property) 或 "
 			L"(Control.Clip)...(Geometry.Transform)."
 			L"(TransformGroup.Children)[n].(TransformType.Property)。");
 	const auto& geometry = *resolvedGeometry;
@@ -767,12 +774,16 @@ inline bool TryResolveGeometryTransformAnimationPath(
 		return fail(L"Geometry.Transform 路径所有者与实际 Geometry 类型不匹配。");
 	if (!geometry.contains("transform") || !geometry["transform"].is_array())
 		return fail(L"动画目标没有路径所需的 Geometry.Transform。");
+	if (direct && geometry["transform"].size() != 1)
+		return fail(L"直接 Geometry.Transform 动画路径要求单一 Transform 操作。");
 
 	ResolvedTransformAnimationPath leaf;
 	if (!TryResolveTransformOperationLeaf(
-		geometry["transform"], path.Segments[leafStart + 2].Index,
-		StoryboardPathLocalType(path.Segments[leafStart + 3].OwnerType),
-		path.Segments[leafStart + 3].Name, leaf, outError)) return false;
+		geometry["transform"], direct ? 0 : path.Segments[leafStart + 2].Index,
+		StoryboardPathLocalType(path.Segments[direct
+			? leafStart + 1 : leafStart + 3].OwnerType),
+		path.Segments[direct ? leafStart + 1 : leafStart + 3].Name,
+		leaf, outError)) return false;
 	const bool matrix = StoryboardPathEquals(leaf.TransformType, L"MatrixTransform")
 		&& StoryboardPathEquals(leaf.PropertyName, L"Matrix");
 	if (animationKind != (matrix ? DesignerAnimationKind::Matrix
@@ -788,8 +799,9 @@ inline bool TryResolveGeometryTransformAnimationPath(
 	output.ObjectType = std::move(leaf.TransformType);
 	output.LeafProperty = std::move(leaf.PropertyName);
 	output.CanonicalPath = canonicalPrefix + L".(Geometry.Transform)."
-		L"(TransformGroup.Children)[" + std::to_wstring(output.OperationIndex)
-		+ L"].(" + output.ObjectType + L"." + output.LeafProperty + L")";
+		+ (direct ? std::wstring{} : L"(TransformGroup.Children)["
+			+ std::to_wstring(output.OperationIndex) + L"].")
+		+ L"(" + output.ObjectType + L"." + output.LeafProperty + L")";
 	if (outError) outError->clear();
 	return true;
 }
@@ -808,12 +820,18 @@ inline bool TryGetBrushAnimationRoot(
 {
 	if (path.Segments.size() < 2
 		|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| (!StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
-			&& !StoryboardPathEquals(
-				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement")))
+		|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property)
 		return false;
+	rootProperty = path.Segments[0].Name;
+	const auto rootOwner = StoryboardPathLocalType(path.Segments[0].OwnerType);
+	const bool knownRootOwner = StoryboardPathEquals(rootOwner, L"Control")
+		|| StoryboardPathEquals(rootOwner, L"UIElement")
+		|| (StoryboardPathEquals(rootProperty, L"Background")
+			&& (StoryboardPathEquals(rootOwner, L"Panel")
+				|| StoryboardPathEquals(rootOwner, L"Border")))
+		|| (StoryboardPathEquals(rootProperty, L"BorderBrush")
+			&& StoryboardPathEquals(rootOwner, L"Border"));
+	if (!knownRootOwner) return false;
 	const auto owner = StoryboardPathLocalType(path.Segments[1].OwnerType);
 	if (!StoryboardPathEquals(owner, L"Brush")
 		&& !StoryboardPathEquals(owner, L"SolidColorBrush")
@@ -822,7 +840,6 @@ inline bool TryGetBrushAnimationRoot(
 		&& !StoryboardPathEquals(owner, L"RadialGradientBrush")
 		&& !StoryboardPathEquals(owner, L"ImageBrush"))
 		return false;
-	rootProperty = path.Segments[0].Name;
 	return !rootProperty.empty();
 }
 
@@ -1119,12 +1136,22 @@ inline bool TryResolveBrushTransformAnimationPath(
 	std::wstring rootProperty;
 	const auto brushOwner = path.Segments.size() > 1
 		? StoryboardPathLocalType(path.Segments[1].OwnerType) : std::wstring{};
-	if (path.Segments.size() != 5
+	const bool direct = path.Segments.size() == 3
+		&& path.Segments[2].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property;
+	const bool grouped = path.Segments.size() == 5
+		&& path.Segments[2].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& path.Segments[3].Kind
+			== cui::xaml::PropertyPathSegmentKind::Index
+		&& path.Segments[4].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& StoryboardPathEquals(
+			StoryboardPathLocalType(path.Segments[2].OwnerType), L"TransformGroup")
+		&& StoryboardPathEquals(path.Segments[2].Name, L"Children");
+	if ((!direct && !grouped)
 		|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
 		|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[2].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[3].Kind != cui::xaml::PropertyPathSegmentKind::Index
-		|| path.Segments[4].Kind != cui::xaml::PropertyPathSegmentKind::Property
 		|| !TryGetBrushAnimationRoot(path, rootProperty)
 		|| (!StoryboardPathEquals(brushOwner, L"Brush")
 			&& !StoryboardPathEquals(brushOwner, L"SolidColorBrush")
@@ -1133,12 +1160,10 @@ inline bool TryResolveBrushTransformAnimationPath(
 			&& !StoryboardPathEquals(brushOwner, L"RadialGradientBrush")
 			&& !StoryboardPathEquals(brushOwner, L"ImageBrush"))
 		|| (!StoryboardPathEquals(path.Segments[1].Name, L"Transform")
-			&& !StoryboardPathEquals(path.Segments[1].Name, L"RelativeTransform"))
-		|| !StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[2].OwnerType), L"TransformGroup")
-		|| !StoryboardPathEquals(path.Segments[2].Name, L"Children"))
+			&& !StoryboardPathEquals(path.Segments[1].Name, L"RelativeTransform")))
 		return fail(L"Brush Transform 动画路径必须是 "
 			L"(Control.BrushProperty).(Brush.Transform|RelativeTransform)."
+			L"(TransformType.Property) 或 ..."
 			L"(TransformGroup.Children)[n].(TransformType.Property)。");
 
 	const auto target = std::find_if(
@@ -1166,12 +1191,14 @@ inline bool TryResolveBrushTransformAnimationPath(
 	const char* transformKey = relative ? "relativeTransform" : "transform";
 	if (!brush.contains(transformKey) || !brush[transformKey].is_array())
 		return fail(L"动画目标没有路径所需的 Brush Transform。");
+	if (direct && brush[transformKey].size() != 1)
+		return fail(L"直接 Brush Transform 动画路径要求单一 Transform 操作。");
 
 	ResolvedTransformAnimationPath leaf;
 	if (!TryResolveTransformOperationLeaf(
-		brush[transformKey], path.Segments[3].Index,
-		StoryboardPathLocalType(path.Segments[4].OwnerType),
-		path.Segments[4].Name, leaf, outError)) return false;
+		brush[transformKey], direct ? 0 : path.Segments[3].Index,
+		StoryboardPathLocalType(path.Segments[direct ? 2 : 4].OwnerType),
+		path.Segments[direct ? 2 : 4].Name, leaf, outError)) return false;
 	const bool matrix = StoryboardPathEquals(leaf.TransformType, L"MatrixTransform")
 		&& StoryboardPathEquals(leaf.PropertyName, L"Matrix");
 	if (animationKind != (matrix ? DesignerAnimationKind::Matrix
@@ -1190,8 +1217,9 @@ inline bool TryResolveBrushTransformAnimationPath(
 	output.LeafProperty = std::move(leaf.PropertyName);
 	output.CanonicalPath = L"(Control." + rootProperty + L").(Brush."
 		+ std::wstring(relative ? L"RelativeTransform" : L"Transform")
-		+ L").(TransformGroup.Children)["
-		+ std::to_wstring(output.OperationIndex) + L"].("
+		+ L")." + (direct ? std::wstring{}
+			: L"(TransformGroup.Children)["
+				+ std::to_wstring(output.OperationIndex) + L"].") + L"("
 		+ output.ObjectType + L"." + output.LeafProperty + L")";
 	if (outError) outError->clear();
 	return true;

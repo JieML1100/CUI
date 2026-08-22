@@ -32,6 +32,13 @@ enum class BrushMappingMode
 	RelativeToBoundingBox
 };
 
+/** WPF GradientBrush color-space selection for interpolation between stops. */
+enum class GradientColorInterpolationMode
+{
+	ScRgbLinearInterpolation,
+	SRgbLinearInterpolation
+};
+
 enum class ImageBrushAlignmentX
 {
 	Left,
@@ -73,6 +80,8 @@ struct Brush
 
 	BrushKind Kind = BrushKind::None;
 	BrushMappingMode MappingMode = BrushMappingMode::RelativeToBoundingBox;
+	GradientColorInterpolationMode ColorInterpolationMode =
+		GradientColorInterpolationMode::SRgbLinearInterpolation;
 	D2D1_COLOR_F Color{ 0.0f, 0.0f, 0.0f, 1.0f };
 	float Opacity = 1.0f;
 	D2D1_POINT_2F StartPoint{ 0.0f, 0.0f };
@@ -95,6 +104,7 @@ struct Brush
 	{
 		return Kind == other.Kind
 			&& MappingMode == other.MappingMode
+			&& ColorInterpolationMode == other.ColorInterpolationMode
 			&& Color.r == other.Color.r
 			&& Color.g == other.Color.g
 			&& Color.b == other.Color.b

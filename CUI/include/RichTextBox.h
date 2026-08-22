@@ -291,6 +291,8 @@ public:
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
+	bool HasRetainedNativeAnimation() override
+	{ return HasRetainedCaretBlinkAnimation(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** Maximum character count; zero means unlimited. */
 	PROPERTY(int, MaxLength);

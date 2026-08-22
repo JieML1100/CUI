@@ -129,6 +129,321 @@ namespace
 		return value.substr(begin, end - begin);
 	}
 
+	bool TryExpandWpfArc(
+		cui::core::Point start,
+		float radiusX,
+		float radiusY,
+		float rotationDegrees,
+		bool largeArc,
+		bool sweepUp,
+		cui::core::Point end,
+		std::vector<DeclarativePathAnimationSegment>& output) noexcept
+	{
+		constexpr float fuzz = 1.0e-6f;
+		constexpr float fuzzSquared = static_cast<float>(1.0e-6 * 1.0e-6);
+		constexpr float piOver180 = static_cast<float>(
+			0.0174532925199432957692);
+		constexpr float twoPi = static_cast<float>(6.2831853071795865);
+		constexpr double fourThirds = 1.33333333333333333;
+		auto finitePoint = [](cui::core::Point point)
+			{ return std::isfinite(point.x) && std::isfinite(point.y); };
+		if (!finitePoint(start) || !finitePoint(end)
+			|| !std::isfinite(radiusX) || !std::isfinite(radiusY)
+			|| !std::isfinite(rotationDegrees)) return false;
+
+		output.clear();
+		float x = 0.5f * (end.x - start.x);
+		float y = 0.5f * (end.y - start.y);
+		float halfChordSquared = x * x + y * y;
+		auto appendLine = [&]()
+		{
+			DeclarativePathAnimationSegment line;
+			line.Kind = DeclarativePathSegmentKind::Line;
+			line.Point3 = end;
+			output.push_back(line);
+		};
+		if (halfChordSquared < fuzzSquared)
+		{
+			appendLine();
+			return true;
+		}
+		auto acceptRadius = [&](float& radius)
+		{
+			const bool accepted = !(radius * radius
+				<= halfChordSquared * fuzzSquared);
+			if (accepted && radius < 0.0f) radius = -radius;
+			return accepted;
+		};
+		if (!acceptRadius(radiusX) || !acceptRadius(radiusY))
+		{
+			appendLine();
+			return true;
+		}
+
+		float cosine = 1.0f;
+		float sine = 0.0f;
+		if (!(std::fabs(rotationDegrees) < fuzz))
+		{
+			const float rotation = -rotationDegrees * piOver180;
+			cosine = ::cosf(rotation);
+			sine = ::sinf(rotation);
+			const float rotatedX = x * cosine - y * sine;
+			y = x * sine + y * cosine;
+			x = rotatedX;
+		}
+
+		x /= radiusX;
+		y /= radiusY;
+		halfChordSquared = x * x + y * y;
+		float centerX = 0.0f;
+		float centerY = 0.0f;
+		bool zeroCenter = false;
+		if (halfChordSquared > 1.0f)
+		{
+			const float scale = ::sqrtf(halfChordSquared);
+			radiusX *= scale;
+			radiusY *= scale;
+			zeroCenter = true;
+			x /= scale;
+			y /= scale;
+		}
+		else
+		{
+			const float scale = ::sqrtf(
+				(1.0f - halfChordSquared) / halfChordSquared);
+			if (largeArc != sweepUp)
+			{
+				centerX = -scale * y;
+				centerY = scale * x;
+			}
+			else
+			{
+				centerX = scale * y;
+				centerY = -scale * x;
+			}
+		}
+
+		cui::core::Point circleStart{
+			-x - centerX, -y - centerY };
+		const cui::core::Point circleEnd{
+			x - centerX, y - centerY };
+		const float m00 = cosine * radiusX;
+		const float m01 = -sine * radiusX;
+		const float m10 = sine * radiusY;
+		const float m11 = cosine * radiusY;
+		float m20 = 0.5f * (end.x + start.x);
+		float m21 = 0.5f * (end.y + start.y);
+		if (!zeroCenter)
+		{
+			m20 += m00 * centerX + m10 * centerY;
+			m21 += m01 * centerX + m11 * centerY;
+		}
+
+		float arcCosine = circleStart.x * circleEnd.x
+			+ circleStart.y * circleEnd.y;
+		float arcSine = circleStart.x * circleEnd.y
+			- circleStart.y * circleEnd.x;
+		int pieces = 1;
+		if (arcCosine >= 0.0f)
+			pieces = largeArc ? 4 : 1;
+		else
+			pieces = largeArc ? 3 : 2;
+		if (pieces != 1)
+		{
+			float angle = ::atan2f(arcSine, arcCosine);
+			if (sweepUp)
+			{
+				if (angle < 0.0f) angle += twoPi;
+			}
+			else if (angle > 0.0f) angle -= twoPi;
+			angle /= static_cast<float>(pieces);
+			arcCosine = ::cosf(angle);
+			arcSine = ::sinf(angle);
+		}
+
+		const double a = 0.5f * (1.0 + static_cast<double>(arcCosine));
+		double distance = 0.0;
+		if (a >= 0.0)
+		{
+			const double denominatorSquared = 1.0 - a;
+			if (denominatorSquared > 0.0)
+			{
+				const double denominator = std::sqrt(denominatorSquared);
+				const double numerator = fourThirds * (1.0 - std::sqrt(a));
+				if (numerator > denominator * 1.0e-6)
+					distance = numerator / denominator;
+			}
+		}
+		float bezierDistance = static_cast<float>(distance);
+		if (!sweepUp) bezierDistance = -bezierDistance;
+		auto tangentVector = [&](cui::core::Point point)
+		{
+			return cui::core::Point{
+				-bezierDistance * point.y,
+				bezierDistance * point.x };
+		};
+		auto transform = [&](cui::core::Point point)
+		{
+			return cui::core::Point{
+				point.x * m00 + point.y * m10 + m20,
+				point.x * m01 + point.y * m11 + m21 };
+		};
+		auto firstVector = tangentVector(circleStart);
+		for (int index = 1; index < pieces; ++index)
+		{
+			const cui::core::Point pieceEnd{
+				circleStart.x * arcCosine - circleStart.y * arcSine,
+				circleStart.x * arcSine + circleStart.y * arcCosine };
+			const auto secondVector = tangentVector(pieceEnd);
+			DeclarativePathAnimationSegment segment;
+			segment.Kind = DeclarativePathSegmentKind::CubicBezier;
+			segment.Point1 = transform({
+				circleStart.x + firstVector.x,
+				circleStart.y + firstVector.y });
+			segment.Point2 = transform({
+				pieceEnd.x - secondVector.x,
+				pieceEnd.y - secondVector.y });
+			segment.Point3 = transform(pieceEnd);
+			output.push_back(segment);
+			circleStart = pieceEnd;
+			firstVector = secondVector;
+		}
+		const auto secondVector = tangentVector(circleEnd);
+		DeclarativePathAnimationSegment last;
+		last.Kind = DeclarativePathSegmentKind::CubicBezier;
+		last.Point1 = transform({
+			circleStart.x + firstVector.x,
+			circleStart.y + firstVector.y });
+		last.Point2 = transform({
+			circleEnd.x - secondVector.x,
+			circleEnd.y - secondVector.y });
+		last.Point3 = end;
+		output.push_back(last);
+		return std::all_of(output.begin(), output.end(),
+			[&](const DeclarativePathAnimationSegment& segment)
+			{
+				return finitePoint(segment.Point1)
+					&& finitePoint(segment.Point2)
+					&& finitePoint(segment.Point3);
+			});
+	}
+
+	struct WpfPathMatrix final
+	{
+		float M11 = 1.0f;
+		float M12 = 0.0f;
+		float M21 = 0.0f;
+		float M22 = 1.0f;
+		float Dx = 0.0f;
+		float Dy = 0.0f;
+	};
+
+	bool TryComposeWpfPathTransform(
+		const DesignValue& value,
+		WpfPathMatrix& output) noexcept
+	{
+		struct MatrixD final
+		{
+			double M11 = 1.0;
+			double M12 = 0.0;
+			double M21 = 0.0;
+			double M22 = 1.0;
+			double Dx = 0.0;
+			double Dy = 0.0;
+		};
+		auto multiply = [](const MatrixD& left, const MatrixD& right)
+		{
+			return MatrixD{
+				left.M11 * right.M11 + left.M12 * right.M21,
+				left.M11 * right.M12 + left.M12 * right.M22,
+				left.M21 * right.M11 + left.M22 * right.M21,
+				left.M21 * right.M12 + left.M22 * right.M22,
+				left.Dx * right.M11 + left.Dy * right.M21 + right.Dx,
+				left.Dx * right.M12 + left.Dy * right.M22 + right.Dy };
+		};
+		if (!value.is_array() || value.empty()) return false;
+		MatrixD result;
+		for (const auto& item : value.ArrayItems())
+		{
+			if (!item.is_object()) return false;
+			const auto type = item.value("type", std::string{});
+			MatrixD operation;
+			if (type == "matrix")
+			{
+				operation = {
+					item.value("m11", 1.0), item.value("m12", 0.0),
+					item.value("m21", 0.0), item.value("m22", 1.0),
+					item.value("dx", 0.0), item.value("dy", 0.0) };
+			}
+			else if (type == "translate")
+			{
+				operation.Dx = item.value("x", 0.0);
+				operation.Dy = item.value("y", 0.0);
+			}
+			else if (type == "scale")
+			{
+				const auto scaleX = item.value("scaleX", 1.0);
+				const auto scaleY = item.value("scaleY", 1.0);
+				const auto centerX = item.value("centerX", 0.0);
+				const auto centerY = item.value("centerY", 0.0);
+				operation = { scaleX, 0.0, 0.0, scaleY,
+					centerX - scaleX * centerX,
+					centerY - scaleY * centerY };
+			}
+			else if (type == "rotate")
+			{
+				auto angle = std::fmod(item.value("angle", 0.0), 360.0);
+				angle *= 3.1415926535897931 / 180.0;
+				const auto sine = std::sin(angle);
+				const auto cosine = std::cos(angle);
+				const auto centerX = item.value("centerX", 0.0);
+				const auto centerY = item.value("centerY", 0.0);
+				operation = { cosine, sine, -sine, cosine,
+					centerX * (1.0 - cosine) + centerY * sine,
+					centerY * (1.0 - cosine) - centerX * sine };
+			}
+			else if (type == "skew")
+			{
+				auto angleX = std::fmod(item.value("angleX", 0.0), 360.0);
+				auto angleY = std::fmod(item.value("angleY", 0.0), 360.0);
+				angleX *= 3.1415926535897931 / 180.0;
+				angleY *= 3.1415926535897931 / 180.0;
+				const auto tangentX = std::tan(angleX);
+				const auto tangentY = std::tan(angleY);
+				const auto centerX = item.value("centerX", 0.0);
+				const auto centerY = item.value("centerY", 0.0);
+				operation = { 1.0, tangentY, tangentX, 1.0,
+					-centerY * tangentX, -centerX * tangentY };
+			}
+			else return false;
+			result = multiply(result, operation);
+		}
+		const std::array<double, 6> values{
+			result.M11, result.M12, result.M21,
+			result.M22, result.Dx, result.Dy };
+		if (!std::all_of(values.begin(), values.end(), [](double item)
+			{ return std::isfinite(item); })) return false;
+		output = { static_cast<float>(result.M11),
+			static_cast<float>(result.M12),
+			static_cast<float>(result.M21),
+			static_cast<float>(result.M22),
+			static_cast<float>(result.Dx),
+			static_cast<float>(result.Dy) };
+		return std::isfinite(output.M11) && std::isfinite(output.M12)
+			&& std::isfinite(output.M21) && std::isfinite(output.M22)
+			&& std::isfinite(output.Dx) && std::isfinite(output.Dy);
+	}
+
+	cui::core::Point TransformWpfPathPoint(
+		const WpfPathMatrix& matrix,
+		cui::core::Point point) noexcept
+	{
+		const float x = point.x;
+		return {
+			matrix.M11 * x + matrix.M21 * point.y + matrix.Dx,
+			matrix.M12 * x + matrix.M22 * point.y + matrix.Dy };
+	}
+
 	bool PreservesXmlWhitespace(const Element& element)
 	{
 		for (const XmlNode* node = element.get(); node != nullptr;
@@ -602,6 +917,289 @@ namespace
 		}
 	}
 
+	bool TryParseAbbreviatedPathFigures(
+		const std::wstring& text,
+		DesignValue& output,
+		std::wstring& error)
+	{
+		struct PointD final { double X = 0.0; double Y = 0.0; };
+		auto fail = [&](const wchar_t* message)
+		{
+			error = message;
+			return false;
+		};
+		std::size_t index = 0;
+		auto more = [&] { return index < text.size(); };
+		auto skip = [&](bool allowComma, bool& comma)
+		{
+			comma = false;
+			while (more())
+			{
+				const auto ch = text[index];
+				if (std::iswspace(ch)) { ++index; continue; }
+				if (ch == L',')
+				{
+					if (!allowComma || comma) return false;
+					comma = true;
+					allowComma = false;
+					++index;
+					continue;
+				}
+				break;
+			}
+			return true;
+		};
+		auto numberStart = [](wchar_t ch)
+		{
+			return ch == L'.' || ch == L'-' || ch == L'+'
+				|| (ch >= L'0' && ch <= L'9');
+		};
+		auto hasNumber = [&](bool allowComma, bool& result)
+		{
+			bool comma = false;
+			if (!skip(allowComma, comma)) return false;
+			result = more() && numberStart(text[index]);
+			return result || !comma;
+		};
+		auto readNumber = [&](bool allowComma, double& value)
+		{
+			bool comma = false;
+			if (!skip(allowComma, comma) || !more()) return false;
+			const auto start = index;
+			if (text[index] == L'+' || text[index] == L'-') ++index;
+			bool digits = false;
+			while (more() && text[index] >= L'0' && text[index] <= L'9')
+			{
+				digits = true;
+				++index;
+			}
+			if (more() && text[index] == L'.')
+			{
+				++index;
+				while (more() && text[index] >= L'0' && text[index] <= L'9')
+				{
+					digits = true;
+					++index;
+				}
+			}
+			if (!digits) return false;
+			if (more() && (text[index] == L'e' || text[index] == L'E'))
+			{
+				++index;
+				if (more() && (text[index] == L'+' || text[index] == L'-')) ++index;
+				const auto exponent = index;
+				while (more() && text[index] >= L'0' && text[index] <= L'9') ++index;
+				if (index == exponent) return false;
+			}
+			return TryParseDouble(text.substr(start, index - start), value);
+		};
+		auto readFlag = [&](bool& value)
+		{
+			bool comma = false;
+			if (!skip(true, comma) || !more()) return false;
+			if (text[index] == L'0') value = false;
+			else if (text[index] == L'1') value = true;
+			else return false;
+			++index;
+			return true;
+		};
+		PointD last;
+		PointD start;
+		PointD secondLast;
+		bool figureStarted = false;
+		char lastCommand = ' ';
+		DesignValue* figure = nullptr;
+		output = DesignValue::array();
+		auto beginFigure = [&](PointD point)
+		{
+			output.push_back(DesignValue{
+				{ "startX", point.X }, { "startY", point.Y },
+				{ "closed", false }, { "filled", true },
+				{ "segments", DesignValue::array() } });
+			figure = &output[output.size() - 1];
+			figureStarted = true;
+			start = point;
+		};
+		auto ensureFigure = [&]
+		{
+			if (!figureStarted) beginFigure(start);
+		};
+		auto readPoint = [&](wchar_t command, bool allowComma, PointD& point)
+		{
+			if (!readNumber(allowComma, point.X)
+				|| !readNumber(true, point.Y)) return false;
+			if (command >= L'a')
+			{
+				point.X += last.X;
+				point.Y += last.Y;
+			}
+			return std::isfinite(point.X) && std::isfinite(point.Y);
+		};
+		auto reflect = [&]
+		{
+			return PointD{ 2.0 * last.X - secondLast.X,
+				2.0 * last.Y - secondLast.Y };
+		};
+		auto addLine = [&](PointD point)
+		{
+			(*figure)["segments"].push_back(DesignValue{
+				{ "type", "line" }, { "x", point.X }, { "y", point.Y } });
+		};
+		auto addCubic = [&](PointD p1, PointD p2, PointD p3)
+		{
+			(*figure)["segments"].push_back(DesignValue{
+				{ "type", "bezier" }, { "x1", p1.X }, { "y1", p1.Y },
+				{ "x2", p2.X }, { "y2", p2.Y },
+				{ "x3", p3.X }, { "y3", p3.Y } });
+		};
+		auto addQuadratic = [&](PointD p1, PointD p2)
+		{
+			(*figure)["segments"].push_back(DesignValue{
+				{ "type", "quadratic" }, { "x1", p1.X }, { "y1", p1.Y },
+				{ "x2", p2.X }, { "y2", p2.Y } });
+		};
+		bool first = true;
+		while (true)
+		{
+			bool comma = false;
+			if (!skip(false, comma)) return fail(L"Figures 命令之间不允许逗号。");
+			if (!more()) break;
+			const wchar_t command = text[index++];
+			if (first && command != L'M' && command != L'm')
+				return fail(L"Figures 必须以 M 或 m 开始。");
+			first = false;
+			switch (command)
+			{
+			case L'M': case L'm':
+			{
+				PointD point;
+				if (!readPoint(command, false, point)) return fail(L"Figures M 参数无效。");
+				last = point;
+				beginFigure(last);
+				lastCommand = 'M';
+				while (true)
+				{
+					bool another = false;
+					if (!hasNumber(true, another))
+						return fail(L"Figures M 数字分隔无效。");
+					if (!another) break;
+					if (!readPoint(command, false, point)) return fail(L"Figures M 重复点无效。");
+					last = point;
+					addLine(last);
+					lastCommand = 'L';
+				}
+				break;
+			}
+			case L'L': case L'l': case L'H': case L'h': case L'V': case L'v':
+			{
+				ensureFigure();
+				bool another = true;
+				do
+				{
+					if (command == L'L' || command == L'l')
+					{
+						PointD point;
+						if (!readPoint(command, false, point)) return fail(L"Figures L 参数无效。");
+						last = point;
+					}
+					else
+					{
+						double value = 0.0;
+						if (!readNumber(false, value)) return fail(L"Figures H/V 参数无效。");
+						if (command == L'h') last.X += value;
+						else if (command == L'H') last.X = value;
+						else if (command == L'v') last.Y += value;
+						else last.Y = value;
+					}
+					addLine(last);
+					if (!hasNumber(true, another)) return fail(L"Figures L/H/V 分隔无效。");
+				} while (another);
+				lastCommand = 'L';
+				break;
+			}
+			case L'C': case L'c': case L'S': case L's':
+			{
+				ensureFigure();
+				bool another = true;
+				do
+				{
+					PointD firstControl;
+					if (command == L'S' || command == L's')
+					{
+						firstControl = lastCommand == 'C' ? reflect() : last;
+						if (!readPoint(command, false, secondLast)) return fail(L"Figures S 参数无效。");
+					}
+					else if (!readPoint(command, false, firstControl)
+						|| !readPoint(command, true, secondLast))
+						return fail(L"Figures C 参数无效。");
+					PointD endpoint;
+					if (!readPoint(command, true, endpoint)) return fail(L"Figures C/S 终点无效。");
+					last = endpoint;
+					addCubic(firstControl, secondLast, last);
+					lastCommand = 'C';
+					if (!hasNumber(true, another)) return fail(L"Figures C/S 分隔无效。");
+				} while (another);
+				break;
+			}
+			case L'Q': case L'q': case L'T': case L't':
+			{
+				ensureFigure();
+				bool another = true;
+				do
+				{
+					if (command == L'T' || command == L't')
+						secondLast = lastCommand == 'Q' ? reflect() : last;
+					else if (!readPoint(command, false, secondLast))
+						return fail(L"Figures Q 控制点无效。");
+					PointD endpoint;
+					if (!readPoint(command, command == L'T' || command == L't'
+						? false : true, endpoint)) return fail(L"Figures Q/T 终点无效。");
+					last = endpoint;
+					addQuadratic(secondLast, last);
+					lastCommand = 'Q';
+					if (!hasNumber(true, another)) return fail(L"Figures Q/T 分隔无效。");
+				} while (another);
+				break;
+			}
+			case L'A': case L'a':
+			{
+				ensureFigure();
+				bool another = true;
+				do
+				{
+					double width = 0.0, height = 0.0, rotation = 0.0;
+					bool large = false, sweep = false;
+					PointD endpoint;
+					if (!readNumber(false, width) || !readNumber(true, height)
+						|| !readNumber(true, rotation) || !readFlag(large)
+						|| !readFlag(sweep) || !readPoint(command, true, endpoint)
+						|| width < 0.0 || height < 0.0)
+						return fail(L"Figures A 参数无效。");
+					last = endpoint;
+					(*figure)["segments"].push_back(DesignValue{
+						{ "type", "arc" }, { "x", last.X }, { "y", last.Y },
+						{ "width", width }, { "height", height },
+						{ "rotation", rotation }, { "large", large },
+						{ "sweep", sweep ? "clockwise" : "counterclockwise" } });
+					lastCommand = 'A';
+					if (!hasNumber(true, another)) return fail(L"Figures A 分隔无效。");
+				} while (another);
+				break;
+			}
+			case L'Z': case L'z':
+				ensureFigure();
+				(*figure)["closed"] = true;
+				figureStarted = false;
+				lastCommand = 'Z';
+				last = start;
+				break;
+			default:
+				return fail(L"Figures 包含不支持的命令。");
+			}
+		}
+		return true;
+	}
+
 	bool TryParseEnum(
 		const std::wstring& value,
 		std::initializer_list<const wchar_t*> names,
@@ -672,6 +1270,369 @@ namespace
 			|| totalMilliseconds > static_cast<long double>(
 				(std::numeric_limits<long long>::max)())) return false;
 		output = static_cast<unsigned long long>(std::llround(totalMilliseconds));
+		return true;
+	}
+
+	bool TryResolveAnimationDuration(
+		const std::optional<std::wstring>& value,
+		unsigned long long naturalDurationMilliseconds,
+		unsigned long long& output)
+	{
+		if (!value || Equals(Trim(*value), L"Automatic"))
+		{
+			output = naturalDurationMilliseconds;
+			return true;
+		}
+		return TryParseTimeSpanMilliseconds(*value, output);
+	}
+
+	enum class ParsedAnimationKeyTimeKind : unsigned char
+	{
+		TimeSpan,
+		Percent,
+		Uniform,
+		Paced,
+	};
+
+	struct ParsedAnimationKeyTime final
+	{
+		ParsedAnimationKeyTimeKind Kind = ParsedAnimationKeyTimeKind::TimeSpan;
+		unsigned long long TimeSpanTicks = 0;
+		double Percent = 0.0;
+	};
+
+	bool TryParseTimeSpanTicks(
+		const std::wstring& value,
+		unsigned long long& output)
+	{
+		const auto text = Trim(value);
+		const auto parts = Split(text, L':');
+		if (parts.size() != 3) return false;
+		unsigned long long days = 0;
+		unsigned long long hours = 0;
+		auto hourText = parts[0];
+		if (const auto dot = hourText.find(L'.'); dot != std::wstring::npos)
+		{
+			if (!TryParseUnsignedInteger(hourText.substr(0, dot), days)
+				|| !TryParseUnsignedInteger(hourText.substr(dot + 1), hours)
+				|| hours >= 24) return false;
+		}
+		else if (!TryParseUnsignedInteger(hourText, hours)) return false;
+		unsigned long long minutes = 0;
+		if (!TryParseUnsignedInteger(parts[1], minutes) || minutes >= 60)
+			return false;
+		double seconds = 0.0;
+		if (!TryParseDouble(parts[2], seconds)
+			|| seconds < 0.0 || seconds >= 60.0) return false;
+		const long double totalTicks =
+			(static_cast<long double>(days) * 24.0L * 60.0L * 60.0L
+				+ static_cast<long double>(hours) * 60.0L * 60.0L
+				+ static_cast<long double>(minutes) * 60.0L
+				+ static_cast<long double>(seconds)) * 10000000.0L;
+		if (totalTicks < 0.0L || totalTicks > static_cast<long double>(
+			(std::numeric_limits<unsigned long long>::max)())) return false;
+		output = static_cast<unsigned long long>(std::llround(totalTicks));
+		return true;
+	}
+
+	bool TryParseAnimationKeyTime(
+		const std::wstring& value,
+		ParsedAnimationKeyTime& output)
+	{
+		const auto text = Trim(value);
+		if (Equals(text, L"Uniform"))
+		{
+			output.Kind = ParsedAnimationKeyTimeKind::Uniform;
+			return true;
+		}
+		if (Equals(text, L"Paced"))
+		{
+			output.Kind = ParsedAnimationKeyTimeKind::Paced;
+			return true;
+		}
+		if (!text.empty() && text.back() == L'%')
+		{
+			double percent = 0.0;
+			if (!TryParseDouble(text.substr(0, text.size() - 1), percent)
+				|| percent < 0.0 || percent > 100.0) return false;
+			output.Kind = ParsedAnimationKeyTimeKind::Percent;
+			output.Percent = percent / 100.0;
+			return true;
+		}
+		output.Kind = ParsedAnimationKeyTimeKind::TimeSpan;
+		return TryParseTimeSpanTicks(text, output.TimeSpanTicks);
+	}
+
+	bool TryGetPacedSegmentLength(
+		DesignerAnimationKind kind,
+		const BindingValue& from,
+		const BindingValue& to,
+		double& output)
+	{
+		auto length2 = [](double x, double y)
+			{ return std::sqrt(x * x + y * y); };
+		if (kind == DesignerAnimationKind::Object)
+		{
+			output = 1.0;
+			return true;
+		}
+		if (kind == DesignerAnimationKind::Double)
+		{
+			double left = 0.0, right = 0.0;
+			if (!from.TryGetDouble(left) || !to.TryGetDouble(right)) return false;
+			output = std::fabs(right - left);
+		}
+		else if (kind == DesignerAnimationKind::Int32)
+		{
+			int left = 0, right = 0;
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = std::fabs(static_cast<double>(right)
+				- static_cast<double>(left));
+		}
+		else if (kind == DesignerAnimationKind::Int64)
+		{
+			long long left = 0, right = 0;
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = std::fabs(static_cast<double>(right)
+				- static_cast<double>(left));
+		}
+		else if (kind == DesignerAnimationKind::Single)
+		{
+			float left = 0.0f, right = 0.0f;
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = std::fabs(static_cast<double>(right - left));
+		}
+		else if (kind == DesignerAnimationKind::Boolean)
+		{
+			bool left = false, right = false;
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = left == right ? 0.0 : 1.0;
+		}
+		else if (kind == DesignerAnimationKind::String)
+		{
+			std::wstring left, right;
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = left == right ? 0.0 : 1.0;
+		}
+		else if (kind == DesignerAnimationKind::Thickness)
+		{
+			Thickness left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			const auto a = static_cast<double>(right.Left - left.Left);
+			const auto b = static_cast<double>(right.Top - left.Top);
+			const auto c = static_cast<double>(right.Right - left.Right);
+			const auto d = static_cast<double>(right.Bottom - left.Bottom);
+			output = std::sqrt(a * a + b * b + c * c + d * d);
+		}
+		else if (kind == DesignerAnimationKind::Point)
+		{
+			cui::core::Point left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = length2(right.x - left.x, right.y - left.y);
+		}
+		else if (kind == DesignerAnimationKind::Vector)
+		{
+			cui::core::Vector left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = length2(right.x - left.x, right.y - left.y);
+		}
+		else if (kind == DesignerAnimationKind::Size)
+		{
+			cui::core::Size left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = length2(
+				right.width - left.width, right.height - left.height);
+		}
+		else if (kind == DesignerAnimationKind::Rect)
+		{
+			cui::core::Rect left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			const auto x = static_cast<double>(right.x - left.x);
+			const auto y = static_cast<double>(right.y - left.y);
+			const auto width = static_cast<double>(right.width - left.width);
+			const auto height = static_cast<double>(right.height - left.height);
+			output = std::sqrt(x * x + y * y + width * width + height * height);
+		}
+		else if (kind == DesignerAnimationKind::Matrix)
+		{
+			D2D1_MATRIX_3X2_F left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			output = left._11 == right._11 && left._12 == right._12
+				&& left._21 == right._21 && left._22 == right._22
+				&& left._31 == right._31 && left._32 == right._32 ? 0.0 : 1.0;
+		}
+		else if (kind == DesignerAnimationKind::Color)
+		{
+			D2D1_COLOR_F left{}, right{};
+			if (!from.TryGet(left) || !to.TryGet(right)) return false;
+			auto scRgb = [](float value)
+				{
+					const auto channel = static_cast<double>(value);
+					return channel <= 0.04045 ? channel / 12.92
+						: std::pow((channel + 0.055) / 1.055, 2.4);
+				};
+			output = std::fabs(static_cast<double>(right.a - left.a))
+				+ std::fabs(scRgb(right.r) - scRgb(left.r))
+				+ std::fabs(scRgb(right.g) - scRgb(left.g))
+				+ std::fabs(scRgb(right.b) - scRgb(left.b));
+		}
+		else return false;
+		return std::isfinite(output) && output >= 0.0;
+	}
+
+	bool TryResolveAnimationKeyTimes(
+		DesignerAnimationKind animationKind,
+		const std::optional<std::wstring>& durationText,
+		std::vector<DesignerAnimationKeyFrame>& keyFrames,
+		const std::vector<ParsedAnimationKeyTime>& keyTimes,
+		const std::vector<BindingValue>& pacedValues,
+		unsigned long long& durationMilliseconds)
+	{
+		if (keyFrames.empty() || keyFrames.size() != keyTimes.size()
+			|| keyFrames.size() != pacedValues.size()) return false;
+		unsigned long long calculationTicks = 0;
+		if (durationText && !Equals(Trim(*durationText), L"Automatic"))
+		{
+			if (!TryParseTimeSpanTicks(*durationText, calculationTicks)
+				|| calculationTicks % 10000ULL != 0) return false;
+			durationMilliseconds = calculationTicks / 10000ULL;
+		}
+		else
+		{
+			for (const auto& keyTime : keyTimes)
+				if (keyTime.Kind == ParsedAnimationKeyTimeKind::TimeSpan)
+					calculationTicks = (std::max)(
+						calculationTicks, keyTime.TimeSpanTicks);
+			if (calculationTicks == 0) calculationTicks = 10000000ULL;
+			if (calculationTicks % 10000ULL != 0) return false;
+			durationMilliseconds = calculationTicks / 10000ULL;
+		}
+
+		struct UnspecifiedBlock final
+		{
+			size_t Begin = 0;
+			size_t End = 0;
+		};
+		std::vector<unsigned long long> resolved(keyFrames.size(), 0);
+		std::vector<UnspecifiedBlock> blocks;
+		bool hasPaced = false;
+		const auto last = keyFrames.size() - 1;
+		for (size_t index = 0; index < keyFrames.size();)
+		{
+			const auto& keyTime = keyTimes[index];
+			if (keyTime.Kind == ParsedAnimationKeyTimeKind::Percent)
+			{
+				const auto ticks = keyTime.Percent
+					* static_cast<double>(calculationTicks);
+				if (!std::isfinite(ticks) || ticks < 0.0
+					|| ticks > static_cast<double>(
+						(std::numeric_limits<unsigned long long>::max)())) return false;
+				resolved[index++] = static_cast<unsigned long long>(ticks);
+				continue;
+			}
+			if (keyTime.Kind == ParsedAnimationKeyTimeKind::TimeSpan)
+			{
+				resolved[index++] = keyTime.TimeSpanTicks;
+				continue;
+			}
+			if (index == last)
+			{
+				resolved[index++] = calculationTicks;
+				continue;
+			}
+			if (index == 0
+				&& keyTime.Kind == ParsedAnimationKeyTimeKind::Paced)
+			{
+				resolved[index++] = 0;
+				continue;
+			}
+			if (keyTime.Kind == ParsedAnimationKeyTimeKind::Paced)
+				hasPaced = true;
+			UnspecifiedBlock block{ index, 0 };
+			while ((++index) < last)
+			{
+				const auto kind = keyTimes[index].Kind;
+				if (kind == ParsedAnimationKeyTimeKind::Percent
+					|| kind == ParsedAnimationKeyTimeKind::TimeSpan) break;
+				if (kind == ParsedAnimationKeyTimeKind::Paced) hasPaced = true;
+			}
+			block.End = index;
+			blocks.push_back(block);
+		}
+
+		for (const auto& block : blocks)
+		{
+			const auto beginTicks = block.Begin > 0
+				? resolved[block.Begin - 1] : 0ULL;
+			if (resolved[block.End] < beginTicks) return false;
+			const auto segmentCount = block.End - block.Begin + 1;
+			const auto step = (resolved[block.End] - beginTicks) / segmentCount;
+			auto current = beginTicks + step;
+			for (auto index = block.Begin; index < block.End; ++index)
+			{
+				resolved[index] = current;
+				current += step;
+			}
+		}
+
+		if (hasPaced)
+		{
+			for (size_t index = 1; index < last;)
+			{
+				if (keyTimes[index].Kind != ParsedAnimationKeyTimeKind::Paced)
+				{
+					++index;
+					continue;
+				}
+				const auto first = index;
+				const auto preTicks = resolved[index - 1];
+				double totalLength = 0.0;
+				std::vector<double> cumulative;
+				do
+				{
+					double segmentLength = 0.0;
+					if (!TryGetPacedSegmentLength(animationKind,
+						pacedValues[index - 1], pacedValues[index], segmentLength))
+						return false;
+					totalLength += segmentLength;
+					cumulative.push_back(totalLength);
+					++index;
+				}
+				while (index < last
+					&& keyTimes[index].Kind == ParsedAnimationKeyTimeKind::Paced);
+				if (resolved[index] < preTicks) return false;
+				double finalSegment = 0.0;
+				if (!TryGetPacedSegmentLength(animationKind,
+					pacedValues[index - 1], pacedValues[index], finalSegment))
+					return false;
+				totalLength += finalSegment;
+				if (!std::isfinite(totalLength) || totalLength <= 0.0) return false;
+				const auto availableTicks = resolved[index] - preTicks;
+				for (size_t offset = 0; offset < cumulative.size(); ++offset)
+				{
+					const auto exact = cumulative[offset] / totalLength
+						* static_cast<double>(availableTicks);
+					if (!std::isfinite(exact) || exact < 0.0) return false;
+					resolved[first + offset] = preTicks
+						+ static_cast<unsigned long long>(exact);
+				}
+			}
+		}
+
+		for (size_t index = 0; index < keyFrames.size(); ++index)
+		{
+			keyFrames[index].KeyTimeMilliseconds = resolved[index] / 10000ULL;
+			keyFrames[index].KeyTimeSubMillisecondTicks =
+				static_cast<uint16_t>(resolved[index] % 10000ULL);
+		}
+		std::stable_sort(keyFrames.begin(), keyFrames.end(),
+			[](const auto& left, const auto& right)
+			{
+				return std::tie(left.KeyTimeMilliseconds,
+					left.KeyTimeSubMillisecondTicks)
+					< std::tie(right.KeyTimeMilliseconds,
+						right.KeyTimeSubMillisecondTicks);
+			});
 		return true;
 	}
 
@@ -1607,6 +2568,7 @@ namespace
 	private:
 		bool FinalizeDocument(std::wstring& error)
 		{
+			if (!ApplyPendingStoryboardResources(error)) return false;
 			if (!ValidateRelativePanelConstraints(
 				_document.Nodes, L"文档", error)) return false;
 			MergeBindingSchema();
@@ -1690,6 +2652,21 @@ namespace
 			std::wstring Ref;
 		};
 
+		struct PendingStoryboardResource
+		{
+			std::uint64_t ScopeId = 0;
+			std::wstring Key;
+			std::wstring SourceDictionary;
+			Element AuthoredElement;
+			std::optional<DesignStoryboardResource> Normalized;
+		};
+
+		struct VisibleStoryboardResource
+		{
+			const DesignStoryboardResource* Definition = nullptr;
+			std::uint64_t ScopeId = 0;
+		};
+
 		DesignDocument& _document;
 		const XamlDocumentParseOptions& _options;
 		const XamlSourceLocationIndex& _sourceLocations;
@@ -1706,6 +2683,8 @@ namespace
 		// are parsed, whereas lexical resource scopes must remain stable.
 		std::vector<DesignerStyleSheet> _resourceScopes;
 		std::vector<DesignObjectResourceDictionary> _objectResourceScopes;
+		std::vector<PendingStoryboardResource> _pendingStoryboardResources;
+		std::uint64_t _nextObjectResourceScopeId = 1;
 		bool _parsingLocalResources = false;
 		std::unordered_set<int> _usedIds;
 		std::unordered_set<std::wstring> _usedNames;
@@ -1834,6 +2813,29 @@ namespace
 				scope != _objectResourceScopes.rend(); ++scope)
 				if (const auto* value = find(*scope)) return value;
 			return _document.FindDataTemplate(key);
+		}
+
+		std::optional<VisibleStoryboardResource> FindVisibleStoryboard(
+			const std::wstring& key) const
+		{
+			auto find = [&](const DesignObjectResourceDictionary& resources)
+				-> std::optional<VisibleStoryboardResource>
+			{
+				const auto item = std::find_if(resources.Storyboards.rbegin(),
+					resources.Storyboards.rend(), [&](const auto& storyboard)
+					{ return Equals(storyboard.Key, key); });
+				if (item == resources.Storyboards.rend()) return std::nullopt;
+				return VisibleStoryboardResource{ &*item,
+					resources.TransientScopeId };
+			};
+			for (auto scope = _objectResourceScopes.rbegin();
+				scope != _objectResourceScopes.rend(); ++scope)
+				if (const auto value = find(*scope)) return value;
+			if (_objectResourceTarget)
+				if (const auto value = find(*_objectResourceTarget)) return value;
+			if (const auto* value = _document.FindStoryboard(key))
+				return VisibleStoryboardResource{ value, 0 };
+			return std::nullopt;
 		}
 
 		const DesignControlTemplate* FindVisibleControlTemplate(
@@ -2265,7 +3267,7 @@ namespace
 						|| Equals(name, L"DataList")
 						|| Equals(name, L"CollectionViewSource")))
 					return Fail(L"控件级 ResourceDictionary 当前只接受值、画刷、"
-						L"图形、变换、图像、Style、ControlTemplate、DataTemplate、HierarchicalDataTemplate、ItemsPanelTemplate、"
+						L"图形、变换、图像、Storyboard、Style、ControlTemplate、DataTemplate、HierarchicalDataTemplate、ItemsPanelTemplate、"
 						L"GroupStyle 和 ComponentDefinition；"
 						L"其他结构型资源仍应放在 Window.Resources。",
 						error);
@@ -2501,6 +3503,12 @@ namespace
 				return ParseGroupStyle(item, error);
 			if (Equals(name, L"Style"))
 				return ParseStyle(item, error);
+			if (Equals(name, L"Storyboard"))
+				return ParseStoryboardResource(item, error);
+			if (Equals(name, L"StaticResource")
+				|| Equals(name, L"StaticResourceExtension"))
+				return Fail(L"Storyboard 资源 alias 当前不受支持；资源环必须显式拒绝。",
+					error);
 
 			DesignerStyleResource resource;
 			resource.Key = Trim(Attribute(item, L"Key", L"x").value_or(
@@ -3764,8 +4772,19 @@ namespace
 						_pendingVisualStateGroups, definition, error);
 				}
 				if (parsed && _pendingEventTriggers)
-					parsed = ParseEventTriggers(
-						_pendingEventTriggers, definition, error);
+				{
+					if (definition.Template.empty())
+						parsed = Fail(L"组件 EventTrigger 缺少模板 NameScope。", error);
+					else
+					{
+						LexicalResourceScope triggerResources(
+							*this, definition.Template.front().LocalResources);
+						LexicalObjectResourceScope triggerObjects(
+							*this, definition.Template.front().LocalObjectResources);
+						parsed = ParseEventTriggers(
+							_pendingEventTriggers, definition, error);
+					}
+				}
 				_activeTemplateComponent = previousTemplate;
 				_parsingControlTemplateVisual = previousControlTemplateVisual;
 				_parsingComponentTemplateVisual = previousComponentTemplateVisual;
@@ -4100,6 +5119,51 @@ namespace
 			return true;
 		}
 
+		bool ParseStoryboardTiming(
+			const Element& storyboard,
+			DesignerStoryboardTiming& timing,
+			std::wstring& error,
+			bool allowResourceKey = false)
+		{
+			if (!(allowResourceKey
+				? ValidateAttributes(storyboard, {
+					L"BeginTime", L"Duration", L"RepeatBehavior",
+					L"AutoReverse", L"FillBehavior", L"SpeedRatio",
+					L"AccelerationRatio", L"DecelerationRatio" }, error, true)
+				: ValidateAttributes(storyboard, {
+					L"BeginTime", L"Duration", L"RepeatBehavior", L"AutoReverse",
+					L"FillBehavior", L"SpeedRatio", L"AccelerationRatio",
+					L"DecelerationRatio" }, error))) return false;
+			DesignerVisualStateAnimation parsed;
+			if (!ParseTimelineBehavior(storyboard, parsed, error)) return false;
+			if (const auto begin = Attribute(storyboard, L"BeginTime"); begin
+				&& !TryParseTimeSpanMilliseconds(
+					*begin, timing.BeginTimeMilliseconds))
+				return Fail(L"Storyboard BeginTime 必须是有限 TimeSpan。", error);
+			if (const auto duration = Attribute(storyboard, L"Duration"))
+			{
+				if (Equals(Trim(*duration), L"Automatic"))
+					timing.DurationAutomatic = true;
+				else
+				{
+					timing.DurationAutomatic = false;
+					if (!TryParseTimeSpanMilliseconds(
+						*duration, timing.DurationMilliseconds))
+						return Fail(L"Storyboard Duration 必须是 Automatic 或有限 TimeSpan。",
+							error);
+				}
+			}
+			timing.RepeatBehavior = parsed.RepeatBehavior;
+			timing.RepeatCount = parsed.RepeatCount;
+			timing.RepeatDurationMilliseconds = parsed.RepeatDurationMilliseconds;
+			timing.AutoReverse = parsed.AutoReverse;
+			timing.FillBehavior = parsed.FillBehavior;
+			timing.SpeedRatio = parsed.SpeedRatio;
+			timing.AccelerationRatio = parsed.AccelerationRatio;
+			timing.DecelerationRatio = parsed.DecelerationRatio;
+			return true;
+		}
+
 		bool ParseStoryboardAnimation(
 			const Element& animationElement,
 			const DesignComponentDefinition& component,
@@ -4110,7 +5174,23 @@ namespace
 			DiagnosticContext animationContext(*this, animationElement);
 			const auto animationName = FromUtf8(animationElement->LocalName());
 			bool keyFrameAnimation = false;
-			if (Equals(animationName, L"DoubleAnimation")
+			bool linePathAnimation = false;
+			if (Equals(animationName, L"DoubleAnimationUsingPath"))
+			{
+				animation.Kind = DesignerAnimationKind::Double;
+				linePathAnimation = true;
+			}
+			else if (Equals(animationName, L"PointAnimationUsingPath"))
+			{
+				animation.Kind = DesignerAnimationKind::Point;
+				linePathAnimation = true;
+			}
+			else if (Equals(animationName, L"MatrixAnimationUsingPath"))
+			{
+				animation.Kind = DesignerAnimationKind::Matrix;
+				linePathAnimation = true;
+			}
+			else if (Equals(animationName, L"DoubleAnimation")
 				|| Equals(animationName, L"DoubleAnimationUsingKeyFrames"))
 			{
 				animation.Kind = DesignerAnimationKind::Double;
@@ -4171,12 +5251,66 @@ namespace
 				animation.Kind = DesignerAnimationKind::Object;
 				keyFrameAnimation = true;
 			}
-			else return Fail(L"Storyboard 仅支持 Double/Color/Thickness/Point/Vector/Rect/Size/Matrix Animation 和 "
-				L"ObjectAnimationUsingKeyFrames。",
+			else if (Equals(animationName, L"Int32Animation")
+				|| Equals(animationName, L"Int32AnimationUsingKeyFrames"))
+			{
+				animation.Kind = DesignerAnimationKind::Int32;
+				keyFrameAnimation = Equals(
+					animationName, L"Int32AnimationUsingKeyFrames");
+			}
+			else if (Equals(animationName, L"Int64Animation")
+				|| Equals(animationName, L"Int64AnimationUsingKeyFrames"))
+			{
+				animation.Kind = DesignerAnimationKind::Int64;
+				keyFrameAnimation = Equals(
+					animationName, L"Int64AnimationUsingKeyFrames");
+			}
+			else if (Equals(animationName, L"SingleAnimation")
+				|| Equals(animationName, L"SingleAnimationUsingKeyFrames"))
+			{
+				animation.Kind = DesignerAnimationKind::Single;
+				keyFrameAnimation = Equals(
+					animationName, L"SingleAnimationUsingKeyFrames");
+			}
+			else if (Equals(animationName, L"BooleanAnimationUsingKeyFrames"))
+			{
+				animation.Kind = DesignerAnimationKind::Boolean;
+				keyFrameAnimation = true;
+			}
+			else if (Equals(animationName, L"StringAnimationUsingKeyFrames"))
+			{
+				animation.Kind = DesignerAnimationKind::String;
+				keyFrameAnimation = true;
+			}
+			else return Fail(L"Storyboard 动画类型不受支持。",
 				error);
 			const bool objectAnimation =
-				animation.Kind == DesignerAnimationKind::Object;
-			const bool validAttributes = objectAnimation
+				animation.Kind == DesignerAnimationKind::Object
+				|| animation.Kind == DesignerAnimationKind::Boolean
+				|| animation.Kind == DesignerAnimationKind::String;
+			const bool validAttributes = linePathAnimation
+				? animation.Kind == DesignerAnimationKind::Double
+					? ValidateAttributes(animationElement,
+						{ L"Storyboard.TargetName", L"Storyboard.TargetProperty",
+							L"Source", L"Duration", L"BeginTime", L"RepeatBehavior",
+							L"AutoReverse", L"IsAdditive", L"IsCumulative",
+							L"FillBehavior", L"SpeedRatio", L"AccelerationRatio",
+							L"DecelerationRatio" }, error)
+					: animation.Kind == DesignerAnimationKind::Point
+						? ValidateAttributes(animationElement,
+							{ L"Storyboard.TargetName", L"Storyboard.TargetProperty",
+								L"Duration", L"BeginTime", L"RepeatBehavior",
+								L"AutoReverse", L"IsAdditive", L"IsCumulative",
+								L"FillBehavior", L"SpeedRatio", L"AccelerationRatio",
+								L"DecelerationRatio" }, error)
+						: ValidateAttributes(animationElement,
+							{ L"Storyboard.TargetName", L"Storyboard.TargetProperty",
+								L"DoesRotateWithTangent", L"IsOffsetCumulative",
+								L"IsAngleCumulative", L"Duration", L"BeginTime",
+								L"RepeatBehavior", L"AutoReverse", L"IsAdditive",
+								L"FillBehavior", L"SpeedRatio", L"AccelerationRatio",
+								L"DecelerationRatio" }, error)
+				: objectAnimation
 				? ValidateAttributes(animationElement,
 					{ L"Storyboard.TargetName", L"Storyboard.TargetProperty",
 						L"Duration", L"BeginTime", L"RepeatBehavior",
@@ -4227,6 +5361,16 @@ namespace
 						+ rawProperty, error);
 				const bool compatible = animation.Kind == DesignerAnimationKind::Object
 					? true
+					: animation.Kind == DesignerAnimationKind::Boolean
+						? descriptor->ValueKind == DesignerStyleValueKind::Bool
+					: animation.Kind == DesignerAnimationKind::String
+						? descriptor->ValueKind == DesignerStyleValueKind::String
+					: animation.Kind == DesignerAnimationKind::Int32
+						? descriptor->ValueKind == DesignerStyleValueKind::Int
+					: animation.Kind == DesignerAnimationKind::Int64
+						? descriptor->ValueKind == DesignerStyleValueKind::Int64
+					: animation.Kind == DesignerAnimationKind::Single
+						? descriptor->ValueKind == DesignerStyleValueKind::Float
 					: animation.Kind == DesignerAnimationKind::Thickness
 						? descriptor->ValueKind == DesignerStyleValueKind::Thickness
 					: animation.Kind == DesignerAnimationKind::Point
@@ -4266,7 +5410,8 @@ namespace
 			auto parseEndpoint = [&](const std::wstring& raw,
 				DesignerStyleValue& literal, bool& usesResource,
 				std::wstring& resourceKey, const std::wstring& label,
-				bool isDelta = false)
+				bool isDelta = false,
+				BindingValue* normalizedValue = nullptr)
 			{
 				usesResource = TryParseStaticResource(raw, resourceKey);
 				const DesignerStyleValue* value = &literal;
@@ -4303,11 +5448,13 @@ namespace
 						objectPathKind, parsed, isDelta))
 						return Fail(L"动画 " + label
 							+ L" 与对象路径末端类型或取值范围不兼容。", error);
+					if (normalizedValue) *normalizedValue = parsed;
 				}
 				else if (!targetMetadata || !targetMetadata->CanWrite()
 					|| !targetMetadata->TryConvert(parsed, converted))
 					return Fail(L"动画 " + label
 						+ L" 无法通过目标属性 Schema 转换。", error);
+				else if (normalizedValue) *normalizedValue = converted;
 				return true;
 			};
 			const auto animationChildren = ChildElements(animationElement);
@@ -4315,39 +5462,264 @@ namespace
 				return Fail(L"动画不允许文本内容。", error);
 			auto parseEasing = [&](const Element& easingProperty,
 				const std::wstring& expectedPropertyName,
-				DesignerEasingKind& kind, DesignerEasingMode& mode)
+				DesignerEasingKind& kind, DesignerEasingMode& mode,
+				DesignerEasingParameters& parameters)
 			{
-				if (!Equals(FromUtf8(easingProperty->LocalName()), expectedPropertyName))
-					return Fail(L"EasingFunction 属性元素名称无效。", error);
-				if (!ValidateAttributes(easingProperty, {}, error)
-					|| !Trim(FromUtf8(easingProperty->InnerText())).empty()) return false;
-				const auto children = ChildElements(easingProperty);
-				if (children.size() != 1)
-					return Fail(L"EasingFunction 必须包含一个缓动对象。", error);
-				const auto& easing = children.front();
-				const auto easingName = FromUtf8(easing->LocalName());
-				if (Equals(easingName, L"QuadraticEase"))
-					kind = DesignerEasingKind::Quadratic;
-				else if (Equals(easingName, L"CubicEase"))
-					kind = DesignerEasingKind::Cubic;
-				else if (Equals(easingName, L"SineEase"))
-					kind = DesignerEasingKind::Sine;
-				else return Fail(L"EasingFunction 第一批仅支持 QuadraticEase、"
-					L"CubicEase 和 SineEase。", error);
-				if (!ValidateAttributes(easing, { L"EasingMode" }, error)
-					|| !ChildElements(easing).empty()
-					|| !Trim(FromUtf8(easing->InnerText())).empty()) return false;
-				if (const auto modeText = Attribute(easing, L"EasingMode"))
-				{
-					int parsedMode = 0;
-					if (!TryParseEnum(*modeText,
-						{ L"EaseIn", L"EaseOut", L"EaseInOut" }, parsedMode))
-						return Fail(L"EasingMode 无效。", error);
-					mode = static_cast<DesignerEasingMode>(parsedMode);
-				}
-				return true;
+				return ParseEasingProperty(easingProperty, expectedPropertyName,
+					kind, mode, parameters, error);
 			};
-			if (!keyFrameAnimation)
+			if (linePathAnimation)
+			{
+				if (animationChildren.size() != 1
+					|| !Equals(FromUtf8(animationChildren.front()->LocalName()),
+						animationName + L".PathGeometry")
+					|| !ValidateAttributes(animationChildren.front(), {}, error)
+					|| !Trim(FromUtf8(animationChildren.front()->InnerText())).empty())
+					return Fail(animationName
+						+ L" 必须且只能包含一个 PathGeometry 属性元素。", error);
+				const auto geometries = ChildElements(animationChildren.front());
+				if (geometries.size() != 1
+					|| !Equals(FromUtf8(geometries.front()->LocalName()),
+						L"PathGeometry"))
+					return Fail(animationName
+						+ L".PathGeometry 必须包含一个 PathGeometry。", error);
+				DesignValue geometry;
+				if (!ParseGeometryElement(geometries.front(), geometry, error))
+					return false;
+				const auto& figures = geometry["figures"];
+				if (geometry.value<std::string>("type", "") != "path"
+					|| !figures.is_array()
+					|| figures.empty())
+					return Fail(L"UsingPath 至少需要一个 PathFigure。",
+						error);
+				WpfPathMatrix pathTransform;
+				const bool hasPathTransform = geometry.contains("transform");
+				if (hasPathTransform && !TryComposeWpfPathTransform(
+					geometry["transform"], pathTransform))
+					return Fail(L"UsingPath 的 PathGeometry.Transform 无法按 WPF 矩阵契约归一。",
+						error);
+				bool firstFigure = true;
+				for (const auto& figure : figures.ArrayItems())
+				{
+				const auto& segments = figure["segments"];
+				if (!figure.is_object()
+					|| !segments.is_array())
+					return Fail(L"UsingPath PathFigure segments 无效。",
+						error);
+				const bool isClosed = figure.value<bool>("closed", false);
+				const auto startX = figure.value<double>("startX", 0.0);
+				const auto startY = figure.value<double>("startY", 0.0);
+				if (!std::isfinite(startX) || !std::isfinite(startY))
+					return Fail(L"UsingPath 的 StartPoint 必须有限。", error);
+				cui::core::Point figureStart{
+					static_cast<float>(startX), static_cast<float>(startY) };
+				if (hasPathTransform)
+					figureStart = TransformWpfPathPoint(pathTransform, figureStart);
+				if (!std::isfinite(figureStart.x)
+					|| !std::isfinite(figureStart.y))
+					return Fail(L"UsingPath 的 StartPoint 超出 float 范围。", error);
+				animation.Path.Enabled = true;
+				const auto figureOutputOffset = animation.PathSegments.size();
+				if (firstFigure) animation.Path.Start = figureStart;
+				else
+				{
+					DeclarativePathAnimationSegment move;
+					move.Kind = DeclarativePathSegmentKind::Move;
+					move.Point3 = figureStart;
+					animation.PathSegments.push_back(move);
+				}
+				const auto acceptedOffset = animation.PathSegments.size();
+				auto current = figureStart;
+				double currentSourceX = startX;
+				double currentSourceY = startY;
+				for (const auto& sourceSegment : segments)
+				{
+					std::vector<DeclarativePathAnimationSegment> normalizedSegments;
+					DeclarativePathAnimationSegment segment;
+					const auto type = sourceSegment.value<std::string>("type", "");
+					double endSourceX = 0.0;
+					double endSourceY = 0.0;
+					if (type == "line")
+					{
+						segment.Kind = DeclarativePathSegmentKind::Line;
+						endSourceX = sourceSegment.value<double>("x", 0.0);
+						endSourceY = sourceSegment.value<double>("y", 0.0);
+						segment.Point3 = {
+							static_cast<float>(endSourceX),
+							static_cast<float>(endSourceY) };
+						normalizedSegments.push_back(segment);
+					}
+					else if (type == "bezier")
+					{
+						segment.Kind = DeclarativePathSegmentKind::CubicBezier;
+						segment.Point1 = {
+							static_cast<float>(sourceSegment.value<double>("x1", 0.0)),
+							static_cast<float>(sourceSegment.value<double>("y1", 0.0)) };
+						segment.Point2 = {
+							static_cast<float>(sourceSegment.value<double>("x2", 0.0)),
+							static_cast<float>(sourceSegment.value<double>("y2", 0.0)) };
+						endSourceX = sourceSegment.value<double>("x3", 0.0);
+						endSourceY = sourceSegment.value<double>("y3", 0.0);
+						segment.Point3 = { static_cast<float>(endSourceX),
+							static_cast<float>(endSourceY) };
+						normalizedSegments.push_back(segment);
+					}
+					else if (type == "quadratic")
+					{
+						// WPF elevates the quadratic in double, then casts the generated
+						// cubic points to float before CAnimationPath sees the segment.
+						constexpr double oneThird = 0.33333333333333333;
+						constexpr double twoThirds = 0.66666666666666666;
+						const auto controlX = sourceSegment.value<double>("x1", 0.0);
+						const auto controlY = sourceSegment.value<double>("y1", 0.0);
+						endSourceX = sourceSegment.value<double>("x2", 0.0);
+						endSourceY = sourceSegment.value<double>("y2", 0.0);
+						segment.Kind = DeclarativePathSegmentKind::CubicBezier;
+						segment.Point1 = {
+							static_cast<float>(oneThird * currentSourceX
+								+ twoThirds * controlX),
+							static_cast<float>(oneThird * currentSourceY
+								+ twoThirds * controlY) };
+						segment.Point2 = {
+							static_cast<float>(twoThirds * controlX
+								+ oneThird * endSourceX),
+							static_cast<float>(twoThirds * controlY
+								+ oneThird * endSourceY) };
+						segment.Point3 = { static_cast<float>(endSourceX),
+							static_cast<float>(endSourceY) };
+						normalizedSegments.push_back(segment);
+					}
+					else if (type == "arc")
+					{
+						endSourceX = sourceSegment.value<double>("x", 0.0);
+						endSourceY = sourceSegment.value<double>("y", 0.0);
+						if (!TryExpandWpfArc(
+							{ static_cast<float>(currentSourceX),
+								static_cast<float>(currentSourceY) },
+							static_cast<float>(sourceSegment.value<double>("width", 0.0)),
+							static_cast<float>(sourceSegment.value<double>("height", 0.0)),
+							static_cast<float>(sourceSegment.value<double>("rotation", 0.0)),
+							sourceSegment.value<bool>("large", false),
+							sourceSegment.value<std::string>("sweep", "counterclockwise")
+								== "clockwise",
+							{ static_cast<float>(endSourceX),
+								static_cast<float>(endSourceY) },
+							normalizedSegments))
+							return Fail(L"UsingPath ArcSegment 无法按 WPF float 契约展开。",
+								error);
+					}
+					else return Fail(L"UsingPath 当前仅支持 LineSegment、BezierSegment、QuadraticBezierSegment 和 ArcSegment。",
+						error);
+					auto finitePoint = [](cui::core::Point point)
+						{ return std::isfinite(point.x) && std::isfinite(point.y); };
+					const auto norm = [](cui::core::Point left,
+						cui::core::Point right)
+					{
+						const float x = right.x - left.x;
+						const float y = right.y - left.y;
+						return ::sqrtf(x * x + y * y);
+					};
+					for (const auto& normalized : normalizedSegments)
+					{
+						auto prepared = normalized;
+						if (hasPathTransform)
+						{
+							if (prepared.Kind == DeclarativePathSegmentKind::CubicBezier)
+							{
+								prepared.Point1 = TransformWpfPathPoint(
+									pathTransform, prepared.Point1);
+								prepared.Point2 = TransformWpfPathPoint(
+									pathTransform, prepared.Point2);
+							}
+							prepared.Point3 = TransformWpfPathPoint(
+								pathTransform, prepared.Point3);
+						}
+						if (!finitePoint(prepared.Point1)
+							|| !finitePoint(prepared.Point2)
+							|| !finitePoint(prepared.Point3))
+							return Fail(L"UsingPath segment 坐标必须有限且可表示为 float。",
+								error);
+						const bool degenerate = prepared.Kind
+							== DeclarativePathSegmentKind::Line
+							? norm(current, prepared.Point3) < 1.0e-6f
+							: 3.0f * norm(current, prepared.Point1) < 1.0e-6f
+								&& norm(prepared.Point1, prepared.Point2) < 1.0e-6f
+								&& norm(prepared.Point1, prepared.Point3) < 1.0e-6f;
+						// WPF CAnimationPath weeds out degenerate normalized pieces
+						// without advancing its accepted-segment float point.
+						if (degenerate) continue;
+						animation.PathSegments.push_back(prepared);
+						current = prepared.Point3;
+					}
+					// PathGeometry traversal advances the authored-source point even
+					// when CAnimationPath weeds out every normalized piece.
+					currentSourceX = endSourceX;
+					currentSourceY = endSourceY;
+				}
+				// PathFigureData exposes one implied closing Line only when the raw
+				// final source endpoint differs exactly from the raw StartPoint. The
+				// endpoint is the already transformed StartPoint; CAnimationPath then
+				// weeds it against the last accepted transformed float point.
+				if (isClosed
+					&& (currentSourceX != startX || currentSourceY != startY))
+				{
+					const float deltaX = figureStart.x - current.x;
+					const float deltaY = figureStart.y - current.y;
+					if (::sqrtf(deltaX * deltaX + deltaY * deltaY) >= 1.0e-6f)
+					{
+						DeclarativePathAnimationSegment closing;
+						closing.Kind = DeclarativePathSegmentKind::Line;
+						closing.Point3 = figureStart;
+						animation.PathSegments.push_back(closing);
+					}
+				}
+				if (animation.PathSegments.size() == acceptedOffset)
+				{
+					animation.PathSegments.resize(figureOutputOffset);
+					continue;
+				}
+				firstFigure = false;
+				}
+				if (firstFigure || animation.PathSegments.empty())
+					return Fail(L"UsingPath 至少需要一个非退化 segment。", error);
+				if (animation.Kind == DesignerAnimationKind::Double)
+				{
+					const auto source = Trim(Attribute(
+						animationElement, L"Source").value_or(L"X"));
+					if (Equals(source, L"X"))
+						animation.Path.Source = DeclarativePathAnimationSource::X;
+					else if (Equals(source, L"Y"))
+						animation.Path.Source = DeclarativePathAnimationSource::Y;
+					else if (Equals(source, L"Angle"))
+						animation.Path.Source = DeclarativePathAnimationSource::Angle;
+					else return Fail(L"DoubleAnimationUsingPath.Source 只能是 X、Y 或 Angle。",
+						error);
+				}
+				else if (animation.Kind == DesignerAnimationKind::Matrix)
+				{
+					if (const auto rotate = Attribute(
+						animationElement, L"DoesRotateWithTangent"); rotate
+						&& !TryParseBool(*rotate,
+							animation.Path.DoesRotateWithTangent))
+						return Fail(L"DoesRotateWithTangent 必须是布尔值。", error);
+					if (const auto cumulative = Attribute(
+						animationElement, L"IsOffsetCumulative"); cumulative
+						&& !TryParseBool(*cumulative,
+							animation.Path.IsOffsetCumulative))
+						return Fail(L"IsOffsetCumulative 必须是布尔值。", error);
+					if (const auto cumulative = Attribute(
+						animationElement, L"IsAngleCumulative"); cumulative
+						&& !TryParseBool(*cumulative,
+							animation.Path.IsAngleCumulative))
+						return Fail(L"IsAngleCumulative 必须是布尔值。", error);
+				}
+				if (!TryResolveAnimationDuration(
+					Attribute(animationElement, L"Duration"), 1000,
+					animation.DurationMilliseconds))
+					return Fail(L"动画 Duration 必须是 Automatic 或有限 TimeSpan。",
+						error);
+			}
+			else if (!keyFrameAnimation)
 			{
 				if (const auto to = Attribute(animationElement, L"To"))
 				{
@@ -4370,10 +5742,11 @@ namespace
 						animation.ByUsesResource,
 						animation.ByResourceKey, L"By", true)) return false;
 				}
-				const auto duration = Attribute(animationElement, L"Duration");
-				if (!duration || !TryParseTimeSpanMilliseconds(
-					*duration, animation.DurationMilliseconds))
-					return Fail(L"动画 Duration 必须是有限 TimeSpan。", error);
+				if (!TryResolveAnimationDuration(
+					Attribute(animationElement, L"Duration"), 1000,
+					animation.DurationMilliseconds))
+					return Fail(L"动画 Duration 必须是 Automatic 或有限 TimeSpan。",
+						error);
 				if (!animationChildren.empty())
 				{
 					if (animationChildren.size() != 1)
@@ -4381,7 +5754,8 @@ namespace
 							error);
 					if (!parseEasing(animationChildren.front(),
 						animationName + L".EasingFunction",
-						animation.Easing, animation.EasingMode)) return false;
+						animation.Easing, animation.EasingMode,
+						animation.EasingParameters)) return false;
 				}
 			}
 			else
@@ -4394,7 +5768,16 @@ namespace
 								? L"Vector" : animation.Kind == DesignerAnimationKind::Rect
 								? L"Rect" : animation.Kind == DesignerAnimationKind::Size
 								? L"Size" : animation.Kind == DesignerAnimationKind::Matrix
-								? L"Matrix" : L"Double";
+								? L"Matrix" : animation.Kind == DesignerAnimationKind::Int32
+								? L"Int32" : animation.Kind == DesignerAnimationKind::Int64
+								? L"Int64" : animation.Kind == DesignerAnimationKind::Single
+								? L"Single" : animation.Kind == DesignerAnimationKind::Boolean
+								? L"Boolean" : animation.Kind == DesignerAnimationKind::String
+								? L"String" : L"Double";
+				std::vector<ParsedAnimationKeyTime> parsedKeyTimes;
+				std::vector<BindingValue> pacedValues;
+				parsedKeyTimes.reserve(animationChildren.size());
+				pacedValues.reserve(animationChildren.size());
 				for (const auto& keyFrameElement : animationChildren)
 				{
 					DiagnosticContext keyFrameContext(*this, keyFrameElement);
@@ -4422,12 +5805,14 @@ namespace
 							: std::initializer_list<const wchar_t*>{
 								L"KeyTime", L"Value" }, error)) return false;
 					const auto keyTime = Attribute(keyFrameElement, L"KeyTime");
-					if (!keyTime || !TryParseTimeSpanMilliseconds(
-						*keyTime, keyFrame.KeyTimeMilliseconds))
-						return Fail(L"关键帧 KeyTime 必须是显式有限 TimeSpan。", error);
+					ParsedAnimationKeyTime parsedKeyTime;
+					if (!keyTime || !TryParseAnimationKeyTime(
+						*keyTime, parsedKeyTime))
+						return Fail(L"关键帧 KeyTime 必须是 TimeSpan、Percent、Uniform 或 Paced。", error);
 					const auto children = ChildElements(keyFrameElement);
 					if (!Trim(FromUtf8(keyFrameElement->InnerText())).empty())
 						return Fail(L"关键帧不允许文本内容。", error);
+					BindingValue pacedValue;
 					const auto value = Attribute(keyFrameElement, L"Value");
 					if (value)
 					{
@@ -4435,9 +5820,12 @@ namespace
 							&& keyFrame.Kind != DesignerKeyFrameKind::Easing)
 							return Fail(L"关键帧 Value 特性不能与 Value 属性元素混用。",
 								error);
+						BindingValue normalizedValue;
 						if (!parseEndpoint(*value, keyFrame.Value,
-							keyFrame.UsesResource, keyFrame.ResourceKey, L"KeyFrame"))
+							keyFrame.UsesResource, keyFrame.ResourceKey, L"KeyFrame",
+							false, &normalizedValue))
 							return false;
+						pacedValue = std::move(normalizedValue);
 					}
 					else if (objectAnimation)
 					{
@@ -4496,7 +5884,8 @@ namespace
 								error);
 						if (!children.empty() && !parseEasing(children.front(),
 							keyFrameName + L".EasingFunction",
-							keyFrame.Easing, keyFrame.EasingMode)) return false;
+							keyFrame.Easing, keyFrame.EasingMode,
+							keyFrame.EasingParameters)) return false;
 					}
 					else if (!objectAnimation && !children.empty())
 						return Fail(L"仅 EasingKeyFrame 允许 EasingFunction 子元素。",
@@ -4511,28 +5900,370 @@ namespace
 								error);
 					}
 					animation.KeyFrames.push_back(std::move(keyFrame));
+					parsedKeyTimes.push_back(parsedKeyTime);
+					pacedValues.push_back(pacedValue);
 				}
 				if (animation.KeyFrames.empty())
 					return Fail(L"UsingKeyFrames 至少需要一个关键帧。", error);
-				std::stable_sort(animation.KeyFrames.begin(),
-					animation.KeyFrames.end(), [](const auto& left, const auto& right)
-					{
-						return left.KeyTimeMilliseconds < right.KeyTimeMilliseconds;
-					});
-				if (const auto duration = Attribute(animationElement, L"Duration"))
-				{
-					if (!TryParseTimeSpanMilliseconds(
-						*duration, animation.DurationMilliseconds))
-						return Fail(L"动画 Duration 必须是有限 TimeSpan。", error);
-				}
-				else animation.DurationMilliseconds =
-					animation.KeyFrames.back().KeyTimeMilliseconds;
+				if (!TryResolveAnimationKeyTimes(animation.Kind,
+					Attribute(animationElement, L"Duration"), animation.KeyFrames,
+					parsedKeyTimes, pacedValues, animation.DurationMilliseconds))
+					return Fail(L"动画 KeyTime 无法在有限 Duration 内按 WPF 规则解析。",
+						error);
 			}
 			if (const auto begin = Attribute(animationElement, L"BeginTime");
 				begin && !TryParseTimeSpanMilliseconds(
 					*begin, animation.BeginTimeMilliseconds))
 				return Fail(L"动画 BeginTime 必须是有限 TimeSpan。", error);
 			return ParseTimelineBehavior(animationElement, animation, error);
+		}
+
+		bool ParseParallelTimeline(
+			const Element& element,
+			const DesignComponentDefinition& component,
+			DesignerTimelineGroup& group,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, element);
+			if (!Equals(FromUtf8(element->LocalName()), L"ParallelTimeline"))
+				return Fail(L"嵌套 TimelineGroup 当前仅支持 ParallelTimeline。", error);
+			if (!ParseStoryboardTiming(element, group.Timing, error)
+				|| !Trim(FromUtf8(element->InnerText())).empty()) return false;
+			for (const auto& child : ChildElements(element))
+			{
+				if (Equals(FromUtf8(child->LocalName()), L"ParallelTimeline"))
+				{
+					DesignerTimelineGroup nested;
+					if (!ParseParallelTimeline(child, component, nested, error)) return false;
+					group.Children.push_back(std::move(nested));
+					continue;
+				}
+				DesignerVisualStateAnimation animation;
+				StoryboardObjectPathKind ignored = StoryboardObjectPathKind::None;
+				if (!ParseStoryboardAnimation(
+					child, component, animation, ignored, error)) return false;
+				group.Animations.push_back(std::move(animation));
+			}
+			if (group.Animations.empty() && group.Children.empty())
+				return Fail(L"ParallelTimeline 至少需要一个动画或子 ParallelTimeline。",
+					error);
+			return true;
+		}
+
+		bool ParseStoryboardResource(
+			const Element& element,
+			std::wstring& error)
+		{
+			DesignStoryboardResource resource;
+			resource.Key = Trim(Attribute(element, L"Key", L"x").value_or(
+				Attribute(element, L"Key").value_or(L"")));
+			DesignerStoryboardTiming timingProbe;
+			if (!ValidateIdentifier(resource.Key, L"Storyboard x:Key", error)
+				|| !ParseStoryboardTiming(element, timingProbe, error, true)
+				|| !Trim(FromUtf8(element->InnerText())).empty()) return false;
+			if (ChildElements(element).empty())
+				return Fail(L"Storyboard 资源不能为空。", error);
+			resource.SourceDictionary = _currentDictionaryOrigin;
+			auto& resources = _objectResourceTarget
+				? _objectResourceTarget->Storyboards : _document.Storyboards;
+			resources.erase(std::remove_if(resources.begin(), resources.end(),
+				[&](const auto& current)
+				{ return Equals(current.Key, resource.Key); }), resources.end());
+			resources.push_back(resource);
+			const auto scopeId = _objectResourceTarget
+				? _objectResourceTarget->TransientScopeId : 0;
+			_pendingStoryboardResources.erase(std::remove_if(
+				_pendingStoryboardResources.begin(),
+				_pendingStoryboardResources.end(), [&](const auto& pending)
+				{
+					return pending.ScopeId == scopeId
+						&& Equals(pending.Key, resource.Key);
+				}), _pendingStoryboardResources.end());
+			_pendingStoryboardResources.push_back({
+				scopeId, resource.Key, resource.SourceDictionary, element, std::nullopt });
+			return true;
+		}
+
+		template<typename TVisitor>
+		static bool VisitTimelineGroupAnimations(
+			const DesignerTimelineGroup& group,
+			TVisitor&& visitor)
+		{
+			for (const auto& animation : group.Animations)
+				if (!visitor(animation)) return false;
+			for (const auto& child : group.Children)
+				if (!VisitTimelineGroupAnimations(child, visitor)) return false;
+			return true;
+		}
+
+		bool NormalizePendingStoryboardResource(
+			PendingStoryboardResource& pending,
+			const DesignComponentDefinition& component,
+			DesignStoryboardResource& output,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, pending.AuthoredElement);
+			DesignStoryboardResource candidate;
+			candidate.Key = pending.Key;
+			candidate.SourceDictionary = pending.SourceDictionary;
+			if (!ParseStoryboardTiming(pending.AuthoredElement,
+				candidate.Timing, error, true)
+				|| !Trim(FromUtf8(
+					pending.AuthoredElement->InnerText())).empty()) return false;
+			struct PropertyOwnership
+			{
+				std::wstring TargetName;
+				std::wstring RootProperty;
+				bool Exclusive = false;
+				std::vector<std::wstring> Paths;
+			};
+			std::vector<PropertyOwnership> properties;
+			auto acceptAnimation = [&](const DesignerVisualStateAnimation& animation)
+			{
+				const auto rootProperty =
+					StoryboardAnimationRootProperty(animation.PropertyName);
+				auto owner = std::find_if(properties.begin(), properties.end(),
+					[&](const auto& existing)
+					{
+						return Equals(existing.TargetName, animation.TargetName)
+							&& Equals(existing.RootProperty, rootProperty);
+					});
+				const bool exclusive = ClassifyStoryboardObjectPath(
+					animation.PropertyName) == StoryboardObjectPathKind::None;
+				if (owner != properties.end())
+				{
+					if (exclusive || owner->Exclusive
+						|| std::any_of(owner->Paths.begin(), owner->Paths.end(),
+							[&](const auto& path)
+							{ return Equals(path, animation.PropertyName); }))
+						return Fail(L"Storyboard 资源目标重复："
+							+ animation.PropertyName, error);
+					owner->Paths.push_back(animation.PropertyName);
+				}
+				else
+				{
+					PropertyOwnership ownership;
+					ownership.TargetName = animation.TargetName;
+					ownership.RootProperty = rootProperty;
+					ownership.Exclusive = exclusive;
+					if (!exclusive) ownership.Paths.push_back(animation.PropertyName);
+					properties.push_back(std::move(ownership));
+				}
+				return true;
+			};
+			for (const auto& child : ChildElements(pending.AuthoredElement))
+			{
+				if (Equals(FromUtf8(child->LocalName()), L"ParallelTimeline"))
+				{
+					DesignerTimelineGroup group;
+					if (!ParseParallelTimeline(child, component, group, error)
+						|| !VisitTimelineGroupAnimations(group,
+							acceptAnimation)) return false;
+					candidate.TimelineGroups.push_back(std::move(group));
+					continue;
+				}
+				DesignerVisualStateAnimation animation;
+				StoryboardObjectPathKind ignored = StoryboardObjectPathKind::None;
+				if (!ParseStoryboardAnimation(
+					child, component, animation, ignored, error)
+					|| !acceptAnimation(animation)) return false;
+				candidate.Animations.push_back(std::move(animation));
+			}
+			if (candidate.Animations.empty() && candidate.TimelineGroups.empty())
+				return Fail(L"Storyboard 资源不能为空。", error);
+			if (pending.Normalized && *pending.Normalized != candidate)
+				return Fail(L"Storyboard 资源在不同 Begin NameScope 中解析为不兼容定义："
+					+ pending.Key, error);
+			if (!pending.Normalized) pending.Normalized = candidate;
+			output = std::move(candidate);
+			return true;
+		}
+
+		bool ResolveStoryboardResourceDefinition(
+			const DesignComponentDefinition& component,
+			const std::wstring& resourceKey,
+			DesignStoryboardResource& normalized,
+			std::wstring& error,
+			bool styleScope = false)
+		{
+			const auto visible = FindVisibleStoryboard(resourceKey);
+			if (!visible)
+			{
+				if (FindVisibleResource(resourceKey))
+					return Fail(L"Storyboard StaticResource 引用的资源不是 Storyboard："
+						+ resourceKey, error);
+				return Fail(L"Storyboard StaticResource 引用了不存在的 Storyboard："
+					+ resourceKey, error);
+			}
+			auto pending = std::find_if(_pendingStoryboardResources.rbegin(),
+				_pendingStoryboardResources.rend(), [&](const auto& candidate)
+				{
+					return candidate.ScopeId == visible->ScopeId
+						&& Equals(candidate.Key, resourceKey);
+				});
+			if (pending != _pendingStoryboardResources.rend())
+			{
+				if (styleScope)
+				{
+					std::function<bool(const Element&)> hasTargetName;
+					hasTargetName = [&](const Element& element)
+					{
+						if (!Trim(Attribute(element,
+							L"Storyboard.TargetName").value_or(L"")).empty())
+							return true;
+						for (const auto& child : ChildElements(element))
+							if (hasTargetName(child)) return true;
+						return false;
+					};
+					if (hasTargetName(pending->AuthoredElement))
+						return Fail(L"Style Storyboard 不支持 Storyboard.TargetName。",
+							error);
+				}
+				if (!NormalizePendingStoryboardResource(
+					*pending, component, normalized, error)) return false;
+			}
+			else
+			{
+				normalized = *visible->Definition;
+				if (normalized.Animations.empty()
+					&& normalized.TimelineGroups.empty())
+					return Fail(L"Storyboard 资源尚未形成可执行定义："
+						+ resourceKey, error);
+			}
+			return true;
+		}
+
+		bool ResolveStoryboardResourceAction(
+			const DesignComponentDefinition& component,
+			DesignerEventTriggerAction& action,
+			std::wstring& error,
+			bool styleScope = false)
+		{
+			DesignStoryboardResource normalized;
+			if (!ResolveStoryboardResourceDefinition(component,
+				action.StoryboardResourceKey, normalized, error, styleScope))
+				return false;
+			action.StoryboardTiming = normalized.Timing;
+			action.Animations = normalized.Animations;
+			action.TimelineGroups = normalized.TimelineGroups;
+			return true;
+		}
+
+		bool ValidateResolvedStoryboardActionOwnership(
+			const DesignerEventTriggerAction& action,
+			bool styleScope,
+			std::wstring& error)
+		{
+			struct PropertyOwnership
+			{
+				std::wstring RootProperty;
+				bool Exclusive = false;
+				std::vector<std::wstring> Paths;
+			};
+			std::vector<PropertyOwnership> properties;
+			auto accept = [&](const DesignerVisualStateAnimation& animation)
+			{
+				if (styleScope && !animation.TargetName.empty())
+					return Fail(L"Style Storyboard 不支持 Storyboard.TargetName。",
+						error);
+				const auto rootProperty =
+					StoryboardAnimationRootProperty(animation.PropertyName);
+				auto owner = std::find_if(properties.begin(), properties.end(),
+					[&](const auto& existing)
+					{ return Equals(existing.RootProperty, rootProperty); });
+				const bool exclusive = ClassifyStoryboardObjectPath(
+					animation.PropertyName) == StoryboardObjectPathKind::None;
+				if (owner != properties.end())
+				{
+					if (exclusive || owner->Exclusive
+						|| std::any_of(owner->Paths.begin(), owner->Paths.end(),
+							[&](const auto& path)
+							{ return Equals(path, animation.PropertyName); }))
+						return Fail(L"BeginStoryboard 目标重复："
+							+ animation.PropertyName, error);
+					owner->Paths.push_back(animation.PropertyName);
+				}
+				else
+				{
+					PropertyOwnership ownership;
+					ownership.RootProperty = rootProperty;
+					ownership.Exclusive = exclusive;
+					if (!exclusive) ownership.Paths.push_back(animation.PropertyName);
+					properties.push_back(std::move(ownership));
+				}
+				return true;
+			};
+			for (const auto& animation : action.Animations)
+				if (!accept(animation)) return false;
+			for (const auto& group : action.TimelineGroups)
+				if (!VisitTimelineGroupAnimations(group, accept)) return false;
+			return true;
+		}
+
+		bool ApplyPendingStoryboardResources(std::wstring& error)
+		{
+			if (_pendingStoryboardResources.empty()) return true;
+			std::vector<bool> applied(_pendingStoryboardResources.size(), false);
+			auto applyResource = [&](DesignStoryboardResource& resource,
+				std::uint64_t scopeId)
+			{
+				const auto pending = std::find_if(
+					_pendingStoryboardResources.begin(),
+					_pendingStoryboardResources.end(), [&](const auto& candidate)
+					{
+						return candidate.ScopeId == scopeId
+							&& Equals(candidate.Key, resource.Key);
+					});
+				if (pending == _pendingStoryboardResources.end())
+					return Fail(L"Storyboard 资源声明丢失 deferred definition："
+						+ resource.Key, error);
+				if (!pending->Normalized)
+					return Fail(L"Storyboard 资源没有可验证的 BeginStoryboard 使用点："
+						+ resource.Key, error);
+				resource = *pending->Normalized;
+				applied[static_cast<std::size_t>(std::distance(
+					_pendingStoryboardResources.begin(), pending))] = true;
+				return true;
+			};
+			std::unordered_set<std::uint64_t> visitedScopes;
+			std::function<bool(std::vector<DesignNode>&)> visitNodes;
+			std::function<bool(DesignObjectResourceDictionary&)> visitDictionary;
+			visitDictionary = [&](DesignObjectResourceDictionary& dictionary)
+			{
+				if (dictionary.TransientScopeId != 0
+					&& !visitedScopes.insert(dictionary.TransientScopeId).second)
+					return true;
+				for (auto& resource : dictionary.Storyboards)
+					if (!applyResource(resource, dictionary.TransientScopeId))
+						return false;
+				for (auto& component : dictionary.Components)
+					if (!visitNodes(component.Template)) return false;
+				for (auto& controlTemplate : dictionary.ControlTemplates)
+					if (!visitNodes(controlTemplate.Template)) return false;
+				for (auto& dataTemplate : dictionary.DataTemplates)
+					if (!visitNodes(dataTemplate.Template)) return false;
+				return true;
+			};
+			visitNodes = [&](std::vector<DesignNode>& nodes)
+			{
+				for (auto& node : nodes)
+					if (!visitDictionary(node.LocalObjectResources)) return false;
+				return true;
+			};
+			for (auto& resource : _document.Storyboards)
+				if (!applyResource(resource, 0)) return false;
+			for (auto& component : _document.Components)
+				if (!visitNodes(component.Template)) return false;
+			for (auto& controlTemplate : _document.ControlTemplates)
+				if (!visitNodes(controlTemplate.Template)) return false;
+			for (auto& dataTemplate : _document.DataTemplates)
+				if (!visitNodes(dataTemplate.Template)) return false;
+			if (!visitNodes(_document.Nodes)) return false;
+			if (std::any_of(applied.begin(), applied.end(),
+				[](bool value) { return !value; }))
+				return Fail(L"Storyboard deferred resource scope 无法映射到最终文档。",
+					error);
+			return true;
 		}
 
 		bool ParseVisualStateGroups(
@@ -4565,6 +6296,35 @@ namespace
 					component.VisualStateGroups.end(), [&](const auto& existing)
 					{ return Equals(existing.Name, group.Name); }))
 					return Fail(L"视觉状态组名称重复：" + group.Name, error);
+				auto registerResourceTargets = [&](const DesignStoryboardResource& resource,
+					const std::wstring& contextLabel)
+				{
+					auto accept = [&](const DesignerVisualStateAnimation& animation)
+					{
+						const auto rootProperty = StoryboardAnimationRootProperty(
+							animation.PropertyName);
+						const auto controlledKey = animation.TargetName + L"|"
+							+ rootProperty;
+						const auto controlled = std::find_if(
+							controlledProperties.begin(), controlledProperties.end(),
+							[&](const auto& existing)
+							{ return existing.first == controlledKey; });
+						if (controlled != controlledProperties.end()
+							&& !Equals(controlled->second, group.Name))
+							return Fail(L"不同 VisualStateGroup 不能控制同一"
+								+ contextLabel + L"属性：" + rootProperty, error);
+						if (controlled == controlledProperties.end())
+							controlledProperties.emplace_back(
+								controlledKey, group.Name);
+						return true;
+					};
+					for (const auto& animation : resource.Animations)
+						if (!accept(animation)) return false;
+					for (const auto& timelineGroup : resource.TimelineGroups)
+						if (!VisitTimelineGroupAnimations(timelineGroup, accept))
+							return false;
+					return true;
+				};
 				std::optional<size_t> fallbackState;
 				std::vector<std::wstring> groupEvents;
 				Element transitionsElement;
@@ -4585,7 +6345,8 @@ namespace
 					if (!Equals(FromUtf8(stateElement->LocalName()), L"VisualState"))
 						return Fail(L"VisualStateGroup 仅允许 Transitions 和 VisualState。",
 							error);
-					if (!ValidateAttributes(stateElement, { L"Name" }, error, true))
+					if (!ValidateAttributes(stateElement,
+						{ L"Name", L"Storyboard" }, error, true))
 						return false;
 					DesignerVisualState state;
 					state.Name = Trim(Attribute(stateElement, L"Name", L"x").value_or(
@@ -4598,6 +6359,23 @@ namespace
 					bool foundTriggers = false;
 					bool foundSetters = false;
 					bool foundStoryboard = false;
+					if (const auto storyboardReference = Attribute(
+						stateElement, L"Storyboard"))
+					{
+						if (!TryParseStaticResource(
+							*storyboardReference, state.StoryboardResourceKey))
+							return Fail(L"VisualState.Storyboard 仅支持严格 StaticResource 引用。",
+								error);
+						DesignStoryboardResource normalized;
+						if (!ResolveStoryboardResourceDefinition(component,
+							state.StoryboardResourceKey, normalized, error)
+							|| !registerResourceTargets(
+								normalized, L"动画")) return false;
+						state.StoryboardTiming = normalized.Timing;
+						state.Animations = normalized.Animations;
+						state.TimelineGroups = normalized.TimelineGroups;
+						foundStoryboard = true;
+					}
 					for (const auto& child : ChildElements(stateElement))
 					{
 						const auto childName = FromUtf8(child->LocalName());
@@ -4696,13 +6474,77 @@ namespace
 								return Fail(L"VisualState.Storyboard 必须包含一个 Storyboard。",
 									error);
 							const auto& storyboard = storyboards.front();
-							if (!ValidateAttributes(storyboard, {}, error)
+							if (!ParseStoryboardTiming(
+								storyboard, state.StoryboardTiming, error)
 								|| !Trim(FromUtf8(storyboard->InnerText())).empty()) return false;
+							std::vector<DesignerVisualStateAnimation> storyboardOwnership;
 							for (const auto& animationElement : ChildElements(storyboard))
 							{
+								if (Equals(FromUtf8(animationElement->LocalName()),
+									L"ParallelTimeline"))
+								{
+									DesignerTimelineGroup timelineGroup;
+									if (!ParseParallelTimeline(animationElement, component,
+										timelineGroup, error)
+										|| !VisitTimelineGroupAnimations(timelineGroup,
+											[&](const auto& animation)
+											{
+												const auto rootProperty =
+													StoryboardAnimationRootProperty(
+														animation.PropertyName);
+												const bool indirectPath =
+													ClassifyStoryboardObjectPath(animation.PropertyName)
+													!= StoryboardObjectPathKind::None;
+												const bool duplicate = std::any_of(
+													state.Setters.begin(), state.Setters.end(),
+													[&](const auto& existing)
+													{ return Equals(existing.TargetName,
+														animation.TargetName)
+														&& Equals(existing.PropertyName, rootProperty); })
+													|| std::any_of(storyboardOwnership.begin(),
+														storyboardOwnership.end(), [&](const auto& existing)
+														{
+															if (!Equals(existing.TargetName,
+																animation.TargetName)) return false;
+															const auto existingKind =
+																ClassifyStoryboardObjectPath(existing.PropertyName);
+															const auto existingRoot =
+																StoryboardAnimationRootProperty(existing.PropertyName);
+															return Equals(existing.PropertyName,
+																animation.PropertyName)
+																|| (Equals(existingRoot, rootProperty)
+																	&& (existingKind
+																		== StoryboardObjectPathKind::None
+																		|| !indirectPath));
+														});
+												if (duplicate)
+													return Fail(L"同一 VisualState 的 Setter/Storyboard 目标重复："
+														+ animation.TargetName + L"."
+														+ animation.PropertyName, error);
+												const auto controlledKey = animation.TargetName + L"|"
+													+ rootProperty;
+												const auto controlled = std::find_if(
+													controlledProperties.begin(), controlledProperties.end(),
+													[&](const auto& existing)
+													{ return existing.first == controlledKey; });
+												if (controlled != controlledProperties.end()
+													&& !Equals(controlled->second, group.Name))
+													return Fail(L"不同 VisualStateGroup 不能控制同一动画属性："
+														+ animation.PropertyName, error);
+												if (controlled == controlledProperties.end())
+													controlledProperties.emplace_back(
+														controlledKey, group.Name);
+												storyboardOwnership.push_back(animation);
+												return true;
+											})) return false;
+									state.TimelineGroups.push_back(std::move(timelineGroup));
+									continue;
+								}
 								const auto sharedAnimationName = FromUtf8(
 									animationElement->LocalName());
-								if (Equals(sharedAnimationName, L"DoubleAnimation")
+				if (Equals(sharedAnimationName, L"DoubleAnimation")
+					|| Equals(sharedAnimationName,
+						L"DoubleAnimationUsingPath")
 									|| Equals(sharedAnimationName,
 										L"DoubleAnimationUsingKeyFrames")
 									|| Equals(sharedAnimationName, L"ColorAnimation")
@@ -4713,7 +6555,9 @@ namespace
 									|| Equals(sharedAnimationName, L"ThicknessAnimation")
 									|| Equals(sharedAnimationName,
 										L"ThicknessAnimationUsingKeyFrames")
-									|| Equals(sharedAnimationName, L"PointAnimation")
+					|| Equals(sharedAnimationName, L"PointAnimation")
+					|| Equals(sharedAnimationName,
+						L"PointAnimationUsingPath")
 									|| Equals(sharedAnimationName,
 										L"PointAnimationUsingKeyFrames")
 									|| Equals(sharedAnimationName, L"VectorAnimation")
@@ -4725,9 +6569,24 @@ namespace
 									|| Equals(sharedAnimationName, L"SizeAnimation")
 									|| Equals(sharedAnimationName,
 										L"SizeAnimationUsingKeyFrames")
-									|| Equals(sharedAnimationName, L"MatrixAnimation")
+					|| Equals(sharedAnimationName, L"MatrixAnimation")
+					|| Equals(sharedAnimationName,
+						L"MatrixAnimationUsingPath")
 									|| Equals(sharedAnimationName,
-										L"MatrixAnimationUsingKeyFrames"))
+										L"MatrixAnimationUsingKeyFrames")
+									|| Equals(sharedAnimationName, L"Int32Animation")
+									|| Equals(sharedAnimationName,
+										L"Int32AnimationUsingKeyFrames")
+									|| Equals(sharedAnimationName, L"Int64Animation")
+									|| Equals(sharedAnimationName,
+										L"Int64AnimationUsingKeyFrames")
+									|| Equals(sharedAnimationName, L"SingleAnimation")
+									|| Equals(sharedAnimationName,
+										L"SingleAnimationUsingKeyFrames")
+									|| Equals(sharedAnimationName,
+										L"BooleanAnimationUsingKeyFrames")
+									|| Equals(sharedAnimationName,
+										L"StringAnimationUsingKeyFrames"))
 								{
 									DesignerVisualStateAnimation animation;
 									StoryboardObjectPathKind objectPathKind =
@@ -4742,7 +6601,7 @@ namespace
 										state.Setters.begin(), state.Setters.end(), [&](const auto& existing)
 										{ return Equals(existing.TargetName, animation.TargetName)
 											&& Equals(existing.PropertyName, rootProperty); })
-										|| std::any_of(state.Animations.begin(), state.Animations.end(),
+										|| std::any_of(storyboardOwnership.begin(), storyboardOwnership.end(),
 											[&](const auto& existing)
 											{
 												if (!Equals(existing.TargetName, animation.TargetName)) return false;
@@ -4770,6 +6629,7 @@ namespace
 											+ animation.PropertyName, error);
 									if (controlled == controlledProperties.end())
 										controlledProperties.emplace_back(controlledKey, group.Name);
+									storyboardOwnership.push_back(animation);
 									state.Animations.push_back(std::move(animation));
 									continue;
 								}
@@ -4869,10 +6729,11 @@ namespace
 									transformPath = resolvedPath.Kind
 										== StoryboardObjectPathKind::RenderTransform;
 								}
-								auto parseEndpoint = [&](const std::wstring& raw,
-									DesignerStyleValue& literal, bool& usesResource,
-									std::wstring& resourceKey, const std::wstring& label,
-									bool isDelta = false)
+							auto parseEndpoint = [&](const std::wstring& raw,
+								DesignerStyleValue& literal, bool& usesResource,
+								std::wstring& resourceKey, const std::wstring& label,
+								bool isDelta = false,
+								BindingValue* normalizedValue = nullptr)
 								{
 									usesResource = TryParseStaticResource(raw, resourceKey);
 									const DesignerStyleValue* value = &literal;
@@ -4902,22 +6763,24 @@ namespace
 											_currentResourceBasePath, _document.Resources))
 										return Fail(L"动画 " + label + L" 无效："
 											+ validationError, error);
-									if (transformPath)
-									{
+								if (transformPath)
+								{
 										double number = 0.0;
 										if (!parsed.TryGetDouble(number) || !std::isfinite(number)
 											|| number < -(std::numeric_limits<float>::max)()
 											|| number > (std::numeric_limits<float>::max)())
-											return Fail(L"动画 " + label + L" 必须是有限 Float 值。",
-												error);
-									}
-									else if (!targetMetadata || !targetMetadata->CanWrite()
+										return Fail(L"动画 " + label + L" 必须是有限 Float 值。",
+											error);
+									if (normalizedValue) *normalizedValue = parsed;
+								}
+								else if (!targetMetadata || !targetMetadata->CanWrite()
 										|| !targetMetadata->TryConvert(parsed, converted))
 										return Fail(L"动画 " + label + L" 无效："
 											+ (validationError.empty()
 												? L"无法通过目标属性 Schema 转换。"
-												: validationError), error);
-									return true;
+													: validationError), error);
+								else if (normalizedValue) *normalizedValue = converted;
+								return true;
 								};
 								const auto animationChildren = ChildElements(animationElement);
 								if (!Trim(FromUtf8(animationElement->InnerText())).empty())
@@ -4925,39 +6788,11 @@ namespace
 								auto parseEasing = [&](const Element& easingProperty,
 									const std::wstring& expectedPropertyName,
 									DesignerEasingKind& kind,
-									DesignerEasingMode& mode)
+									DesignerEasingMode& mode,
+									DesignerEasingParameters& parameters)
 								{
-									if (!Equals(FromUtf8(easingProperty->LocalName()),
-										expectedPropertyName))
-										return Fail(L"EasingFunction 属性元素名称无效。", error);
-									if (!ValidateAttributes(easingProperty, {}, error)
-										|| !Trim(FromUtf8(easingProperty->InnerText())).empty())
-										return false;
-									const auto easingChildren = ChildElements(easingProperty);
-									if (easingChildren.size() != 1)
-										return Fail(L"EasingFunction 必须包含一个缓动对象。", error);
-									const auto& easing = easingChildren.front();
-									const auto easingName = FromUtf8(easing->LocalName());
-									if (Equals(easingName, L"QuadraticEase"))
-										kind = DesignerEasingKind::Quadratic;
-									else if (Equals(easingName, L"CubicEase"))
-										kind = DesignerEasingKind::Cubic;
-									else if (Equals(easingName, L"SineEase"))
-										kind = DesignerEasingKind::Sine;
-									else return Fail(L"EasingFunction 第一批仅支持 QuadraticEase、CubicEase 和 SineEase。",
-										error);
-									if (!ValidateAttributes(easing, { L"EasingMode" }, error)
-										|| !ChildElements(easing).empty()
-										|| !Trim(FromUtf8(easing->InnerText())).empty()) return false;
-									if (const auto modeText = Attribute(easing, L"EasingMode"))
-									{
-										int parsedMode = 0;
-										if (!TryParseEnum(*modeText,
-											{ L"EaseIn", L"EaseOut", L"EaseInOut" }, parsedMode))
-											return Fail(L"EasingMode 无效。", error);
-										mode = static_cast<DesignerEasingMode>(parsedMode);
-									}
-									return true;
+									return ParseEasingProperty(easingProperty,
+										expectedPropertyName, kind, mode, parameters, error);
 								};
 								if (!keyFrameAnimation)
 								{
@@ -4982,10 +6817,11 @@ namespace
 											animation.ByUsesResource,
 											animation.ByResourceKey, L"By", true)) return false;
 									}
-									const auto duration = Attribute(animationElement, L"Duration");
-									if (!duration || !TryParseTimeSpanMilliseconds(
-										*duration, animation.DurationMilliseconds))
-										return Fail(L"动画 Duration 必须是有限 TimeSpan。", error);
+									if (!TryResolveAnimationDuration(
+										Attribute(animationElement, L"Duration"), 1000,
+										animation.DurationMilliseconds))
+										return Fail(L"动画 Duration 必须是 Automatic 或有限 TimeSpan。",
+											error);
 									if (!animationChildren.empty())
 									{
 										if (animationChildren.size() != 1)
@@ -4993,13 +6829,18 @@ namespace
 												error);
 										if (!parseEasing(animationChildren.front(),
 											animationName + L".EasingFunction",
-											animation.Easing, animation.EasingMode)) return false;
+											animation.Easing, animation.EasingMode,
+											animation.EasingParameters)) return false;
 									}
 								}
 								else
 								{
 									const auto valueType = animation.Kind
 										== DesignerAnimationKind::Color ? L"Color" : L"Double";
+									std::vector<ParsedAnimationKeyTime> parsedKeyTimes;
+					std::vector<BindingValue> pacedValues;
+									parsedKeyTimes.reserve(animationChildren.size());
+									pacedValues.reserve(animationChildren.size());
 									for (const auto& keyFrameElement : animationChildren)
 									{
 										DiagnosticContext keyFrameContext(*this, keyFrameElement);
@@ -5029,15 +6870,18 @@ namespace
 												: std::initializer_list<const wchar_t*>{
 													L"KeyTime", L"Value" }, error)) return false;
 										const auto keyTime = Attribute(keyFrameElement, L"KeyTime");
-										if (!keyTime || !TryParseTimeSpanMilliseconds(
-											*keyTime, keyFrame.KeyTimeMilliseconds))
-											return Fail(L"关键帧 KeyTime 必须是显式有限 TimeSpan。", error);
+										ParsedAnimationKeyTime parsedKeyTime;
+										if (!keyTime || !TryParseAnimationKeyTime(
+											*keyTime, parsedKeyTime))
+											return Fail(L"关键帧 KeyTime 必须是 TimeSpan、Percent、Uniform 或 Paced。", error);
 										const auto value = Attribute(keyFrameElement, L"Value");
+										BindingValue normalizedValue;
 										if (!value || !parseEndpoint(*value, keyFrame.Value,
 											keyFrame.UsesResource, keyFrame.ResourceKey,
-											L"KeyFrame"))
+											L"KeyFrame", false, &normalizedValue))
 											return value.has_value() ? false
 												: Fail(L"关键帧必须声明 Value。", error);
+						BindingValue pacedValue = std::move(normalizedValue);
 										const auto children = ChildElements(keyFrameElement);
 										if (!Trim(FromUtf8(keyFrameElement->InnerText())).empty())
 											return Fail(L"关键帧不允许文本内容。", error);
@@ -5048,7 +6892,8 @@ namespace
 													error);
 											if (!children.empty() && !parseEasing(children.front(),
 													keyFrameName + L".EasingFunction",
-													keyFrame.Easing, keyFrame.EasingMode))
+													keyFrame.Easing, keyFrame.EasingMode,
+													keyFrame.EasingParameters))
 												return false;
 										}
 										else if (!children.empty())
@@ -5065,24 +6910,16 @@ namespace
 													error);
 										}
 										animation.KeyFrames.push_back(std::move(keyFrame));
+										parsedKeyTimes.push_back(parsedKeyTime);
+										pacedValues.push_back(pacedValue);
 									}
 									if (animation.KeyFrames.empty())
 										return Fail(L"UsingKeyFrames 至少需要一个关键帧。", error);
-									std::stable_sort(animation.KeyFrames.begin(),
-										animation.KeyFrames.end(), [](const auto& left,
-											const auto& right)
-										{
-											return left.KeyTimeMilliseconds
-												< right.KeyTimeMilliseconds;
-										});
-									if (const auto duration = Attribute(animationElement, L"Duration"))
-									{
-										if (!TryParseTimeSpanMilliseconds(
-											*duration, animation.DurationMilliseconds))
-											return Fail(L"动画 Duration 必须是有限 TimeSpan。", error);
-									}
-									else animation.DurationMilliseconds =
-										animation.KeyFrames.back().KeyTimeMilliseconds;
+									if (!TryResolveAnimationKeyTimes(animation.Kind,
+										Attribute(animationElement, L"Duration"), animation.KeyFrames,
+										parsedKeyTimes, pacedValues, animation.DurationMilliseconds))
+										return Fail(L"动画 KeyTime 无法在有限 Duration 内按 WPF 规则解析。",
+											error);
 								}
 								if (const auto begin = Attribute(animationElement, L"BeginTime");
 									begin && !TryParseTimeSpanMilliseconds(
@@ -5223,7 +7060,8 @@ namespace
 							return Fail(L"VisualStateGroup.Transitions 仅允许 VisualTransition。",
 								error);
 						if (!ValidateAttributes(transitionElement,
-							{ L"From", L"To", L"GeneratedDuration" }, error)
+							{ L"From", L"To", L"GeneratedDuration", L"Storyboard" },
+							error)
 							|| !Trim(FromUtf8(transitionElement->InnerText())).empty())
 							return false;
 						DesignerVisualTransition transition;
@@ -5258,6 +7096,24 @@ namespace
 									error);
 						bool foundEasing = false;
 						bool foundStoryboard = false;
+						std::vector<DesignerVisualStateAnimation> storyboardOwnership;
+						if (const auto storyboardReference = Attribute(
+							transitionElement, L"Storyboard"))
+						{
+							if (!TryParseStaticResource(*storyboardReference,
+								transition.StoryboardResourceKey))
+								return Fail(L"VisualTransition.Storyboard 仅支持严格 StaticResource 引用。",
+									error);
+							DesignStoryboardResource normalized;
+							if (!ResolveStoryboardResourceDefinition(component,
+								transition.StoryboardResourceKey, normalized, error)
+								|| !registerResourceTargets(
+									normalized, L" Transition ")) return false;
+							transition.StoryboardTiming = normalized.Timing;
+							transition.Animations = normalized.Animations;
+							transition.TimelineGroups = normalized.TimelineGroups;
+							foundStoryboard = true;
+						}
 						for (const auto& child : ChildElements(transitionElement))
 						{
 							const auto childName = FromUtf8(child->LocalName());
@@ -5268,35 +7124,11 @@ namespace
 									return Fail(L"VisualTransition.GeneratedEasingFunction 不能重复。",
 										error);
 								foundEasing = true;
-								if (!ValidateAttributes(child, {}, error)
-									|| !Trim(FromUtf8(child->InnerText())).empty()) return false;
-								const auto easingChildren = ChildElements(child);
-								if (easingChildren.size() != 1)
-									return Fail(L"GeneratedEasingFunction 必须包含一个缓动对象。",
-										error);
-								const auto& easing = easingChildren.front();
-								const auto easingName = FromUtf8(easing->LocalName());
-								if (Equals(easingName, L"QuadraticEase"))
-									transition.GeneratedEasing = DesignerEasingKind::Quadratic;
-								else if (Equals(easingName, L"CubicEase"))
-									transition.GeneratedEasing = DesignerEasingKind::Cubic;
-								else if (Equals(easingName, L"SineEase"))
-									transition.GeneratedEasing = DesignerEasingKind::Sine;
-								else return Fail(L"GeneratedEasingFunction 第一批仅支持 "
-									L"QuadraticEase、CubicEase 和 SineEase。", error);
-								if (!ValidateAttributes(easing, { L"EasingMode" }, error)
-									|| !ChildElements(easing).empty()
-									|| !Trim(FromUtf8(easing->InnerText())).empty()) return false;
-								if (const auto mode = Attribute(easing, L"EasingMode"))
-								{
-									int parsedMode = 0;
-									if (!TryParseEnum(*mode,
-										{ L"EaseIn", L"EaseOut", L"EaseInOut" }, parsedMode))
-										return Fail(L"GeneratedEasingFunction.EasingMode 无效。",
-											error);
-									transition.GeneratedEasingMode =
-										static_cast<DesignerEasingMode>(parsedMode);
-								}
+								if (!ParseEasingProperty(child,
+									L"VisualTransition.GeneratedEasingFunction",
+									transition.GeneratedEasing,
+									transition.GeneratedEasingMode,
+									transition.GeneratedEasingParameters, error)) return false;
 								continue;
 							}
 							Element storyboard;
@@ -5324,10 +7156,65 @@ namespace
 							}
 							else return Fail(L"VisualTransition 仅支持 GeneratedEasingFunction "
 								L"和 Storyboard。", error);
-							if (!ValidateAttributes(storyboard, {}, error)
+							if (!ParseStoryboardTiming(
+								storyboard, transition.StoryboardTiming, error)
 								|| !Trim(FromUtf8(storyboard->InnerText())).empty()) return false;
 							for (const auto& animationElement : ChildElements(storyboard))
 							{
+								if (Equals(FromUtf8(animationElement->LocalName()),
+									L"ParallelTimeline"))
+								{
+									DesignerTimelineGroup timelineGroup;
+									if (!ParseParallelTimeline(animationElement, component,
+										timelineGroup, error)
+										|| !VisitTimelineGroupAnimations(timelineGroup,
+											[&](const auto& animation)
+											{
+												const auto rootProperty =
+													StoryboardAnimationRootProperty(
+														animation.PropertyName);
+												const bool indirectPath = ClassifyStoryboardObjectPath(
+													animation.PropertyName)
+													!= StoryboardObjectPathKind::None;
+												const bool duplicate = std::any_of(
+													storyboardOwnership.begin(), storyboardOwnership.end(),
+													[&](const auto& existing)
+													{
+														if (!Equals(existing.TargetName,
+															animation.TargetName)) return false;
+														const bool existingPath =
+															ClassifyStoryboardObjectPath(existing.PropertyName)
+															!= StoryboardObjectPathKind::None;
+														const auto existingRoot =
+															StoryboardAnimationRootProperty(existing.PropertyName);
+														return Equals(existing.PropertyName,
+															animation.PropertyName)
+															|| (Equals(existingRoot, rootProperty)
+																&& (!existingPath || !indirectPath));
+													});
+												if (duplicate)
+													return Fail(L"VisualTransition Storyboard 目标重复："
+														+ animation.PropertyName, error);
+												const auto controlledKey = animation.TargetName + L"|"
+													+ rootProperty;
+												const auto controlled = std::find_if(
+													controlledProperties.begin(), controlledProperties.end(),
+													[&](const auto& existing)
+													{ return existing.first == controlledKey; });
+												if (controlled != controlledProperties.end()
+													&& !Equals(controlled->second, group.Name))
+													return Fail(L"不同 VisualStateGroup 不能控制同一 Transition 属性："
+														+ rootProperty, error);
+												if (controlled == controlledProperties.end())
+													controlledProperties.emplace_back(
+														controlledKey, group.Name);
+												storyboardOwnership.push_back(animation);
+												return true;
+											})) return false;
+									transition.TimelineGroups.push_back(
+										std::move(timelineGroup));
+									continue;
+								}
 								DesignerVisualStateAnimation animation;
 								StoryboardObjectPathKind objectPathKind =
 									StoryboardObjectPathKind::None;
@@ -5335,7 +7222,7 @@ namespace
 									animation, objectPathKind, error)) return false;
 								const auto rootProperty = StoryboardAnimationRootProperty(
 									animation.PropertyName);
-								for (const auto& existing : transition.Animations)
+								for (const auto& existing : storyboardOwnership)
 								{
 									if (!Equals(existing.TargetName, animation.TargetName)) continue;
 									const bool existingPath = ClassifyStoryboardObjectPath(
@@ -5362,6 +7249,7 @@ namespace
 										+ rootProperty, error);
 								if (controlled == controlledProperties.end())
 									controlledProperties.emplace_back(controlledKey, group.Name);
+								storyboardOwnership.push_back(animation);
 								transition.Animations.push_back(std::move(animation));
 							}
 						}
@@ -5440,9 +7328,18 @@ namespace
 				if (Equals(actionName, L"BeginStoryboard"))
 				{
 					action.Kind = DesignerStoryboardActionKind::Begin;
-					if (!ValidateAttributes(actionElement, { L"Name" }, error, true)
+					if (!ValidateAttributes(actionElement,
+						{ L"Name", L"HandoffBehavior", L"Storyboard" }, error, true)
 						|| !Trim(FromUtf8(actionElement->InnerText())).empty())
 						return false;
+					const auto handoff = Trim(Attribute(
+						actionElement, L"HandoffBehavior").value_or(L""));
+					if (handoff.empty() || Equals(handoff, L"SnapshotAndReplace"))
+						action.Handoff = DesignerHandoffBehavior::SnapshotAndReplace;
+					else if (Equals(handoff, L"Compose"))
+						action.Handoff = DesignerHandoffBehavior::Compose;
+					else return Fail(L"BeginStoryboard.HandoffBehavior 无效："
+						+ handoff, error);
 					action.StoryboardName = Trim(Attribute(
 						actionElement, L"Name", L"x").value_or(
 							Attribute(actionElement, L"Name").value_or(L"")));
@@ -5458,13 +7355,28 @@ namespace
 						beginNames.push_back(action.StoryboardName);
 					}
 					const auto storyboards = ChildElements(actionElement);
+					if (const auto reference = Attribute(actionElement, L"Storyboard"))
+					{
+						if (!storyboards.empty()
+							|| !TryParseStaticResource(
+								*reference, action.StoryboardResourceKey))
+							return Fail(L"BeginStoryboard.Storyboard 必须单独使用 {StaticResource key}。",
+								error);
+						if (!ResolveStoryboardResourceAction(
+							target, action, error, styleScope)
+							|| !ValidateResolvedStoryboardActionOwnership(
+								action, styleScope, error)) return false;
+					}
+					else
+					{
 					if (storyboards.size() != 1
 						|| !Equals(FromUtf8(storyboards.front()->LocalName()),
 							L"Storyboard"))
 						return Fail(L"BeginStoryboard 必须包含一个 Storyboard。",
 							error);
 					const auto& storyboard = storyboards.front();
-					if (!ValidateAttributes(storyboard, {}, error)
+					if (!ParseStoryboardTiming(
+						storyboard, action.StoryboardTiming, error)
 						|| !Trim(FromUtf8(storyboard->InnerText())).empty())
 						return false;
 					struct PropertyOwnership
@@ -5474,13 +7386,9 @@ namespace
 						std::vector<std::wstring> Paths;
 					};
 					std::vector<PropertyOwnership> properties;
-					for (const auto& animationElement : ChildElements(storyboard))
+					auto acceptAnimation = [&](const DesignerVisualStateAnimation& animation,
+						StoryboardObjectPathKind objectPathKind)
 					{
-						DesignerVisualStateAnimation animation;
-						StoryboardObjectPathKind objectPathKind =
-							StoryboardObjectPathKind::None;
-						if (!ParseStoryboardAnimation(animationElement, target,
-							animation, objectPathKind, error)) return false;
 						if (styleScope && !animation.TargetName.empty())
 							return Fail(L"Style Storyboard 不支持 Storyboard.TargetName。",
 								error);
@@ -5506,15 +7414,40 @@ namespace
 							PropertyOwnership ownership;
 							ownership.RootProperty = rootProperty;
 							ownership.Exclusive = exclusive;
-							if (!exclusive)
-								ownership.Paths.push_back(animation.PropertyName);
+							if (!exclusive) ownership.Paths.push_back(animation.PropertyName);
 							properties.push_back(std::move(ownership));
 						}
+						return true;
+					};
+					for (const auto& animationElement : ChildElements(storyboard))
+					{
+						if (Equals(FromUtf8(animationElement->LocalName()),
+							L"ParallelTimeline"))
+						{
+							DesignerTimelineGroup group;
+							if (!ParseParallelTimeline(
+								animationElement, target, group, error)
+								|| !VisitTimelineGroupAnimations(group,
+									[&](const auto& nested)
+									{
+										return acceptAnimation(nested,
+											ClassifyStoryboardObjectPath(nested.PropertyName));
+									})) return false;
+							action.TimelineGroups.push_back(std::move(group));
+							continue;
+						}
+						DesignerVisualStateAnimation animation;
+						StoryboardObjectPathKind objectPathKind =
+							StoryboardObjectPathKind::None;
+						if (!ParseStoryboardAnimation(animationElement, target,
+							animation, objectPathKind, error)) return false;
+						if (!acceptAnimation(animation, objectPathKind)) return false;
 						action.Animations.push_back(std::move(animation));
 					}
-					if (action.Animations.empty())
+					if (action.Animations.empty() && action.TimelineGroups.empty())
 						return Fail(L"BeginStoryboard 的 Storyboard 不能为空。",
 							error);
+					}
 				}
 				else
 				{
@@ -5524,10 +7457,25 @@ namespace
 						action.Kind = DesignerStoryboardActionKind::Resume;
 					else if (Equals(actionName, L"StopStoryboard"))
 						action.Kind = DesignerStoryboardActionKind::Stop;
-					else return Fail(L"TriggerAction 仅支持 Begin/Pause/Resume/StopStoryboard。",
+					else if (Equals(actionName, L"RemoveStoryboard"))
+						action.Kind = DesignerStoryboardActionKind::Remove;
+					else if (Equals(actionName, L"SeekStoryboard"))
+						action.Kind = DesignerStoryboardActionKind::Seek;
+					else if (Equals(actionName, L"SetStoryboardSpeedRatio"))
+						action.Kind = DesignerStoryboardActionKind::SetSpeedRatio;
+					else if (Equals(actionName, L"SkipStoryboardToFill"))
+						action.Kind = DesignerStoryboardActionKind::SkipToFill;
+					else return Fail(L"TriggerAction 仅支持 Begin/Pause/Resume/Stop/Remove/SeekStoryboard/SetStoryboardSpeedRatio/SkipStoryboardToFill。",
 							error);
 					if (!ValidateAttributes(actionElement,
-						{ L"BeginStoryboardName" }, error)
+						action.Kind == DesignerStoryboardActionKind::Seek
+							? std::initializer_list<const wchar_t*>{
+								L"BeginStoryboardName", L"Offset", L"Origin" }
+						: action.Kind == DesignerStoryboardActionKind::SetSpeedRatio
+							? std::initializer_list<const wchar_t*>{
+								L"BeginStoryboardName", L"SpeedRatio" }
+							: std::initializer_list<const wchar_t*>{
+								L"BeginStoryboardName" }, error)
 						|| !ChildElements(actionElement).empty()
 						|| !Trim(FromUtf8(actionElement->InnerText())).empty())
 						return false;
@@ -5535,6 +7483,29 @@ namespace
 						L"BeginStoryboardName").value_or(L""));
 					if (!ValidateIdentifier(action.StoryboardName,
 						L"BeginStoryboardName", error)) return false;
+					if (action.Kind == DesignerStoryboardActionKind::Seek)
+					{
+						const auto origin = Trim(Attribute(
+							actionElement, L"Origin").value_or(L"BeginTime"));
+						if (!Equals(origin, L"BeginTime"))
+							return Fail(L"SeekStoryboard 当前仅支持 Origin=BeginTime。",
+								error);
+						const auto offset = Trim(Attribute(
+							actionElement, L"Offset").value_or(L"0"));
+						if (!TryParseTimeSpanMilliseconds(
+							offset, action.SeekOffsetMilliseconds))
+							return Fail(L"SeekStoryboard Offset 无效。", error);
+					}
+					else if (action.Kind
+						== DesignerStoryboardActionKind::SetSpeedRatio)
+					{
+						const auto speedRatio = Trim(Attribute(actionElement,
+							L"SpeedRatio").value_or(L"1"));
+						if (!TryParseDouble(speedRatio, action.SpeedRatio)
+							|| action.SpeedRatio < 0.0)
+							return Fail(L"SetStoryboardSpeedRatio SpeedRatio 无效。",
+								error);
+					}
 					referencedNames.push_back(action.StoryboardName);
 				}
 				actions.push_back(std::move(action));
@@ -6315,9 +8286,18 @@ namespace
 					if (Equals(actionName, L"BeginStoryboard"))
 					{
 						action.Kind = DesignerStoryboardActionKind::Begin;
-						if (!ValidateAttributes(actionElement, { L"Name" }, error, true)
+						if (!ValidateAttributes(actionElement,
+							{ L"Name", L"HandoffBehavior", L"Storyboard" }, error, true)
 							|| !Trim(FromUtf8(actionElement->InnerText())).empty())
 							return false;
+						const auto handoff = Trim(Attribute(
+							actionElement, L"HandoffBehavior").value_or(L""));
+						if (handoff.empty() || Equals(handoff, L"SnapshotAndReplace"))
+							action.Handoff = DesignerHandoffBehavior::SnapshotAndReplace;
+						else if (Equals(handoff, L"Compose"))
+							action.Handoff = DesignerHandoffBehavior::Compose;
+						else return Fail(L"BeginStoryboard.HandoffBehavior 无效："
+							+ handoff, error);
 						action.StoryboardName = Trim(Attribute(
 							actionElement, L"Name", L"x").value_or(
 								Attribute(actionElement, L"Name").value_or(L"")));
@@ -6333,64 +8313,98 @@ namespace
 							beginNames.push_back(action.StoryboardName);
 						}
 						const auto storyboards = ChildElements(actionElement);
-						if (storyboards.size() != 1
-							|| !Equals(FromUtf8(storyboards.front()->LocalName()),
-								L"Storyboard"))
-							return Fail(L"BeginStoryboard 必须包含一个 Storyboard。",
-								error);
-						const auto& storyboard = storyboards.front();
-						if (!ValidateAttributes(storyboard, {}, error)
-							|| !Trim(FromUtf8(storyboard->InnerText())).empty())
-							return false;
-						struct StoryboardPropertyOwnership
+						if (const auto reference = Attribute(actionElement, L"Storyboard"))
 						{
-							std::wstring TargetName;
-							std::wstring RootProperty;
-							bool Exclusive = false;
-							std::vector<std::wstring> Paths;
-						};
-						std::vector<StoryboardPropertyOwnership> properties;
-						for (const auto& animationElement : ChildElements(storyboard))
-						{
-							DesignerVisualStateAnimation animation;
-							StoryboardObjectPathKind objectPathKind =
-								StoryboardObjectPathKind::None;
-							if (!ParseStoryboardAnimation(animationElement, component,
-								animation, objectPathKind, error)) return false;
-							const auto rootProperty =
-								StoryboardAnimationRootProperty(animation.PropertyName);
-							auto owner = std::find_if(properties.begin(),
-								properties.end(), [&](const auto& existing)
-								{
-									return Equals(existing.TargetName,
-										animation.TargetName)
-										&& Equals(existing.RootProperty, rootProperty);
-								});
-							const bool exclusive = objectPathKind
-								== StoryboardObjectPathKind::None;
-							if (owner != properties.end())
-							{
-								if (exclusive || owner->Exclusive
-									|| std::any_of(owner->Paths.begin(), owner->Paths.end(),
-										[&](const auto& path)
-										{ return Equals(path, animation.PropertyName); }))
-									return Fail(L"BeginStoryboard 目标重复："
-										+ animation.PropertyName, error);
-								owner->Paths.push_back(animation.PropertyName);
-							}
-							else
-							{
-								StoryboardPropertyOwnership ownership;
-								ownership.TargetName = animation.TargetName;
-								ownership.RootProperty = rootProperty;
-								ownership.Exclusive = exclusive;
-								if (!exclusive)
-									ownership.Paths.push_back(animation.PropertyName);
-								properties.push_back(std::move(ownership));
-							}
-							action.Animations.push_back(std::move(animation));
+							if (!storyboards.empty()
+								|| !TryParseStaticResource(
+									*reference, action.StoryboardResourceKey))
+								return Fail(L"BeginStoryboard.Storyboard 必须单独使用 {StaticResource key}。",
+									error);
+							if (!ResolveStoryboardResourceAction(
+								component, action, error)) return false;
 						}
-						if (action.Animations.empty())
+						else
+						{
+							if (storyboards.size() != 1
+								|| !Equals(FromUtf8(storyboards.front()->LocalName()),
+									L"Storyboard"))
+								return Fail(L"BeginStoryboard 必须包含一个 Storyboard。",
+									error);
+							const auto& storyboard = storyboards.front();
+							if (!ParseStoryboardTiming(
+								storyboard, action.StoryboardTiming, error)
+								|| !Trim(FromUtf8(storyboard->InnerText())).empty())
+								return false;
+							struct StoryboardPropertyOwnership
+							{
+								std::wstring TargetName;
+								std::wstring RootProperty;
+								bool Exclusive = false;
+								std::vector<std::wstring> Paths;
+							};
+							std::vector<StoryboardPropertyOwnership> properties;
+							auto acceptAnimation = [&](const DesignerVisualStateAnimation& animation,
+								StoryboardObjectPathKind objectPathKind)
+							{
+								const auto rootProperty =
+									StoryboardAnimationRootProperty(animation.PropertyName);
+								auto owner = std::find_if(properties.begin(), properties.end(),
+									[&](const auto& existing)
+									{
+										return Equals(existing.TargetName, animation.TargetName)
+											&& Equals(existing.RootProperty, rootProperty);
+									});
+								const bool exclusive = objectPathKind
+									== StoryboardObjectPathKind::None;
+								if (owner != properties.end())
+								{
+									if (exclusive || owner->Exclusive
+										|| std::any_of(owner->Paths.begin(), owner->Paths.end(),
+											[&](const auto& path)
+											{ return Equals(path, animation.PropertyName); }))
+										return Fail(L"BeginStoryboard 目标重复："
+											+ animation.PropertyName, error);
+									owner->Paths.push_back(animation.PropertyName);
+								}
+								else
+								{
+									StoryboardPropertyOwnership ownership;
+									ownership.TargetName = animation.TargetName;
+									ownership.RootProperty = rootProperty;
+									ownership.Exclusive = exclusive;
+									if (!exclusive) ownership.Paths.push_back(animation.PropertyName);
+									properties.push_back(std::move(ownership));
+								}
+								return true;
+							};
+							for (const auto& animationElement : ChildElements(storyboard))
+							{
+								if (Equals(FromUtf8(animationElement->LocalName()),
+									L"ParallelTimeline"))
+								{
+									DesignerTimelineGroup group;
+									if (!ParseParallelTimeline(
+										animationElement, component, group, error)
+										|| !VisitTimelineGroupAnimations(group,
+											[&](const auto& nested)
+											{
+												return acceptAnimation(nested,
+													ClassifyStoryboardObjectPath(nested.PropertyName));
+											})) return false;
+									action.TimelineGroups.push_back(std::move(group));
+									continue;
+								}
+								DesignerVisualStateAnimation animation;
+								StoryboardObjectPathKind objectPathKind =
+									StoryboardObjectPathKind::None;
+								if (!ParseStoryboardAnimation(animationElement, component,
+									animation, objectPathKind, error)) return false;
+								if (!acceptAnimation(animation, objectPathKind)) return false;
+								action.Animations.push_back(std::move(animation));
+							}
+						}
+						if (action.Animations.empty() && action.TimelineGroups.empty()
+							&& action.StoryboardResourceKey.empty())
 							return Fail(L"BeginStoryboard 的 Storyboard 不能为空。",
 								error);
 					}
@@ -6402,10 +8416,25 @@ namespace
 							action.Kind = DesignerStoryboardActionKind::Resume;
 						else if (Equals(actionName, L"StopStoryboard"))
 							action.Kind = DesignerStoryboardActionKind::Stop;
-						else return Fail(L"EventTrigger 仅支持 Begin/Pause/Resume/StopStoryboard。",
+						else if (Equals(actionName, L"RemoveStoryboard"))
+							action.Kind = DesignerStoryboardActionKind::Remove;
+						else if (Equals(actionName, L"SeekStoryboard"))
+							action.Kind = DesignerStoryboardActionKind::Seek;
+						else if (Equals(actionName, L"SetStoryboardSpeedRatio"))
+							action.Kind = DesignerStoryboardActionKind::SetSpeedRatio;
+						else if (Equals(actionName, L"SkipStoryboardToFill"))
+							action.Kind = DesignerStoryboardActionKind::SkipToFill;
+						else return Fail(L"EventTrigger 仅支持 Begin/Pause/Resume/Stop/Remove/SeekStoryboard/SetStoryboardSpeedRatio/SkipStoryboardToFill。",
 								error);
 						if (!ValidateAttributes(actionElement,
-							{ L"BeginStoryboardName" }, error)
+							action.Kind == DesignerStoryboardActionKind::Seek
+								? std::initializer_list<const wchar_t*>{
+									L"BeginStoryboardName", L"Offset", L"Origin" }
+							: action.Kind == DesignerStoryboardActionKind::SetSpeedRatio
+								? std::initializer_list<const wchar_t*>{
+									L"BeginStoryboardName", L"SpeedRatio" }
+								: std::initializer_list<const wchar_t*>{
+									L"BeginStoryboardName" }, error)
 							|| !ChildElements(actionElement).empty()
 							|| !Trim(FromUtf8(actionElement->InnerText())).empty())
 							return false;
@@ -6413,6 +8442,29 @@ namespace
 							L"BeginStoryboardName").value_or(L""));
 						if (!ValidateIdentifier(action.StoryboardName,
 							L"BeginStoryboardName", error)) return false;
+						if (action.Kind == DesignerStoryboardActionKind::Seek)
+						{
+							const auto origin = Trim(Attribute(
+								actionElement, L"Origin").value_or(L"BeginTime"));
+							if (!Equals(origin, L"BeginTime"))
+								return Fail(L"SeekStoryboard 当前仅支持 Origin=BeginTime。",
+									error);
+							const auto offset = Trim(Attribute(
+								actionElement, L"Offset").value_or(L"0"));
+							if (!TryParseTimeSpanMilliseconds(
+								offset, action.SeekOffsetMilliseconds))
+								return Fail(L"SeekStoryboard Offset 无效。", error);
+						}
+						else if (action.Kind
+							== DesignerStoryboardActionKind::SetSpeedRatio)
+						{
+							const auto speedRatio = Trim(Attribute(actionElement,
+								L"SpeedRatio").value_or(L"1"));
+							if (!TryParseDouble(speedRatio, action.SpeedRatio)
+								|| action.SpeedRatio < 0.0)
+								return Fail(L"SetStoryboardSpeedRatio SpeedRatio 无效。",
+									error);
+						}
 						referencedNames.push_back(action.StoryboardName);
 					}
 					trigger.Actions.push_back(std::move(action));
@@ -6548,6 +8600,10 @@ namespace
 				if (!ValidateAttributes(resourcesElement, {}, error)) return false;
 				DesignerStyleSheet localResources;
 				DesignObjectResourceDictionary localObjectResources;
+				if (_nextObjectResourceScopeId == 0)
+					return Fail(L"Storyboard 资源词法 scope identity 已耗尽。", error);
+				localObjectResources.TransientScopeId =
+					_nextObjectResourceScopeId++;
 				auto* previousTarget = _resourceTarget;
 				auto* previousObjectTarget = _objectResourceTarget;
 				const bool previousLocal = _parsingLocalResources;
@@ -8027,6 +10083,145 @@ namespace
 			return true;
 		}
 
+		bool ParseEasingProperty(
+			const Element& easingProperty,
+			const std::wstring& expectedPropertyName,
+			DesignerEasingKind& kind,
+			DesignerEasingMode& mode,
+			DesignerEasingParameters& parameters,
+			std::wstring& error)
+		{
+			if (!Equals(FromUtf8(easingProperty->LocalName()),
+				expectedPropertyName))
+				return Fail(L"EasingFunction 属性元素名称无效。", error);
+			if (!ValidateAttributes(easingProperty, {}, error)
+				|| !Trim(FromUtf8(easingProperty->InnerText())).empty()) return false;
+			const auto children = ChildElements(easingProperty);
+			if (children.size() != 1)
+				return Fail(L"EasingFunction 必须包含一个缓动对象。", error);
+			const auto& easing = children.front();
+			const auto easingName = FromUtf8(easing->LocalName());
+			parameters = {};
+			if (Equals(easingName, L"QuadraticEase"))
+				kind = DesignerEasingKind::Quadratic;
+			else if (Equals(easingName, L"CubicEase"))
+				kind = DesignerEasingKind::Cubic;
+			else if (Equals(easingName, L"SineEase"))
+				kind = DesignerEasingKind::Sine;
+			else if (Equals(easingName, L"BackEase"))
+			{
+				kind = DesignerEasingKind::Back;
+				parameters.Primary = 1.0;
+			}
+			else if (Equals(easingName, L"BounceEase"))
+			{
+				kind = DesignerEasingKind::Bounce;
+				parameters.Primary = 2.0;
+				parameters.Secondary = 3.0;
+			}
+			else if (Equals(easingName, L"CircleEase"))
+				kind = DesignerEasingKind::Circle;
+			else if (Equals(easingName, L"ElasticEase"))
+			{
+				kind = DesignerEasingKind::Elastic;
+				parameters.Primary = 3.0;
+				parameters.Secondary = 3.0;
+			}
+			else if (Equals(easingName, L"ExponentialEase"))
+			{
+				kind = DesignerEasingKind::Exponential;
+				parameters.Primary = 2.0;
+			}
+			else if (Equals(easingName, L"PowerEase"))
+			{
+				kind = DesignerEasingKind::Power;
+				parameters.Primary = 2.0;
+			}
+			else if (Equals(easingName, L"QuarticEase"))
+				kind = DesignerEasingKind::Quartic;
+			else if (Equals(easingName, L"QuinticEase"))
+				kind = DesignerEasingKind::Quintic;
+			else return Fail(L"EasingFunction 类型不受支持。", error);
+
+			bool attributesValid = false;
+			switch (kind)
+			{
+			case DesignerEasingKind::Back:
+				attributesValid = ValidateAttributes(
+					easing, { L"EasingMode", L"Amplitude" }, error);
+				break;
+			case DesignerEasingKind::Bounce:
+				attributesValid = ValidateAttributes(easing,
+					{ L"EasingMode", L"Bounces", L"Bounciness" }, error);
+				break;
+			case DesignerEasingKind::Elastic:
+				attributesValid = ValidateAttributes(easing,
+					{ L"EasingMode", L"Oscillations", L"Springiness" }, error);
+				break;
+			case DesignerEasingKind::Exponential:
+				attributesValid = ValidateAttributes(
+					easing, { L"EasingMode", L"Exponent" }, error);
+				break;
+			case DesignerEasingKind::Power:
+				attributesValid = ValidateAttributes(
+					easing, { L"EasingMode", L"Power" }, error);
+				break;
+			default:
+				attributesValid = ValidateAttributes(
+					easing, { L"EasingMode" }, error);
+				break;
+			}
+			if (!attributesValid || !ChildElements(easing).empty()
+				|| !Trim(FromUtf8(easing->InnerText())).empty()) return false;
+
+			if (const auto modeText = Attribute(easing, L"EasingMode"))
+			{
+				int parsedMode = 0;
+				if (!TryParseEnum(*modeText,
+					{ L"EaseIn", L"EaseOut", L"EaseInOut" }, parsedMode))
+					return Fail(L"EasingMode 无效。", error);
+				mode = static_cast<DesignerEasingMode>(parsedMode);
+			}
+			auto readDouble = [&](const wchar_t* name, double& value)
+			{
+				const auto text = Attribute(easing, name);
+				return !text || TryParseDouble(*text, value);
+			};
+			auto readCount = [&](const wchar_t* name, double& value)
+			{
+				const auto text = Attribute(easing, name);
+				if (!text) return true;
+				int parsed = 0;
+				if (!TryParseInteger(*text, parsed)) return false;
+				value = static_cast<double>(parsed);
+				return true;
+			};
+			bool parametersValid = true;
+			switch (kind)
+			{
+			case DesignerEasingKind::Back:
+				parametersValid = readDouble(L"Amplitude", parameters.Primary);
+				break;
+			case DesignerEasingKind::Bounce:
+				parametersValid = readDouble(L"Bounciness", parameters.Primary)
+					&& readCount(L"Bounces", parameters.Secondary);
+				break;
+			case DesignerEasingKind::Elastic:
+				parametersValid = readDouble(L"Springiness", parameters.Primary)
+					&& readCount(L"Oscillations", parameters.Secondary);
+				break;
+			case DesignerEasingKind::Exponential:
+				parametersValid = readDouble(L"Exponent", parameters.Primary);
+				break;
+			case DesignerEasingKind::Power:
+				parametersValid = readDouble(L"Power", parameters.Primary);
+				break;
+			default: break;
+			}
+			return parametersValid
+				|| Fail(L"EasingFunction 参数必须是有限且类型正确的值。", error);
+		}
+
 		bool ReadBoolAttribute(
 			const Element& element,
 			const wchar_t* name,
@@ -8093,6 +10288,23 @@ namespace
 				return false;
 			return TryParseDouble(Trim(text.substr(0, comma)), x)
 				&& TryParseDouble(Trim(text.substr(comma + 1)), y);
+		}
+
+		bool ParsePointCollectionText(
+			const std::wstring& text,
+			std::vector<std::pair<double, double>>& points)
+		{
+			points.clear();
+			std::wistringstream stream(text);
+			std::wstring token;
+			while (stream >> token)
+			{
+				double x = 0.0;
+				double y = 0.0;
+				if (!ParsePointText(token, x, y)) return false;
+				points.emplace_back(x, y);
+			}
+			return true;
 		}
 
 		bool ParseBrushColor(
@@ -8254,7 +10466,8 @@ namespace
 				const bool radial = Equals(name, L"RadialGradientBrush");
 				if (!ValidateAttributes(brush,
 					{ L"StartPoint", L"EndPoint", L"Center", L"GradientOrigin",
-					  L"RadiusX", L"RadiusY", L"MappingMode", L"Opacity", L"Key" }, error))
+					  L"RadiusX", L"RadiusY", L"MappingMode",
+					  L"ColorInterpolationMode", L"Opacity", L"Key" }, error))
 					return false;
 				output["type"] = radial ? "radial" : "linear";
 				const auto mapping = Attribute(brush, L"MappingMode").value_or(
@@ -8264,6 +10477,15 @@ namespace
 					return Fail(L"MappingMode 必须为 Absolute 或 RelativeToBoundingBox。", error);
 				output["mapping"] = Equals(mapping, L"Absolute")
 					? "absolute" : "relative";
+				const auto interpolation = Attribute(
+					brush, L"ColorInterpolationMode").value_or(
+						L"SRgbLinearInterpolation");
+				if (Equals(interpolation, L"SRgbLinearInterpolation"))
+					output["colorInterpolation"] = "srgb";
+				else if (Equals(interpolation, L"ScRgbLinearInterpolation"))
+					output["colorInterpolation"] = "scrgb";
+				else return Fail(L"ColorInterpolationMode 必须为 "
+					L"SRgbLinearInterpolation 或 ScRgbLinearInterpolation。", error);
 				auto readPoint = [&](const wchar_t* attribute,
 					double defaultX, double defaultY, const char* xKey, const char* yKey)
 				{
@@ -8395,9 +10617,47 @@ namespace
 				return requirePoint(L"Point1", "x1", "y1")
 					&& requirePoint(L"Point2", "x2", "y2");
 			}
+			const bool polyLine = Equals(name, L"PolyLineSegment");
+			const bool polyBezier = Equals(name, L"PolyBezierSegment");
+			const bool polyQuadratic = Equals(
+				name, L"PolyQuadraticBezierSegment");
+			if (polyLine || polyBezier || polyQuadratic)
+			{
+				if (!ValidateAttributes(element, { L"Points" }, error)) return false;
+				std::vector<std::pair<double, double>> points;
+				if (!ParsePointCollectionText(
+					Attribute(element, L"Points").value_or(L""), points))
+					return Fail(name + L".Points 必须是空白分隔的 x,y 点集合。",
+						error);
+				const std::size_t group = polyLine ? 1u : (polyBezier ? 3u : 2u);
+				const std::size_t accepted = points.size() - points.size() % group;
+				output = DesignValue::array();
+				for (std::size_t offset = 0; offset < accepted; offset += group)
+				{
+					DesignValue normalized = DesignValue::object();
+					if (polyLine)
+					{
+						normalized["type"] = "line";
+						normalized["x"] = points[offset].first;
+						normalized["y"] = points[offset].second;
+					}
+					else
+					{
+						normalized["type"] = polyBezier ? "bezier" : "quadratic";
+						for (std::size_t point = 0; point < group; ++point)
+						{
+							const auto suffix = std::to_string(point + 1u);
+							normalized["x" + suffix] = points[offset + point].first;
+							normalized["y" + suffix] = points[offset + point].second;
+						}
+					}
+					output.push_back(std::move(normalized));
+				}
+				return true;
+			}
 			if (!Equals(name, L"ArcSegment"))
-				return Fail(L"PathFigure 仅支持 LineSegment、BezierSegment、"
-					L"QuadraticBezierSegment 和 ArcSegment。", error);
+				return Fail(L"PathFigure 仅支持 Line/Bezier/Quadratic/Arc 及其 Poly segment。",
+					error);
 			if (!ValidateAttributes(element,
 				{ L"Point", L"Size", L"RotationAngle", L"IsLargeArc",
 				  L"SweepDirection" }, error)) return false;
@@ -8460,7 +10720,12 @@ namespace
 			{
 				DesignValue segment;
 				if (!ParsePathSegment(child, segment, error)) return false;
-				output["segments"].push_back(std::move(segment));
+				if (segment.is_array())
+				{
+					for (const auto& normalized : segment.ArrayItems())
+						output["segments"].push_back(normalized);
+				}
+				else output["segments"].push_back(std::move(segment));
 				return true;
 			};
 			for (const auto& child : ChildElements(element))
@@ -8582,7 +10847,7 @@ namespace
 			if (Equals(name, L"PathGeometry"))
 			{
 				if (!ValidateAttributes(
-					element, { L"FillRule" }, error, allowResourceKey)) return false;
+					element, { L"FillRule", L"Figures" }, error, allowResourceKey)) return false;
 				const auto fillRule = Attribute(element, L"FillRule").value_or(L"EvenOdd");
 				if (!Equals(fillRule, L"EvenOdd") && !Equals(fillRule, L"Nonzero"))
 					return Fail(L"PathGeometry.FillRule 必须为 EvenOdd 或 Nonzero。", error);
@@ -8590,8 +10855,12 @@ namespace
 				output["fillRule"] = Equals(fillRule, L"Nonzero")
 					? "nonzero" : "evenodd";
 				output["figures"] = DesignValue::array();
+				const auto abbreviatedFigures = Attribute(element, L"Figures");
+				if (abbreviatedFigures
+					&& !TryParseAbbreviatedPathFigures(
+						*abbreviatedFigures, output["figures"], error)) return false;
 				bool usedFiguresProperty = false;
-				bool usedDirectFigures = false;
+				bool usedDirectFigures = abbreviatedFigures.has_value();
 				bool usedTransform = false;
 				auto appendFigure = [&](const Element& child) -> bool
 				{
@@ -8623,6 +10892,8 @@ namespace
 					{
 						if (usedFiguresProperty)
 							return Fail(L"PathGeometry.Figures 不能与直接 PathFigure 混用。", error);
+						if (abbreviatedFigures)
+							return Fail(L"PathGeometry Figures 属性不能与 PathFigure 子元素混用。", error);
 						usedDirectFigures = true;
 						if (!appendFigure(child)) return false;
 					}

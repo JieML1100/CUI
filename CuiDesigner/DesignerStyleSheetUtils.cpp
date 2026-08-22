@@ -243,6 +243,15 @@ namespace
 		else if (mapping == "relative")
 			output.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox;
 		else return Fail(L"画刷 MappingMode 无效。", outError);
+		const auto interpolation = value.value(
+			"colorInterpolation", std::string("srgb"));
+		if (interpolation == "srgb")
+			output.ColorInterpolationMode =
+				cui::drawing::GradientColorInterpolationMode::SRgbLinearInterpolation;
+		else if (interpolation == "scrgb")
+			output.ColorInterpolationMode =
+				cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation;
+		else return Fail(L"画刷 ColorInterpolationMode 无效。", outError);
 		output.Color = ColorFromValue(
 			value.contains("color") ? value["color"] : DesignerModel::DesignValue(),
 			output.Color);
@@ -278,6 +287,8 @@ namespace
 				output.RelativeTransform, L"Brush.RelativeTransform")) return false;
 		if (output.Kind == cui::drawing::BrushKind::Image)
 		{
+			if (value.contains("colorInterpolation"))
+				return Fail(L"ColorInterpolationMode 仅适用于渐变画刷。", outError);
 			const auto source = Trim(Convert::Utf8ToUnicode(
 				value.value("source", std::string{})));
 			if (source.empty()) return Fail(L"ImageBrush 缺少 ImageSource。", outError);
@@ -307,7 +318,12 @@ namespace
 			else return Fail(L"ImageBrush AlignmentY 无效。", outError);
 			return true;
 		}
-		if (output.Kind == cui::drawing::BrushKind::Solid) return true;
+		if (output.Kind == cui::drawing::BrushKind::Solid)
+		{
+			if (value.contains("colorInterpolation"))
+				return Fail(L"ColorInterpolationMode 仅适用于渐变画刷。", outError);
+			return true;
+		}
 		if (!value.contains("stops") || !value["stops"].is_array())
 			return Fail(L"渐变画刷缺少 GradientStops。", outError);
 		output.GradientStops.clear();
@@ -1072,9 +1088,22 @@ void RemapRuleResourceKeys(
 	};
 	auto rewriteActions = [&](std::vector<DesignerEventTriggerAction>& actions)
 	{
+		std::function<void(std::vector<DesignerTimelineGroup>&)> rewriteGroups;
+		rewriteGroups = [&](auto& groups)
+		{
+			for (auto& group : groups)
+			{
+				for (auto& animation : group.Animations)
+					rewriteAnimation(animation);
+				rewriteGroups(group.Children);
+			}
+		};
 		for (auto& action : actions)
+		{
 			for (auto& animation : action.Animations)
 				rewriteAnimation(animation);
+			rewriteGroups(action.TimelineGroups);
+		}
 	};
 	remap(rule.BasedOn);
 	rewriteSetters(rule.Setters);
@@ -1294,9 +1323,23 @@ bool PrepareLocalRuntimeStyleSheet(
 	};
 	auto rewriteActions = [&](auto& actions)
 	{
+		std::function<bool(std::vector<DesignerTimelineGroup>&)> rewriteGroups;
+		rewriteGroups = [&](auto& groups)
+		{
+			for (auto& group : groups)
+			{
+				for (auto& animation : group.Animations)
+					if (!rewriteAnimation(animation)) return false;
+				if (!rewriteGroups(group.Children)) return false;
+			}
+			return true;
+		};
 		for (auto& action : actions)
+		{
 			for (auto& animation : action.Animations)
 				if (!rewriteAnimation(animation)) return false;
+			if (!rewriteGroups(action.TimelineGroups)) return false;
+		}
 		return true;
 	};
 	auto rewriteSetters = [&](auto& setters)
@@ -1533,7 +1576,8 @@ bool Validate(
 				{
 					if (action.Kind == DesignerStoryboardActionKind::Begin)
 					{
-						if (action.Animations.empty())
+						if (action.Animations.empty()
+							&& action.TimelineGroups.empty())
 							return Fail(context
 								+ L"：BeginStoryboard 不能为空。", outError);
 						if (!action.StoryboardName.empty())
@@ -1590,6 +1634,61 @@ bool Validate(
 								return Fail(context
 									+ L"：Storyboard 时间线参数无效。", outError);
 						}
+						std::function<bool(
+							const std::vector<DesignerTimelineGroup>&)>
+							validateTimelineGroups;
+						validateTimelineGroups = [&](const auto& groups)
+						{
+							for (const auto& group : groups)
+							{
+								const auto& timing = group.Timing;
+								if (!std::isfinite(timing.RepeatCount)
+									|| !std::isfinite(timing.SpeedRatio)
+									|| timing.SpeedRatio <= 0.0
+									|| !std::isfinite(timing.AccelerationRatio)
+									|| !std::isfinite(timing.DecelerationRatio)
+									|| timing.AccelerationRatio < 0.0
+									|| timing.DecelerationRatio < 0.0
+									|| timing.AccelerationRatio
+										+ timing.DecelerationRatio > 1.0)
+									return Fail(context
+										+ L"：ParallelTimeline 时序无效。", outError);
+								for (const auto& animation : group.Animations)
+								{
+									if (!animation.TargetName.empty()
+										|| animation.PropertyName.empty())
+										return Fail(context
+											+ L"：嵌套 Style Storyboard 目标无效。",
+											outError);
+									auto validateValue = [&](const DesignerStyleValue& literal,
+										bool usesResource, const std::wstring& resourceKey)
+									{
+										if (usesResource)
+											return !resourceKey.empty()
+												&& ContainsName(resourceKeys, resourceKey);
+										BindingValue value;
+										return TryConvertValue(literal, value, outError,
+											resourceBasePath, resources);
+									};
+									if ((animation.HasFrom && !validateValue(animation.From,
+										animation.FromUsesResource,
+										animation.FromResourceKey))
+										|| (animation.HasTo && !validateValue(animation.To,
+											animation.ToUsesResource,
+											animation.ToResourceKey))
+										|| (animation.HasBy && !validateValue(animation.By,
+											animation.ByUsesResource,
+											animation.ByResourceKey))) return false;
+									for (const auto& frame : animation.KeyFrames)
+										if (!validateValue(frame.Value, frame.UsesResource,
+											frame.ResourceKey)) return false;
+								}
+								if (!validateTimelineGroups(group.Children)) return false;
+							}
+							return true;
+						};
+						if (!validateTimelineGroups(action.TimelineGroups))
+							return false;
 					}
 					else
 					{
@@ -1818,7 +1917,7 @@ bool MaterializeStoryboardActions(
 {
 	out.clear();
 	out.reserve(sourceActions.size());
-	auto materializeAnimation = [&](const DesignerVisualStateAnimation& source,
+		auto materializeAnimation = [&](const DesignerVisualStateAnimation& source,
 		DeclarativeVisualStateAnimation& animation)
 	{
 		animation.Kind = source.Kind == DesignerAnimationKind::Color
@@ -1837,6 +1936,15 @@ bool MaterializeStoryboardActions(
 				? DeclarativeAnimationKind::Matrix
 			: source.Kind == DesignerAnimationKind::Object
 				? DeclarativeAnimationKind::Object
+			: source.Kind == DesignerAnimationKind::Boolean
+				|| source.Kind == DesignerAnimationKind::String
+				? DeclarativeAnimationKind::Object
+			: source.Kind == DesignerAnimationKind::Int32
+				? DeclarativeAnimationKind::Int32
+			: source.Kind == DesignerAnimationKind::Int64
+				? DeclarativeAnimationKind::Int64
+			: source.Kind == DesignerAnimationKind::Single
+				? DeclarativeAnimationKind::Single
 				: DeclarativeAnimationKind::Double;
 		animation.TargetName = source.TargetName;
 		if (DesignerModel::ClassifyStoryboardObjectPath(source.PropertyName)
@@ -1898,15 +2006,14 @@ bool MaterializeStoryboardActions(
 					? DeclarativeKeyFrameKind::Spline
 					: DeclarativeKeyFrameKind::Linear;
 			frame.KeyTimeMilliseconds = sourceFrame.KeyTimeMilliseconds;
+			frame.KeyTimeSubMillisecondTicks =
+				sourceFrame.KeyTimeSubMillisecondTicks;
 			if (!resolveValue(sourceFrame.Value, sourceFrame.UsesResource,
 				sourceFrame.ResourceKey, frame.Value, L"KeyFrame")) return false;
-			frame.Easing = sourceFrame.Easing == DesignerEasingKind::Quadratic
-				? DeclarativeEasingKind::Quadratic
-				: sourceFrame.Easing == DesignerEasingKind::Cubic
-					? DeclarativeEasingKind::Cubic
-				: sourceFrame.Easing == DesignerEasingKind::Sine
-					? DeclarativeEasingKind::Sine
-					: DeclarativeEasingKind::Linear;
+			frame.Easing = static_cast<DeclarativeEasingKind>(sourceFrame.Easing);
+			frame.EasingParameters = {
+				sourceFrame.EasingParameters.Primary,
+				sourceFrame.EasingParameters.Secondary };
 			frame.EasingMode = sourceFrame.EasingMode
 				== DesignerEasingMode::EaseIn
 				? DeclarativeEasingMode::EaseIn
@@ -1921,6 +2028,8 @@ bool MaterializeStoryboardActions(
 		}
 		animation.IsAdditive = source.IsAdditive;
 		animation.IsCumulative = source.IsCumulative;
+		animation.Path = source.Path;
+		animation.PathSegments = source.PathSegments;
 		animation.BeginTimeMilliseconds = source.BeginTimeMilliseconds;
 		animation.DurationMilliseconds = source.DurationMilliseconds;
 		animation.RepeatBehavior = source.RepeatBehavior
@@ -1940,18 +2049,57 @@ bool MaterializeStoryboardActions(
 		animation.SpeedRatio = source.SpeedRatio;
 		animation.AccelerationRatio = source.AccelerationRatio;
 		animation.DecelerationRatio = source.DecelerationRatio;
-		animation.Easing = source.Easing == DesignerEasingKind::Quadratic
-			? DeclarativeEasingKind::Quadratic
-			: source.Easing == DesignerEasingKind::Cubic
-				? DeclarativeEasingKind::Cubic
-			: source.Easing == DesignerEasingKind::Sine
-				? DeclarativeEasingKind::Sine
-				: DeclarativeEasingKind::Linear;
+		animation.Easing = static_cast<DeclarativeEasingKind>(source.Easing);
+		animation.EasingParameters = {
+			source.EasingParameters.Primary,
+			source.EasingParameters.Secondary };
 		animation.EasingMode = source.EasingMode == DesignerEasingMode::EaseIn
 			? DeclarativeEasingMode::EaseIn
 			: source.EasingMode == DesignerEasingMode::EaseInOut
 				? DeclarativeEasingMode::EaseInOut
 				: DeclarativeEasingMode::EaseOut;
+		return true;
+	};
+	std::function<bool(const DesignerTimelineGroup&,
+		DeclarativeTimelineGroupDefinition&)> materializeTimelineGroup;
+	materializeTimelineGroup = [&](const DesignerTimelineGroup& source,
+		DeclarativeTimelineGroupDefinition& group)
+	{
+		group.Timing.BeginTimeMilliseconds =
+			source.Timing.BeginTimeMilliseconds;
+		group.Timing.DurationAutomatic = source.Timing.DurationAutomatic;
+		group.Timing.DurationMilliseconds = source.Timing.DurationMilliseconds;
+		group.Timing.RepeatBehavior = source.Timing.RepeatBehavior
+			== DesignerRepeatBehaviorKind::Duration
+			? DeclarativeRepeatBehaviorKind::Duration
+			: source.Timing.RepeatBehavior == DesignerRepeatBehaviorKind::Forever
+				? DeclarativeRepeatBehaviorKind::Forever
+				: DeclarativeRepeatBehaviorKind::Count;
+		group.Timing.RepeatCount = source.Timing.RepeatCount;
+		group.Timing.RepeatDurationMilliseconds =
+			source.Timing.RepeatDurationMilliseconds;
+		group.Timing.AutoReverse = source.Timing.AutoReverse;
+		group.Timing.FillBehavior = source.Timing.FillBehavior
+			== DesignerTimelineFillBehavior::Stop
+			? DeclarativeTimelineFillBehavior::Stop
+			: DeclarativeTimelineFillBehavior::HoldEnd;
+		group.Timing.SpeedRatio = source.Timing.SpeedRatio;
+		group.Timing.AccelerationRatio = source.Timing.AccelerationRatio;
+		group.Timing.DecelerationRatio = source.Timing.DecelerationRatio;
+		group.Animations.reserve(source.Animations.size());
+		for (const auto& sourceAnimation : source.Animations)
+		{
+			DeclarativeVisualStateAnimation animation;
+			if (!materializeAnimation(sourceAnimation, animation)) return false;
+			group.Animations.push_back(std::move(animation));
+		}
+		group.Children.reserve(source.Children.size());
+		for (const auto& sourceChild : source.Children)
+		{
+			DeclarativeTimelineGroupDefinition child;
+			if (!materializeTimelineGroup(sourceChild, child)) return false;
+			group.Children.push_back(std::move(child));
+		}
 		return true;
 	};
 
@@ -1964,13 +2112,65 @@ bool MaterializeStoryboardActions(
 				? DeclarativeStoryboardActionKind::Pause
 			: sourceAction.Kind == DesignerStoryboardActionKind::Resume
 				? DeclarativeStoryboardActionKind::Resume
-				: DeclarativeStoryboardActionKind::Stop;
+			: sourceAction.Kind == DesignerStoryboardActionKind::Stop
+				? DeclarativeStoryboardActionKind::Stop
+			: sourceAction.Kind == DesignerStoryboardActionKind::Remove
+				? DeclarativeStoryboardActionKind::Remove
+			: sourceAction.Kind == DesignerStoryboardActionKind::Seek
+				? DeclarativeStoryboardActionKind::Seek
+			: sourceAction.Kind == DesignerStoryboardActionKind::SetSpeedRatio
+				? DeclarativeStoryboardActionKind::SetSpeedRatio
+				: DeclarativeStoryboardActionKind::SkipToFill;
 		action.StoryboardName = sourceAction.StoryboardName;
+		action.SeekOffsetMilliseconds = sourceAction.SeekOffsetMilliseconds;
+		action.SpeedRatio = sourceAction.SpeedRatio;
+		action.StoryboardTiming.BeginTimeMilliseconds =
+			sourceAction.StoryboardTiming.BeginTimeMilliseconds;
+		action.StoryboardTiming.DurationAutomatic =
+			sourceAction.StoryboardTiming.DurationAutomatic;
+		action.StoryboardTiming.DurationMilliseconds =
+			sourceAction.StoryboardTiming.DurationMilliseconds;
+		action.StoryboardTiming.RepeatBehavior =
+			sourceAction.StoryboardTiming.RepeatBehavior
+				== DesignerRepeatBehaviorKind::Duration
+			? DeclarativeRepeatBehaviorKind::Duration
+			: sourceAction.StoryboardTiming.RepeatBehavior
+				== DesignerRepeatBehaviorKind::Forever
+				? DeclarativeRepeatBehaviorKind::Forever
+				: DeclarativeRepeatBehaviorKind::Count;
+		action.StoryboardTiming.RepeatCount =
+			sourceAction.StoryboardTiming.RepeatCount;
+		action.StoryboardTiming.RepeatDurationMilliseconds =
+			sourceAction.StoryboardTiming.RepeatDurationMilliseconds;
+		action.StoryboardTiming.AutoReverse =
+			sourceAction.StoryboardTiming.AutoReverse;
+		action.StoryboardTiming.FillBehavior =
+			sourceAction.StoryboardTiming.FillBehavior
+				== DesignerTimelineFillBehavior::Stop
+			? DeclarativeTimelineFillBehavior::Stop
+			: DeclarativeTimelineFillBehavior::HoldEnd;
+		action.StoryboardTiming.SpeedRatio =
+			sourceAction.StoryboardTiming.SpeedRatio;
+		action.StoryboardTiming.AccelerationRatio =
+			sourceAction.StoryboardTiming.AccelerationRatio;
+		action.StoryboardTiming.DecelerationRatio =
+			sourceAction.StoryboardTiming.DecelerationRatio;
+		action.Handoff = sourceAction.Handoff == DesignerHandoffBehavior::Compose
+			? DeclarativeHandoffBehavior::Compose
+			: DeclarativeHandoffBehavior::SnapshotAndReplace;
 		for (const auto& sourceAnimation : sourceAction.Animations)
 		{
 			DeclarativeVisualStateAnimation animation;
 			if (!materializeAnimation(sourceAnimation, animation)) return false;
 			action.Animations.push_back(std::move(animation));
+		}
+		action.TimelineGroups.reserve(sourceAction.TimelineGroups.size());
+		for (const auto& sourceTimelineGroup : sourceAction.TimelineGroups)
+		{
+			DeclarativeTimelineGroupDefinition timelineGroup;
+			if (!materializeTimelineGroup(sourceTimelineGroup, timelineGroup))
+				return false;
+			action.TimelineGroups.push_back(std::move(timelineGroup));
 		}
 		out.push_back(std::move(action));
 	}
@@ -2155,6 +2355,7 @@ bool BuildRuntimeStyleSheet(
 				const std::wstring& context)
 			{
 				for (auto& action : actions)
+				{
 					for (auto& animation : action.Animations)
 					{
 						if (!animation.ObjectPath.empty())
@@ -2169,6 +2370,32 @@ bool BuildRuntimeStyleSheet(
 						animation.Property = DependencyPropertyReference(
 							metadata->Property());
 					}
+					std::function<bool(std::vector<
+						DeclarativeTimelineGroupDefinition>&)>
+						normalizeGroups;
+					normalizeGroups = [&](auto& groups)
+					{
+						for (auto& group : groups)
+						{
+							for (auto& animation : group.Animations)
+							{
+								if (!animation.ObjectPath.empty())
+								{
+									animation.Property = {};
+									continue;
+								}
+								const auto* metadata = findPropertyMetadata(
+									animation.Property.Name(), true, context);
+								if (!metadata) return false;
+								animation.Property = DependencyPropertyReference(
+									metadata->Property());
+							}
+							if (!normalizeGroups(group.Children)) return false;
+						}
+						return true;
+					};
+					if (!normalizeGroups(action.TimelineGroups)) return false;
+				}
 				return true;
 			};
 			if (!normalizeAnimations(

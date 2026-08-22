@@ -690,7 +690,8 @@ void MenuItem::SynchronizeCommandContext(
 void MenuItem::OnPresentationWindowChanged(
 	Window* previousWindow, Window* currentWindow)
 {
-	(void)previousWindow;
+	HeaderedItemsControl::OnPresentationWindowChanged(
+		previousWindow, currentWindow);
 	const ControlWeakReference sourceLifetime(this);
 	const ControlWeakReference windowLifetime(currentWindow);
 	RefreshCommandSource();
@@ -1750,4 +1751,3 @@ bool Menu::ProcessInput(const InputReport& input)
 	auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
 	return host ? host->ItemsControl::ProcessInput(input) : true;
 }
-

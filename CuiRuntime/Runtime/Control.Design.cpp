@@ -327,6 +327,7 @@ void Control::RegisterDependencyProperties()
 	(void)FontFamilyProperty();
 	(void)LanguageProperty();
 	(void)FontSizeProperty();
+	(void)OpacityProperty();
 	(void)ClipProperty();
 	(void)ClipToBoundsProperty();
 	(void)RenderTransformProperty();

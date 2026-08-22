@@ -290,6 +290,8 @@ ControlStyleSheet::CreateCompiled(CompiledStyleProgram program)
 		{},
 		{},
 		{},
+		{},
+		{},
 		owned->Rules,
 		owned->RuleIndexes,
 		owned->PropertyWatchers,
@@ -322,7 +324,9 @@ ControlStyleSheet::CreateCompiled(CompiledStyleProgram program)
 	compiled.ObjectPathChildIndices = {};
 	compiled.ObjectPaths = {};
 	compiled.KeyFrames = {};
+	compiled.PathSegments = {};
 	compiled.Animations = {};
+	compiled.TimelineGroups = {};
 	compiled.Storyboards = {};
 	compiled.Actions = {};
 	compiled.Rules = source.Rules;

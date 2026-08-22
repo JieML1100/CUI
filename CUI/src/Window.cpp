@@ -53,6 +53,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 #include <oleidl.h>
 #include <oleacc.h>
 #include <uiautomationcore.h>
@@ -68,6 +69,48 @@
 
 namespace
 {
+	class PresentationFrameTimingClock final
+	{
+	public:
+		PresentationFrameTimingClock() noexcept
+		{
+			(void)::QueryPerformanceCounter(&_start);
+			_last = _start;
+		}
+
+		double LapMicroseconds() noexcept
+		{
+			LARGE_INTEGER now{};
+			(void)::QueryPerformanceCounter(&now);
+			const double result = ToMicroseconds(now.QuadPart - _last.QuadPart);
+			_last = now;
+			return result;
+		}
+
+		double TotalMicroseconds() const noexcept
+		{
+			LARGE_INTEGER now{};
+			(void)::QueryPerformanceCounter(&now);
+			return ToMicroseconds(now.QuadPart - _start.QuadPart);
+		}
+
+	private:
+		static double ToMicroseconds(LONGLONG ticks) noexcept
+		{
+			static const LONGLONG frequency = []() noexcept
+			{
+				LARGE_INTEGER value{};
+				return ::QueryPerformanceFrequency(&value) && value.QuadPart > 0
+					? value.QuadPart : LONGLONG{ 1 };
+			}();
+			return static_cast<double>(ticks) * 1'000'000.0
+				/ static_cast<double>(frequency);
+		}
+
+		LARGE_INTEGER _start{};
+		LARGE_INTEGER _last{};
+	};
+
 	// WM_PAINT is deliberately the lowest-priority item in a Win32 message
 	// queue.  A continuous hardware-input stream can therefore keep a valid
 	// DataGrid frame waiting until the gesture stops.  The posted dispatch is
@@ -79,7 +122,155 @@ namespace
 			L"CUI.Window.CoalescedPresentation.v1");
 		return message;
 	}
+
+	UINT CuiAnimationFrameDispatchMessage() noexcept
+	{
+		static const UINT message = ::RegisterWindowMessageW(
+			L"CUI.Window.AnimationFrame.v1");
+		return message;
+	}
 }
+
+class AnimationFrameScheduler final
+{
+private:
+	struct State final
+	{
+		HWND Window = nullptr;
+		UINT Message = 0;
+		UINT IntervalMilliseconds = 16;
+		UINT_PTR Generation = 0;
+		HANDLE StopEvent = nullptr;
+		std::atomic<bool> Posted = false;
+		std::atomic<bool> Running = false;
+
+		~State()
+		{
+			if (StopEvent) ::CloseHandle(StopEvent);
+		}
+	};
+
+	std::shared_ptr<State> _state;
+	std::thread _thread;
+
+	static bool PostFrame(const std::shared_ptr<State>& state) noexcept
+	{
+		if (!state || state->Posted.exchange(true)) return true;
+		if (state->Window && state->Message != 0
+			&& ::PostMessageW(
+				state->Window, state->Message,
+				state->Generation, 0) != FALSE) return true;
+		state->Posted.store(false);
+		return false;
+	}
+
+	static void Run(const std::shared_ptr<State>& state) noexcept
+	{
+		if (!state || !state->StopEvent) return;
+		struct RunningReset final
+		{
+			State* Value = nullptr;
+			~RunningReset()
+			{
+				if (Value) Value->Running.store(false);
+			}
+		} runningReset{ state.get() };
+		BOOL compositionEnabled = FALSE;
+		bool useDwmCadence = SUCCEEDED(
+			::DwmIsCompositionEnabled(&compositionEnabled))
+			&& compositionEnabled != FALSE;
+		ULONGLONG lastPosted = 0;
+		while (useDwmCadence
+			&& ::WaitForSingleObject(state->StopEvent, 0) == WAIT_TIMEOUT)
+		{
+			if (FAILED(::DwmFlush()))
+			{
+				useDwmCadence = false;
+				break;
+			}
+			if (::WaitForSingleObject(state->StopEvent, 0) != WAIT_TIMEOUT)
+				return;
+			const auto now = ::GetTickCount64();
+			if (lastPosted != 0
+				&& state->IntervalMilliseconds > 16u
+				&& now - lastPosted < state->IntervalMilliseconds)
+				continue;
+			lastPosted = now;
+			if (!PostFrame(state)
+				&& (!state->Window || ::IsWindow(state->Window) == FALSE))
+				return;
+		}
+		if (useDwmCadence) return;
+		while (::WaitForSingleObject(
+			state->StopEvent,
+			state->IntervalMilliseconds == 0u
+				? 16u : state->IntervalMilliseconds) == WAIT_TIMEOUT)
+			if (!PostFrame(state)
+				&& (!state->Window || ::IsWindow(state->Window) == FALSE))
+				return;
+	}
+
+	static UINT_PTR NextGeneration() noexcept
+	{
+		static std::atomic<UINT_PTR> next{ 1u };
+		auto value = next.fetch_add(1u);
+		if (value != 0u) return value;
+		value = next.fetch_add(1u);
+		return value == 0u ? 1u : value;
+	}
+
+public:
+	~AnimationFrameScheduler() { Stop(); }
+
+	bool Start(HWND window, UINT message, UINT intervalMilliseconds) noexcept
+	{
+		if (_state && _thread.joinable() && _state->Running.load()
+			&& _state->Window == window && _state->Message == message
+			&& _state->IntervalMilliseconds == intervalMilliseconds)
+			return true;
+		Stop();
+		try
+		{
+			auto state = std::make_shared<State>();
+			state->Window = window;
+			state->Message = message;
+			state->IntervalMilliseconds = intervalMilliseconds == 0u
+				? 16u : intervalMilliseconds;
+			state->Generation = NextGeneration();
+			state->StopEvent = ::CreateEventW(
+				nullptr, TRUE, FALSE, nullptr);
+			if (!state->StopEvent) return false;
+			state->Running.store(true);
+			std::thread worker([state] { Run(state); });
+			_state = std::move(state);
+			_thread = std::move(worker);
+			return true;
+		}
+		catch (...)
+		{
+			Stop();
+			return false;
+		}
+	}
+
+	void Acknowledge(UINT_PTR generation) noexcept
+	{
+		if (_state && _state->Generation == generation)
+			_state->Posted.store(false);
+	}
+
+	bool IsRunning() const noexcept
+	{
+		return _state && _thread.joinable() && _state->Running.load();
+	}
+
+	void Stop() noexcept
+	{
+		auto state = std::move(_state);
+		if (state && state->StopEvent) ::SetEvent(state->StopEvent);
+		if (_thread.joinable()) _thread.join();
+	}
+};
 
 namespace accessibility_detail
 {
@@ -2901,16 +3092,9 @@ private:
 
 Control* WindowUiaProvider::ResolveControl(Control* candidate) const noexcept
 {
-	try
-	{
-		auto* form = GetWindow();
-		if (!form || !Connected() || !candidate) return nullptr;
-		const auto controls = form->GetAccessibleControls();
-		const auto position = std::find(
-			controls.begin(), controls.end(), candidate);
-		return position != controls.end() ? *position : nullptr;
-	}
-	catch (...) { return nullptr; }
+	auto* form = GetWindow();
+	return form && Connected()
+		? form->ResolveAccessibleControl(candidate) : nullptr;
 }
 
 Control* WindowUiaProvider::ResolveControl(
@@ -5848,6 +6032,61 @@ std::vector<Control*> Window::GetAccessibleControls() const
 	return result;
 }
 
+Control* Window::ResolveAccessibleControl(Control* candidate) const noexcept
+{
+	try
+	{
+		if (!candidate) return nullptr;
+
+		// Provider property queries are extremely dense: UIAutomationCore commonly
+		// asks a focused editor for dozens of properties in one pass. Rebuilding
+		// the entire accessible tree for every query turns a DataGrid edit into
+		// O(tree size * property count) work and can starve the HWND input queue.
+		// Membership in the logical accessibility projection can be decided by the
+		// candidate's ancestor chain instead. A virtualized owner is included, but
+		// its realized descendants are suppressed exactly as GetAccessibleControls
+		// suppresses their depth range.
+		const ControlWeakReference windowLifetime(
+			const_cast<Window*>(this));
+		const ControlWeakReference candidateLifetime(candidate);
+		const uint32_t candidateRuntimeId =
+			candidate->GetAccessibilityRuntimeId();
+		std::unordered_set<Control*> visited;
+		Control* current = candidate;
+		while (current && current != this)
+		{
+			if (!visited.insert(current).second) return nullptr;
+			const ControlWeakReference currentLifetime(current);
+			auto* parent = current->GetLogicalParent();
+			if (!parent) return nullptr;
+			const ControlWeakReference parentLifetime(parent);
+
+			if (parent != this)
+			{
+				auto peer = parent->AcquireAutomationPeer();
+				auto* window = dynamic_cast<Window*>(windowLifetime.Get());
+				candidate = candidateLifetime.Get();
+				current = currentLifetime.Get();
+				parent = parentLifetime.Get();
+				if (window != this || !candidate || !current || !parent
+					|| candidate->GetAccessibilityRuntimeId()
+						!= candidateRuntimeId
+					|| current->GetLogicalParent() != parent)
+					return nullptr;
+				if (peer && peer->SupportsVirtualizedChildren()) return nullptr;
+			}
+			current = parent;
+		}
+
+		candidate = candidateLifetime.Get();
+		return windowLifetime.Get() == this && current == this && candidate
+			&& candidate->GetAccessibilityRuntimeId() == candidateRuntimeId
+			&& candidate->GetPresentationWindow() == this
+			? candidate : nullptr;
+	}
+	catch (...) { return nullptr; }
+}
+
 Control* Window::ResolveAccessibleRepresentative(
 	Control* control, std::span<Control* const> accessible) const
 {
@@ -6490,90 +6729,308 @@ void Window::InvalidateControl(Control* control, float inflateDip, bool immediat
 	Invalidate(physicalRect, immediate);
 }
 
-void Window::RefreshAnimationTimer()
+void Window::SynchronizeActiveDeclarativeAnimationControl(
+	Control* control,
+	bool hasRetainedRoots) noexcept
 {
-	if (!this->Handle) return;
-
-	bool hasActiveAnimation = false;
-	UINT desiredIntervalMs = 0;
-
-	std::unordered_set<Control*> visited;
-	std::function<void(Control*)> consider;
-	consider = [&](Control* control)
-		{
-			if (!control || !control->IsVisible
-				|| !visited.insert(control).second) return;
-			const bool nativeAnimation = control->IsAnimationRunning();
-			const bool visualStateAnimation =
-				control->HasActiveVisualStateAnimations();
-			if (nativeAnimation || visualStateAnimation)
-			{
-				hasActiveAnimation = true;
-				UINT interval = visualStateAnimation
-					? 16U : control->GetAnimationIntervalMs();
-				if (nativeAnimation && visualStateAnimation)
-					interval = (std::min)(interval,
-						control->GetAnimationIntervalMs());
-				if (interval == 0) interval = 16;
-				desiredIntervalMs = desiredIntervalMs == 0 ? interval : (std::min)(desiredIntervalMs, interval);
-			}
-			for (int i = 0; i < control->VisualChildCount(); i++)
-				consider(control->GetVisualChild(i));
-		};
-
-	for (auto control : this->GetVisualChildrenView()) consider(control);
-	for (auto* root : GetTransientPresentationRoots()) consider(root);
-
-	if (!hasActiveAnimation)
-	{
-		if (_animIntervalMs != 0)
-		{
-			::KillTimer(this->Handle, _animTimerId);
-			_animIntervalMs = 0;
-		}
+	const bool shouldRegister = control && hasRetainedRoots
+		&& control->GetPresentationWindow() == this;
+	if (!shouldRegister
+		&& (!control || !control->_registeredDeclarativeAnimationWindow))
 		return;
-	}
-
-	if (_animIntervalMs != desiredIntervalMs)
+	try
 	{
-		if (_animIntervalMs != 0)
-			::KillTimer(this->Handle, _animTimerId);
-		_animIntervalMs = desiredIntervalMs;
-		::SetTimer(this->Handle, _animTimerId, _animIntervalMs, nullptr);
+		if (shouldRegister && !control->_registeredDeclarativeAnimationWindow)
+		{
+			_activeDeclarativeAnimationControls.emplace_back(control);
+			control->_registeredDeclarativeAnimationWindow = true;
+		}
+		else if (!shouldRegister)
+		{
+			_activeDeclarativeAnimationControls.erase(std::remove_if(
+				_activeDeclarativeAnimationControls.begin(),
+				_activeDeclarativeAnimationControls.end(),
+				[control](const auto& reference)
+				{ return !reference.Get() || reference.Get() == control; }),
+				_activeDeclarativeAnimationControls.end());
+			control->_registeredDeclarativeAnimationWindow = false;
+		}
+	}
+	catch (...)
+	{
+		// Record registry degradation instead of terminating a noexcept
+		// clock-commit path on allocation failure.  The testing seam exposes the
+		// degraded scheduler state without restoring a visual-tree fallback.
+		_animationRegistryDegraded = true;
+	}
+	RefreshAnimationTimer();
+}
+
+std::vector<Control*> Window::GetRegisteredDeclarativeAnimationControls()
+{
+	std::vector<Control*> result;
+	result.reserve(_activeDeclarativeAnimationControls.size());
+	_activeDeclarativeAnimationControls.erase(std::remove_if(
+		_activeDeclarativeAnimationControls.begin(),
+		_activeDeclarativeAnimationControls.end(),
+		[&](const auto& reference)
+		{
+			auto* live = reference.Get();
+			if (!live || live->GetPresentationWindow() != this
+				|| !live->HasRetainedVisualStateAnimationRoots())
+			{
+				if (live && live->GetPresentationWindow() == this)
+					live->_registeredDeclarativeAnimationWindow = false;
+				return true;
+			}
+			if (std::find(result.begin(), result.end(), live) != result.end())
+				return true;
+			live->_registeredDeclarativeAnimationWindow = true;
+			result.push_back(live);
+			return false;
+		}), _activeDeclarativeAnimationControls.end());
+	return result;
+}
+
+std::vector<Control*>
+Window::GetActiveRegisteredDeclarativeAnimationControls()
+{
+	auto controls = GetRegisteredDeclarativeAnimationControls();
+	controls.erase(std::remove_if(
+		controls.begin(), controls.end(),
+		[](Control* control)
+		{
+			return !control || !control->IsVisible
+				|| !control->HasActiveVisualStateAnimations();
+		}), controls.end());
+	return controls;
+}
+
+void Window::AdvanceRegisteredDeclarativeAnimationControls(
+	std::span<Control* const> controls,
+	unsigned long long nowMilliseconds,
+	bool immediate)
+{
+	(void)immediate;
+	std::vector<ControlWeakReference> lifetimes;
+	lifetimes.reserve(controls.size());
+	for (auto* control : controls)
+		lifetimes.emplace_back(control);
+	for (const auto& lifetime : lifetimes)
+	{
+		auto* control = lifetime.Get();
+		if (!control || control->GetPresentationWindow() != this
+			|| !control->IsVisible
+			|| !control->HasActiveVisualStateAnimations()) continue;
+		(void)cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(*control, nowMilliseconds);
 	}
 }
 
+void Window::SynchronizeRetainedNativeAnimationControl(
+	Control* control,
+	bool hasRetainedAnimation) noexcept
+{
+	const bool shouldRegister = control && hasRetainedAnimation
+		&& control->GetPresentationWindow() == this;
+	if (!shouldRegister
+		&& (!control || !control->_registeredNativeAnimationWindow))
+		return;
+	try
+	{
+		if (shouldRegister && !control->_registeredNativeAnimationWindow)
+		{
+			_retainedNativeAnimationControls.emplace_back(control);
+			control->_registeredNativeAnimationWindow = true;
+		}
+		else if (!shouldRegister)
+		{
+			_retainedNativeAnimationControls.erase(std::remove_if(
+				_retainedNativeAnimationControls.begin(),
+				_retainedNativeAnimationControls.end(),
+				[control](const auto& reference)
+				{ return !reference.Get() || reference.Get() == control; }),
+				_retainedNativeAnimationControls.end());
+			control->_registeredNativeAnimationWindow = false;
+		}
+	}
+	catch (...)
+	{
+		_animationRegistryDegraded = true;
+	}
+	RefreshAnimationTimer();
+}
+
+std::vector<Control*> Window::GetRegisteredNativeAnimationControls()
+{
+	std::vector<Control*> result;
+	result.reserve(_retainedNativeAnimationControls.size());
+	_retainedNativeAnimationControls.erase(std::remove_if(
+		_retainedNativeAnimationControls.begin(),
+		_retainedNativeAnimationControls.end(),
+		[&](const auto& reference)
+		{
+			auto* live = reference.Get();
+			if (!live || live->GetPresentationWindow() != this
+				|| !live->HasRetainedNativeAnimation())
+			{
+				if (live && live->GetPresentationWindow() == this)
+					live->_registeredNativeAnimationWindow = false;
+				return true;
+			}
+			if (std::find(result.begin(), result.end(), live) != result.end())
+				return true;
+			live->_registeredNativeAnimationWindow = true;
+			result.push_back(live);
+			return false;
+		}), _retainedNativeAnimationControls.end());
+	return result;
+}
+
+std::vector<Control*> Window::GetActiveRegisteredNativeAnimationControls()
+{
+	auto controls = GetRegisteredNativeAnimationControls();
+	controls.erase(std::remove_if(
+		controls.begin(), controls.end(),
+		[](Control* control)
+		{
+			return !control || !control->IsVisible
+				|| !control->IsAnimationRunning();
+		}), controls.end());
+	return controls;
+}
+
+void Window::RefreshAnimationTimer() noexcept
+{
+	auto stopTimer = [&]() noexcept
+	{
+		if (_animationFrameScheduler)
+			_animationFrameScheduler->Stop();
+		if (_animationUsesLegacyTimer && _animIntervalMs != 0 && this->Handle)
+			::KillTimer(this->Handle, _animTimerId);
+		_animationUsesLegacyTimer = false;
+		_animIntervalMs = 0;
+	};
+	try
+	{
+		const auto handle = this->Handle;
+		if (_resourcesCleaned || !handle
+			|| ::IsWindowEnabled(handle) == FALSE)
+		{
+			stopTimer();
+			return;
+		}
+
+		bool hasActiveAnimation = false;
+		UINT desiredIntervalMs = 0;
+		auto declarativeControls =
+			GetActiveRegisteredDeclarativeAnimationControls();
+		if (!declarativeControls.empty())
+		{
+			hasActiveAnimation = true;
+			desiredIntervalMs = 16;
+		}
+		auto nativeControls = GetActiveRegisteredNativeAnimationControls();
+		for (auto* control : nativeControls)
+		{
+			if (!control) continue;
+			hasActiveAnimation = true;
+			UINT interval = control->GetAnimationIntervalMs();
+			if (interval == 0) interval = 16;
+			desiredIntervalMs = desiredIntervalMs == 0
+				? interval
+				: (std::min)(desiredIntervalMs, interval);
+		}
+
+		if (!hasActiveAnimation)
+		{
+			stopTimer();
+			return;
+		}
+
+		const bool sourceRunning = _animationUsesLegacyTimer
+			|| (_animationFrameScheduler
+				&& _animationFrameScheduler->IsRunning());
+		if (_animIntervalMs != desiredIntervalMs || !sourceRunning)
+		{
+			stopTimer();
+			bool scheduled = false;
+			try
+			{
+				if (!_animationFrameScheduler)
+					_animationFrameScheduler =
+						std::make_unique<AnimationFrameScheduler>();
+				const auto animationDispatch =
+					CuiAnimationFrameDispatchMessage();
+				scheduled = animationDispatch != 0u
+					&& _animationFrameScheduler->Start(
+						handle, animationDispatch, desiredIntervalMs);
+			}
+			catch (...)
+			{
+				scheduled = false;
+			}
+			if (!scheduled)
+			{
+				if (::SetTimer(
+					handle, _animTimerId, desiredIntervalMs, nullptr) == 0)
+				{
+					_animationRegistryDegraded = true;
+					return;
+				}
+				_animationUsesLegacyTimer = true;
+			}
+			_animIntervalMs = desiredIntervalMs;
+		}
+	}
+	catch (...)
+	{
+		stopTimer();
+		_animationRegistryDegraded = true;
+	}
+}
+
+bool Window::IsAnimationFrameSchedulerRunningForTesting() const noexcept
+{
+	return _animationFrameScheduler
+		&& _animationFrameScheduler->IsRunning();
+}
+
 void Window::InvalidateAnimatedControls(bool immediate)
+{
+	InvalidateAnimatedControlsAt(::GetTickCount64(), immediate);
+}
+
+void Window::InvalidateAnimatedControlsAt(
+	unsigned long long nowMilliseconds,
+	bool immediate)
 {
 	// Animation ticks only enqueue retained work. Synchronously entering
 	// WM_PAINT from WM_TIMER makes pointer/caption and modal message handling
 	// re-enter presentation with half-committed input state.
 	(void)immediate;
-	const auto nowMilliseconds = ::GetTickCount64();
-	std::unordered_set<Control*> visited;
-	std::function<void(Control*)> consider;
-	consider = [&](Control* control)
-		{
-			if (!control || !visited.insert(control).second) return;
-			if (!control->IsVisible) return;
-			const bool visualStateFrame =
-				cui::framework::PresentationAccess::
-					AdvanceVisualStateAnimations(
-						*control, nowMilliseconds);
-			if (control->IsAnimationRunning() || visualStateFrame)
-			{
-				D2D1_RECT_F rect{};
-				if (control->GetAnimatedInvalidRect(rect))
-					cui::framework::PresentationAccess::
-						InvalidateVisualRect(*control, rect);
-				else
-					control->InvalidateVisual();
-			}
-			for (int i = 0; i < control->VisualChildCount(); i++)
-				consider(control->GetVisualChild(i));
-		};
-	for (auto control : this->GetVisualChildrenView()) consider(control);
-	for (auto* root : GetTransientPresentationRoots()) consider(root);
+	auto declarativeControls =
+		GetActiveRegisteredDeclarativeAnimationControls();
+	auto nativeControls = GetActiveRegisteredNativeAnimationControls();
+	std::vector<ControlWeakReference> nativeLifetimes;
+	nativeLifetimes.reserve(nativeControls.size());
+	for (auto* control : nativeControls)
+		nativeLifetimes.emplace_back(control);
+	AdvanceRegisteredDeclarativeAnimationControls(
+		declarativeControls, nowMilliseconds, immediate);
+	for (const auto& lifetime : nativeLifetimes)
+	{
+		auto* control = lifetime.Get();
+		if (!control || control->GetPresentationWindow() != this
+			|| !control->IsVisible || !control->IsAnimationRunning())
+			continue;
+		D2D1_RECT_F rect{};
+		if (control->GetAnimatedInvalidRect(rect))
+			cui::framework::PresentationAccess::
+				InvalidateVisualRect(*control, rect);
+		else
+			control->InvalidateVisual();
+	}
 	RefreshAnimationTimer();
 }
 GET_CPP(Window, float, Left)
@@ -7538,11 +7995,44 @@ bool Window::SynchronizePresentationScene()
 {
 	if (!_presentationScene) return false;
 	auto transientRoots = GetTransientPresentationRoots();
+	auto animationOwners = GetRegisteredDeclarativeAnimationControls();
+	std::vector<Control*> isolationTargets;
+	std::vector<Control*> opacityTargets;
+	for (auto* owner : animationOwners)
+		if (owner)
+			owner->CollectDeclarativeCompositionAnimationTargets(
+				isolationTargets, opacityTargets);
+	isolationTargets.erase(std::remove_if(
+		isolationTargets.begin(), isolationTargets.end(),
+		[this](Control* target)
+		{
+			return !target || target->GetPresentationWindow() != this;
+		}), isolationTargets.end());
+	std::sort(isolationTargets.begin(), isolationTargets.end(),
+		std::less<Control*>{});
+	isolationTargets.erase(std::unique(
+		isolationTargets.begin(), isolationTargets.end()),
+		isolationTargets.end());
+	opacityTargets.erase(std::remove_if(
+		opacityTargets.begin(), opacityTargets.end(),
+		[this](Control* target)
+		{
+			return !target || target->GetPresentationWindow() != this;
+		}), opacityTargets.end());
+	std::sort(opacityTargets.begin(), opacityTargets.end(),
+		std::less<Control*>{});
+	opacityTargets.erase(std::unique(
+		opacityTargets.begin(), opacityTargets.end()),
+		opacityTargets.end());
 	return _presentationScene->Synchronize(
 		std::span<Control* const>{
 			GetVisualChildrenView().data(), GetVisualChildrenView().size() },
 		std::span<Control* const>{
-			transientRoots.data(), transientRoots.size() });
+			transientRoots.data(), transientRoots.size() },
+		std::span<Control* const>{
+			isolationTargets.data(), isolationTargets.size() },
+		std::span<Control* const>{
+			opacityTargets.data(), opacityTargets.size() });
 }
 
 void Window::CleanupResources()
@@ -7551,6 +8041,22 @@ void Window::CleanupResources()
 		return;
 	_resourcesCleaned = true;
 	_layoutDispatchPosted = false;
+	if (_animationFrameScheduler)
+		_animationFrameScheduler->Stop();
+	if (_animationUsesLegacyTimer && _animIntervalMs != 0 && this->Handle)
+		::KillTimer(this->Handle, _animTimerId);
+	_animationUsesLegacyTimer = false;
+	_animIntervalMs = 0;
+	for (const auto& reference : _activeDeclarativeAnimationControls)
+		if (auto* control = reference.Get();
+			control && control->GetPresentationWindow() == this)
+			control->_registeredDeclarativeAnimationWindow = false;
+	for (const auto& reference : _retainedNativeAnimationControls)
+		if (auto* control = reference.Get();
+			control && control->GetPresentationWindow() == this)
+			control->_registeredNativeAnimationWindow = false;
+	_activeDeclarativeAnimationControls.clear();
+	_retainedNativeAnimationControls.clear();
 	try { (void)ReleaseMouseCapture(); }
 	catch (...) {}
 	if (_textCompositionManager) _textCompositionManager->Reset();
@@ -7604,7 +8110,12 @@ bool Window::EnsureDCompInitialized()
 	if (_renderHost->UsesComposition()) return true;
 	SynchronizePresentationScene();
 	if (!_renderHost->EnsureComposition()) return false;
-	if (!_presentationScene->PrepareComposition(*_renderHost)) return false;
+	// Publish the new device generation before native owners lease visuals from
+	// that device during scene preparation. Scene-layer topology may advance the
+	// broader cache generation afterwards without invalidating those fresh leases.
+	SynchronizePresentationResourceGeneration();
+	if (!_presentationScene->PrepareComposition(
+		*_renderHost, GetTitleBarHeightDip(), GetDpiScale())) return false;
 	SynchronizePresentationResourceGeneration();
 	return true;
 #else
@@ -7677,6 +8188,34 @@ uint64_t Window::GetPresentationDeviceRecoveryCount() const noexcept
 	return _renderHost ? _renderHost->Statistics().DeviceRecoveries : 0;
 }
 
+bool Window::TryGetPresentationSceneLayerPixelDigestForTesting(
+	size_t index,
+	UINT& width,
+	UINT& height,
+	uint64_t& digest,
+	size_t& nonTransparentPixels) const noexcept
+{
+	width = 0;
+	height = 0;
+	digest = 0;
+	nonTransparentPixels = 0;
+	return _renderHost
+		&& _renderHost->TryGetSceneLayerPixelDigestForTesting(
+			index, width, height, digest, nonTransparentPixels);
+}
+
+bool Window::AcquirePresentationSceneLayerPixelReadbackLeaseForTesting() noexcept
+{
+	return _renderHost
+		&& _renderHost->AcquireSceneLayerPixelReadbackLeaseForTesting();
+}
+
+void Window::ReleasePresentationSceneLayerPixelReadbackLeaseForTesting() noexcept
+{
+	if (_renderHost)
+		_renderHost->ReleaseSceneLayerPixelReadbackLeaseForTesting();
+}
+
 uint64_t Window::GetPresentationLastSurfaceFailureSequence() const noexcept
 {
 	return _renderHost
@@ -7710,6 +8249,17 @@ size_t Window::GetPresentationNodeCount() const noexcept
 size_t Window::GetPresentationDrawingLayerCount() const noexcept
 {
 	return _presentationScene ? _presentationScene->DrawingLayerCount() : 0;
+}
+
+size_t Window::GetPresentationOpacityGroupCount() const noexcept
+{
+	return _presentationScene ? _presentationScene->OpacityGroupCount() : 0;
+}
+
+size_t Window::GetPresentationGroupedNativeVisualCount() const noexcept
+{
+	return _renderHost
+		? _renderHost->SceneLayerGroupedNativeVisualCountForTesting() : 0;
 }
 
 PresentationFrameStatistics
@@ -7923,10 +8473,18 @@ void Window::SynchronizePresentationResourceGeneration()
 {
 	if (!_renderHost) return;
 	const auto generation = _renderHost->ResourceGeneration();
-	if (generation == 0 || generation == _observedResourceGeneration) return;
-	_observedResourceGeneration = generation;
-	if (_presentationScene)
-		_presentationScene->SynchronizeResourceGeneration(generation);
+	if (generation != 0 && generation != _observedResourceGeneration)
+	{
+		_observedResourceGeneration = generation;
+		if (_presentationScene)
+			_presentationScene->SynchronizeResourceGeneration(generation);
+	}
+
+	const auto deviceGeneration =
+		_renderHost->DeviceResourceGeneration();
+	if (deviceGeneration == 0
+		|| deviceGeneration == _observedDeviceResourceGeneration) return;
+	_observedDeviceResourceGeneration = deviceGeneration;
 
 	std::unordered_set<Control*> visited;
 	std::function<void(Control*)> invalidateResources =
@@ -8228,25 +8786,35 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 	if (_renderHost->IsDeviceLost() && !RecoverRenderIfNeeded())
 		return false;
 	if (!_renderHost->PrimaryContext()) return false;
+	PresentationFrameTimingClock timingClock;
+	PresentationFrameTimingStatistics frameTiming;
 
 	// Commit the root Content slot before the retained scene reads geometry.
 	if (!this->IsLayoutSuspended() && _contentLayoutPending)
 	{
 		PerformLayout();
 	}
+	frameTiming.LayoutMicroseconds = timingClock.LapMicroseconds();
 	if (!_presentationScene) return false;
 	SynchronizePresentationScene();
+	frameTiming.SceneSynchronizationMicroseconds =
+		timingClock.LapMicroseconds();
 	if (!_renderHost->UsesComposition()
 		&& _presentationScene->RequiresComposition())
 		(void)EnsureDCompInitialized();
 	if (_renderHost->UsesComposition()
-		&& !_presentationScene->PrepareComposition(*_renderHost))
+		&& !_presentationScene->PrepareComposition(
+			*_renderHost, GetTitleBarHeightDip(), GetDpiScale()))
 		return false;
 	SynchronizePresentationResourceGeneration();
+	frameTiming.CompositionPreparationMicroseconds =
+		timingClock.LapMicroseconds();
 	PresentationRenderHost::FrameTransaction frameTransaction;
 	if (!_renderHost->BeginFrameTransaction(
 		dirty, force, frameTransaction))
 		return false;
+	frameTiming.TransactionBeginMicroseconds =
+		timingClock.LapMicroseconds();
 	struct TransactionScope final
 	{
 		PresentationRenderHost& Host;
@@ -8257,6 +8825,18 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 				Host.AbortFrameTransaction(Transaction);
 		}
 	} transactionScope{ *_renderHost, frameTransaction };
+	struct DrawingStateScope final
+	{
+		D2DGraphics* Context = nullptr;
+		bool ClipPushed = false;
+		~DrawingStateScope()
+		{
+			if (!Context) return;
+			if (ClipPushed)
+				Context->PopDrawRect();
+			Context->ClearTransform();
+		}
+	};
 	const float dpiSc = frameTransaction.DpiScale;
 	const RECT drawRc = frameTransaction.LogicalDirty;
 	const RECT logClientRc = frameTransaction.LogicalClient;
@@ -8390,6 +8970,7 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 	if (contentDirty.left < 0) contentDirty.left = 0;
 	if (contentDirty.right > logContentW) contentDirty.right = logContentW;
 	if (contentDirty.bottom > (logContentH - top)) contentDirty.bottom = (logContentH - top);
+	frameTiming.PrimarySetupMicroseconds = timingClock.LapMicroseconds();
 
 	if (contentDirty.right > contentDirty.left && contentDirty.bottom > contentDirty.top)
 	{
@@ -8401,30 +8982,34 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 				static_cast<float>(logContentH))) return false;
 			if (!_renderHost->OverlayContext())
 			{
-				this->GetDrawingContext()->SetTransform(
+				auto* drawingContext = this->GetDrawingContext();
+				DrawingStateScope drawingState{ drawingContext };
+				drawingContext->SetTransform(
 					D2D1::Matrix3x2F::Translation(0.0f, (float)top));
-				this->GetDrawingContext()->PushDrawRect(
+				drawingContext->PushDrawRect(
 					(float)contentDirty.left, (float)contentDirty.top,
 					(float)(contentDirty.right - contentDirty.left),
 					(float)(contentDirty.bottom - contentDirty.top));
-				_presentationScene->RenderOverlay(contentDirty);
-				this->GetDrawingContext()->PopDrawRect();
-				this->GetDrawingContext()->ClearTransform();
+				drawingState.ClipPushed = true;
+				if (!_presentationScene->RenderOverlay(contentDirty)) return false;
 			}
 		}
 		else
 		{
-			this->GetDrawingContext()->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)top));
-			this->GetDrawingContext()->PushDrawRect((float)contentDirty.left, (float)contentDirty.top, (float)(contentDirty.right - contentDirty.left), (float)(contentDirty.bottom - contentDirty.top));
+			auto* drawingContext = this->GetDrawingContext();
+			DrawingStateScope drawingState{ drawingContext };
+			drawingContext->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)top));
+			drawingContext->PushDrawRect((float)contentDirty.left, (float)contentDirty.top, (float)(contentDirty.right - contentDirty.left), (float)(contentDirty.bottom - contentDirty.top));
+			drawingState.ClipPushed = true;
 
-			_presentationScene->RenderRaster(contentDirty);
+			if (!_presentationScene->RenderRaster(contentDirty)) return false;
 
-			if (!_renderHost->OverlayContext())
-				_presentationScene->RenderOverlay(contentDirty);
-			this->GetDrawingContext()->PopDrawRect();
-			this->GetDrawingContext()->ClearTransform();
+			if (!_renderHost->OverlayContext()
+				&& !_presentationScene->RenderOverlay(
+					contentDirty, true)) return false;
 		}
 	}
+	frameTiming.SceneRenderMicroseconds = timingClock.LapMicroseconds();
 
 	if (!_renderHost->CloseSurface(
 		frameTransaction, frameTransaction.Primary)) return false;
@@ -8454,20 +9039,23 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 
 		if (overlayContent.right > overlayContent.left && overlayContent.bottom > overlayContent.top)
 		{
+			DrawingStateScope drawingState{ overlayRender };
 			overlayRender->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)ovTop));
 			overlayRender->PushDrawRect((float)overlayContent.left, (float)overlayContent.top, (float)(overlayContent.right - overlayContent.left), (float)(overlayContent.bottom - overlayContent.top));
+			drawingState.ClipPushed = true;
 
-			_presentationScene->RenderOverlay(overlayContent);
-
-			overlayRender->PopDrawRect();
-			overlayRender->ClearTransform();
+			if (!_presentationScene->RenderOverlay(overlayContent)) return false;
 		}
 
 		if (!_renderHost->CloseSurface(
 			frameTransaction, overlayFrame)) return false;
 	}
+	frameTiming.SurfaceFinalizeMicroseconds = timingClock.LapMicroseconds();
 
 	if (!_renderHost->CommitFrameTransaction(frameTransaction)) return false;
+	frameTiming.CompositionCommitMicroseconds = timingClock.LapMicroseconds();
+	frameTiming.TotalMicroseconds = timingClock.TotalMicroseconds();
+	_presentationScene->SetFrameTimingStatistics(frameTiming);
 	this->_presentationInvalidated = _renderHost->HasPendingDamage();
 	RefreshAnimationTimer();
 	if (!_contentRenderedRaised && Handle && ::IsWindowVisible(Handle))
@@ -9275,6 +9863,24 @@ LRESULT Window::HandlePlatformWindowMessage(
 {
 	Window* form = this;
 	{
+		const UINT animationDispatch = CuiAnimationFrameDispatchMessage();
+		if (animationDispatch != 0 && message == animationDispatch)
+		{
+			if (form->_animationFrameScheduler)
+				form->_animationFrameScheduler->Acknowledge(wParam);
+			if (::IsWindowEnabled(hWnd) != FALSE)
+			{
+				form->InvalidateAnimatedControls(false);
+				if (::IsWindowVisible(hWnd) != FALSE
+					&& form->HasPendingRenderWork())
+					::UpdateWindow(hWnd);
+			}
+			else
+			{
+				form->RefreshAnimationTimer();
+			}
+			return 0;
+		}
 		const UINT presentationDispatch = CuiPresentationDispatchMessage();
 		if (presentationDispatch != 0 && message == presentationDispatch)
 		{
@@ -9492,13 +10098,14 @@ LRESULT Window::HandlePlatformWindowMessage(
 				// disabled.  Promote the resumed frame to a complete repaint so
 				// native modal occlusion never exposes a stale back buffer.
 				form->Invalidate(false);
-				form->RefreshAnimationTimer();
 			}
+			form->RefreshAnimationTimer();
 			return 0;
 		}
 		case WM_TIMER:
 		{
-			if (wParam == form->_animTimerId)
+			if (wParam == form->_animTimerId
+				&& form->_animationUsesLegacyTimer)
 			{
 				if (::IsWindowEnabled(hWnd) != FALSE)
 					form->InvalidateAnimatedControls(false);

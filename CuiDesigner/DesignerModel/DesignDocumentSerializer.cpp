@@ -27,6 +27,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -198,16 +199,39 @@ namespace
 		}
 	}
 
+	static void ClearVisualStateStoryboardResourceKeys(
+		std::vector<DesignerVisualStateGroup>& groups)
+	{
+		for (auto& group : groups)
+		{
+			for (auto& state : group.States)
+				state.StoryboardResourceKey.clear();
+			for (auto& transition : group.Transitions)
+				transition.StoryboardResourceKey.clear();
+		}
+	}
+
 	static std::vector<DesignComponentDefinition> SnapshotComponents(
 		const DesignDocument& document)
 	{
 		auto components = document.Components;
 		for (auto& component : components)
+		{
+			// These copies provide schema context inside nested local-resource
+			// snapshots and are discarded when the local tail is sliced back out.
+			// Expanding a resource-backed action to its already-normalized payload
+			// prevents an unrelated nearer shadow from rebinding the context copy.
+			for (auto& trigger : component.EventTriggers)
+				for (auto& action : trigger.Actions)
+					action.StoryboardResourceKey.clear();
+			ClearVisualStateStoryboardResourceKeys(
+				component.VisualStateGroups);
 			for (auto& node : component.Template)
 			{
 				node.LocalResources.Rules.clear();
 				node.LocalObjectResources = {};
 			}
+		}
 		return components;
 	}
 
@@ -233,6 +257,11 @@ namespace
 		snapshot.DataLists = document.DataLists;
 		snapshot.CollectionViews = document.CollectionViews;
 		auto visible = document.VisibleObjectResources(nodes, node);
+		for (const auto& local : node.LocalObjectResources.Storyboards)
+			visible.Storyboards.erase(std::remove_if(
+				visible.Storyboards.begin(), visible.Storyboards.end(),
+				[&](const auto& current) { return current.Key == local.Key; }),
+				visible.Storyboards.end());
 		for (const auto& local : node.LocalObjectResources.Components)
 			visible.Components.erase(std::remove_if(
 				visible.Components.begin(), visible.Components.end(),
@@ -263,16 +292,31 @@ namespace
 				{ return std::wcscmp(current.Key.c_str(), local.Key.c_str()) == 0; }),
 				visible.GroupStyles.end());
 		for (auto& component : visible.Components)
+		{
+			for (auto& trigger : component.EventTriggers)
+				for (auto& action : trigger.Actions)
+					action.StoryboardResourceKey.clear();
+			ClearVisualStateStoryboardResourceKeys(
+				component.VisualStateGroups);
 			SanitizeObjectContextNodes(component.Template);
+		}
 		for (auto& dataTemplate : visible.DataTemplates)
 			SanitizeObjectContextNodes(dataTemplate.Template);
 		for (auto& controlTemplate : visible.ControlTemplates)
+		{
+			ClearVisualStateStoryboardResourceKeys(
+				controlTemplate.VisualStateGroups);
 			SanitizeObjectContextNodes(controlTemplate.Template);
+		}
+		snapshot.Storyboards = std::move(visible.Storyboards);
 		snapshot.Components = std::move(visible.Components);
 		snapshot.ControlTemplates = std::move(visible.ControlTemplates);
 		snapshot.DataTemplates = std::move(visible.DataTemplates);
 		snapshot.ItemsPanelTemplates = std::move(visible.ItemsPanelTemplates);
 		snapshot.GroupStyles = std::move(visible.GroupStyles);
+		snapshot.Storyboards.insert(snapshot.Storyboards.end(),
+			node.LocalObjectResources.Storyboards.begin(),
+			node.LocalObjectResources.Storyboards.end());
 		snapshot.Components.insert(snapshot.Components.end(),
 			node.LocalObjectResources.Components.begin(),
 			node.LocalObjectResources.Components.end());
@@ -299,6 +343,8 @@ namespace
 		const auto snapshot = BuildLocalObjectResourceSnapshot(
 			document, nodes, node);
 		return {
+			{ "storyboardCount", static_cast<int>(
+				node.LocalObjectResources.Storyboards.size()) },
 			{ "componentCount", static_cast<int>(
 				node.LocalObjectResources.Components.size()) },
 			{ "dataTemplateCount", static_cast<int>(
@@ -320,6 +366,8 @@ namespace
 		const std::wstring& resourceBasePath)
 	{
 		if (!value.is_object()
+			|| (value.contains("storyboardCount")
+				&& !value["storyboardCount"].is_number_integer())
 			|| !value.contains("componentCount")
 			|| !value["componentCount"].is_number_integer()
 			|| !value.contains("dataTemplateCount")
@@ -335,6 +383,7 @@ namespace
 			if (outError) *outError = L"Template local object resource snapshot is malformed.";
 			return false;
 		}
+		const auto storyboardCount = value.value("storyboardCount", 0);
 		const auto componentCount = value["componentCount"].get<int>();
 		const auto dataTemplateCount = value["dataTemplateCount"].get<int>();
 		const auto controlTemplateCount = value.value(
@@ -342,7 +391,7 @@ namespace
 		const auto itemsPanelTemplateCount = value.value(
 			"itemsPanelTemplateCount", 0);
 		const auto groupStyleCount = value.value("groupStyleCount", 0);
-		if (componentCount < 0 || dataTemplateCount < 0
+		if (storyboardCount < 0 || componentCount < 0 || dataTemplateCount < 0
 			|| controlTemplateCount < 0
 			|| itemsPanelTemplateCount < 0 || groupStyleCount < 0)
 		{
@@ -353,7 +402,8 @@ namespace
 		if (!DesignDocumentSerializer::FromXml(
 			value["xml"].get<std::string>(), snapshot,
 			outError, resourceBasePath)) return false;
-		if (static_cast<size_t>(componentCount) > snapshot.Components.size()
+		if (static_cast<size_t>(storyboardCount) > snapshot.Storyboards.size()
+			|| static_cast<size_t>(componentCount) > snapshot.Components.size()
 			|| static_cast<size_t>(controlTemplateCount)
 				> snapshot.ControlTemplates.size()
 			|| static_cast<size_t>(dataTemplateCount) > snapshot.DataTemplates.size()
@@ -364,6 +414,9 @@ namespace
 			if (outError) *outError = L"Template local object resource snapshot is incomplete.";
 			return false;
 		}
+		output.Storyboards.assign(
+			snapshot.Storyboards.end() - storyboardCount,
+			snapshot.Storyboards.end());
 		output.Components.assign(snapshot.Components.end() - componentCount,
 			snapshot.Components.end());
 		output.DataTemplates.assign(
@@ -1130,6 +1183,208 @@ namespace
 		return text.str();
 	}
 
+	static const char* EasingKindText(DesignerEasingKind kind) noexcept
+	{
+		switch (kind)
+		{
+		case DesignerEasingKind::Quadratic: return "Quadratic";
+		case DesignerEasingKind::Cubic: return "Cubic";
+		case DesignerEasingKind::Sine: return "Sine";
+		case DesignerEasingKind::Back: return "Back";
+		case DesignerEasingKind::Bounce: return "Bounce";
+		case DesignerEasingKind::Circle: return "Circle";
+		case DesignerEasingKind::Elastic: return "Elastic";
+		case DesignerEasingKind::Exponential: return "Exponential";
+		case DesignerEasingKind::Power: return "Power";
+		case DesignerEasingKind::Quartic: return "Quartic";
+		case DesignerEasingKind::Quintic: return "Quintic";
+		case DesignerEasingKind::Linear:
+		default: return "Linear";
+		}
+	}
+
+	static bool TryParseEasingKind(
+		const std::string& text,
+		DesignerEasingKind& kind) noexcept
+	{
+		for (const auto candidate : {
+			DesignerEasingKind::Linear, DesignerEasingKind::Quadratic,
+			DesignerEasingKind::Cubic, DesignerEasingKind::Sine,
+			DesignerEasingKind::Back, DesignerEasingKind::Bounce,
+			DesignerEasingKind::Circle, DesignerEasingKind::Elastic,
+			DesignerEasingKind::Exponential, DesignerEasingKind::Power,
+			DesignerEasingKind::Quartic, DesignerEasingKind::Quintic })
+			if (text == EasingKindText(candidate))
+			{
+				kind = candidate;
+				return true;
+			}
+		return false;
+	}
+
+	static DesignerEasingParameters DefaultEasingParameters(
+		DesignerEasingKind kind) noexcept
+	{
+		switch (kind)
+		{
+		case DesignerEasingKind::Back: return { 1.0, 0.0 };
+		case DesignerEasingKind::Bounce: return { 2.0, 3.0 };
+		case DesignerEasingKind::Elastic: return { 3.0, 3.0 };
+		case DesignerEasingKind::Exponential:
+		case DesignerEasingKind::Power: return { 2.0, 0.0 };
+		default: return {};
+		}
+	}
+
+	static void WriteEasingParameters(
+		const std::shared_ptr<XmlElement>& element,
+		DesignerEasingParameters parameters)
+	{
+		element->SetAttribute("easingPrimary", DoubleText(parameters.Primary));
+		element->SetAttribute("easingSecondary", DoubleText(parameters.Secondary));
+	}
+
+	static bool TryReadEasingParameters(
+		const std::shared_ptr<XmlElement>& element,
+		DesignerEasingKind kind,
+		DesignerEasingParameters& parameters)
+	{
+		parameters = DefaultEasingParameters(kind);
+		if (element->HasAttribute("easingPrimary")
+			&& !TryParseDouble(
+				element->GetAttribute("easingPrimary"), parameters.Primary))
+			return false;
+		if (element->HasAttribute("easingSecondary")
+			&& !TryParseDouble(
+				element->GetAttribute("easingSecondary"), parameters.Secondary))
+			return false;
+		return true;
+	}
+
+	static void WriteStoryboardTimingSnapshot(
+		const std::shared_ptr<XmlElement>& element,
+		const DesignerStoryboardTiming& timing)
+	{
+		if (timing.BeginTimeMilliseconds > 0)
+			element->SetAttribute("storyboardBeginTimeMs",
+				std::to_string(timing.BeginTimeMilliseconds));
+		if (!timing.DurationAutomatic)
+			element->SetAttribute("storyboardDurationMs",
+				std::to_string(timing.DurationMilliseconds));
+		switch (timing.RepeatBehavior)
+		{
+		case DesignerRepeatBehaviorKind::Duration:
+			element->SetAttribute("storyboardRepeatBehavior", "Duration");
+			element->SetAttribute("storyboardRepeatDurationMs",
+				std::to_string(timing.RepeatDurationMilliseconds));
+			break;
+		case DesignerRepeatBehaviorKind::Forever:
+			element->SetAttribute("storyboardRepeatBehavior", "Forever");
+			break;
+		case DesignerRepeatBehaviorKind::Count:
+		default:
+			if (timing.RepeatCount != 1.0)
+			{
+				element->SetAttribute("storyboardRepeatBehavior", "Count");
+				element->SetAttribute("storyboardRepeatCount",
+					DoubleText(timing.RepeatCount));
+			}
+			break;
+		}
+		if (timing.AutoReverse)
+			element->SetAttribute("storyboardAutoReverse", "true");
+		if (timing.FillBehavior == DesignerTimelineFillBehavior::Stop)
+			element->SetAttribute("storyboardFillBehavior", "Stop");
+		if (timing.SpeedRatio != 1.0)
+			element->SetAttribute("storyboardSpeedRatio",
+				DoubleText(timing.SpeedRatio));
+		if (timing.AccelerationRatio != 0.0)
+			element->SetAttribute("storyboardAccelerationRatio",
+				DoubleText(timing.AccelerationRatio));
+		if (timing.DecelerationRatio != 0.0)
+			element->SetAttribute("storyboardDecelerationRatio",
+				DoubleText(timing.DecelerationRatio));
+	}
+
+	static bool ReadStoryboardTimingSnapshot(
+		const std::shared_ptr<XmlElement>& element,
+		DesignerStoryboardTiming& timing,
+		std::wstring* outError)
+	{
+		auto fail = [&](const wchar_t* message)
+		{
+			if (outError) *outError = message;
+			return false;
+		};
+		if (element->HasAttribute("storyboardBeginTimeMs")
+			&& !TryParseIntegral(element->GetAttribute("storyboardBeginTimeMs"),
+				timing.BeginTimeMilliseconds))
+			return fail(L"Storyboard BeginTime snapshot is invalid.");
+		if (element->HasAttribute("storyboardDurationMs"))
+		{
+			if (!TryParseIntegral(element->GetAttribute("storyboardDurationMs"),
+				timing.DurationMilliseconds))
+				return fail(L"Storyboard Duration snapshot is invalid.");
+			timing.DurationAutomatic = false;
+		}
+		const auto repeat = element->GetAttribute("storyboardRepeatBehavior");
+		if (repeat.empty() || repeat == "Count")
+		{
+			timing.RepeatBehavior = DesignerRepeatBehaviorKind::Count;
+			if (element->HasAttribute("storyboardRepeatCount")
+				&& (!TryParseDouble(element->GetAttribute("storyboardRepeatCount"),
+					timing.RepeatCount)
+					|| !std::isfinite(timing.RepeatCount)
+					|| timing.RepeatCount <= 0.0))
+				return fail(L"Storyboard RepeatBehavior count snapshot is invalid.");
+		}
+		else if (repeat == "Duration")
+		{
+			timing.RepeatBehavior = DesignerRepeatBehaviorKind::Duration;
+			if (!TryParseIntegral(element->GetAttribute(
+				"storyboardRepeatDurationMs"),
+				timing.RepeatDurationMilliseconds)
+				|| timing.RepeatDurationMilliseconds == 0)
+				return fail(L"Storyboard RepeatBehavior duration snapshot is invalid.");
+		}
+		else if (repeat == "Forever")
+			timing.RepeatBehavior = DesignerRepeatBehaviorKind::Forever;
+		else return fail(L"Storyboard RepeatBehavior snapshot is invalid.");
+		if (element->HasAttribute("storyboardAutoReverse")
+			&& !TryReadBoolAttribute(element, "storyboardAutoReverse",
+				timing.AutoReverse))
+			return fail(L"Storyboard AutoReverse snapshot is invalid.");
+		const auto fill = element->GetAttribute("storyboardFillBehavior");
+		if (fill.empty() || fill == "HoldEnd")
+			timing.FillBehavior = DesignerTimelineFillBehavior::HoldEnd;
+		else if (fill == "Stop")
+			timing.FillBehavior = DesignerTimelineFillBehavior::Stop;
+		else return fail(L"Storyboard FillBehavior snapshot is invalid.");
+		if (element->HasAttribute("storyboardSpeedRatio")
+			&& (!TryParseDouble(element->GetAttribute("storyboardSpeedRatio"),
+				timing.SpeedRatio)
+				|| !std::isfinite(timing.SpeedRatio)
+				|| timing.SpeedRatio <= 0.0))
+			return fail(L"Storyboard SpeedRatio snapshot is invalid.");
+		if (element->HasAttribute("storyboardAccelerationRatio")
+			&& (!TryParseDouble(element->GetAttribute(
+				"storyboardAccelerationRatio"), timing.AccelerationRatio)
+				|| !std::isfinite(timing.AccelerationRatio)
+				|| timing.AccelerationRatio < 0.0
+				|| timing.AccelerationRatio > 1.0))
+			return fail(L"Storyboard AccelerationRatio snapshot is invalid.");
+		if (element->HasAttribute("storyboardDecelerationRatio")
+			&& (!TryParseDouble(element->GetAttribute(
+				"storyboardDecelerationRatio"), timing.DecelerationRatio)
+				|| !std::isfinite(timing.DecelerationRatio)
+				|| timing.DecelerationRatio < 0.0
+				|| timing.DecelerationRatio > 1.0))
+			return fail(L"Storyboard DecelerationRatio snapshot is invalid.");
+		if (timing.AccelerationRatio + timing.DecelerationRatio > 1.0)
+			return fail(L"Storyboard acceleration and deceleration snapshots are invalid.");
+		return true;
+	}
+
 	static void WriteVisualStateAnimationSnapshot(
 		XmlDocument& xml,
 		const std::shared_ptr<XmlElement>& parent,
@@ -1144,7 +1399,12 @@ namespace
 						? "Vector" : animation.Kind == DesignerAnimationKind::Rect
 						? "Rect" : animation.Kind == DesignerAnimationKind::Size
 						? "Size" : animation.Kind == DesignerAnimationKind::Matrix
-						? "Matrix" : "Double");
+						? "Matrix" : animation.Kind == DesignerAnimationKind::Int32
+						? "Int32" : animation.Kind == DesignerAnimationKind::Int64
+						? "Int64" : animation.Kind == DesignerAnimationKind::Single
+						? "Single" : animation.Kind == DesignerAnimationKind::Boolean
+						? "Boolean" : animation.Kind == DesignerAnimationKind::String
+						? "String" : "Double");
 		if (!animation.TargetName.empty())
 			item->SetAttribute("target", ToUtf8(animation.TargetName));
 		item->SetAttribute("property", ToUtf8(animation.PropertyName));
@@ -1238,6 +1498,37 @@ namespace
 			animation.IsAdditive ? "true" : "false");
 		item->SetAttribute("isCumulative",
 			animation.IsCumulative ? "true" : "false");
+		if (animation.Path.Enabled)
+		{
+			item->SetAttribute("linePath", "true");
+			item->SetAttribute("pathStartX", FloatText(animation.Path.Start.x));
+			item->SetAttribute("pathStartY", FloatText(animation.Path.Start.y));
+			item->SetAttribute("pathSource",
+				animation.Path.Source == DeclarativePathAnimationSource::Y
+					? "Y"
+					: animation.Path.Source
+						== DeclarativePathAnimationSource::Angle ? "Angle" : "X");
+			item->SetAttribute("pathRotateWithTangent",
+				animation.Path.DoesRotateWithTangent ? "true" : "false");
+			item->SetAttribute("pathOffsetCumulative",
+				animation.Path.IsOffsetCumulative ? "true" : "false");
+			item->SetAttribute("pathAngleCumulative",
+				animation.Path.IsAngleCumulative ? "true" : "false");
+			for (const auto& segment : animation.PathSegments)
+			{
+				auto segmentElement = AppendElement(xml, item, "pathSegment");
+				segmentElement->SetAttribute("type", segment.Kind
+					== DeclarativePathSegmentKind::Move ? "Move"
+					: segment.Kind == DeclarativePathSegmentKind::CubicBezier
+						? "CubicBezier" : "Line");
+				segmentElement->SetAttribute("p1x", FloatText(segment.Point1.x));
+				segmentElement->SetAttribute("p1y", FloatText(segment.Point1.y));
+				segmentElement->SetAttribute("p2x", FloatText(segment.Point2.x));
+				segmentElement->SetAttribute("p2y", FloatText(segment.Point2.y));
+				segmentElement->SetAttribute("p3x", FloatText(segment.Point3.x));
+				segmentElement->SetAttribute("p3y", FloatText(segment.Point3.y));
+			}
+		}
 		item->SetAttribute("fillBehavior",
 			animation.FillBehavior == DesignerTimelineFillBehavior::Stop
 				? "Stop" : "HoldEnd");
@@ -1246,16 +1537,8 @@ namespace
 			DoubleText(animation.AccelerationRatio));
 		item->SetAttribute("decelerationRatio",
 			DoubleText(animation.DecelerationRatio));
-		const char* easing = "Linear";
-		switch (animation.Easing)
-		{
-		case DesignerEasingKind::Quadratic: easing = "Quadratic"; break;
-		case DesignerEasingKind::Cubic: easing = "Cubic"; break;
-		case DesignerEasingKind::Sine: easing = "Sine"; break;
-		case DesignerEasingKind::Linear:
-		default: break;
-		}
-		item->SetAttribute("easing", easing);
+		item->SetAttribute("easing", EasingKindText(animation.Easing));
+		WriteEasingParameters(item, animation.EasingParameters);
 		const char* easingMode = animation.EasingMode == DesignerEasingMode::EaseIn
 			? "EaseIn" : animation.EasingMode == DesignerEasingMode::EaseInOut
 				? "EaseInOut" : "EaseOut";
@@ -1275,6 +1558,8 @@ namespace
 			frame->SetAttribute("kind", kind);
 			frame->SetAttribute("keyTimeMs", std::to_string(
 				keyFrame.KeyTimeMilliseconds));
+			frame->SetAttribute("keyTimeSubMsTicks", std::to_string(
+				keyFrame.KeyTimeSubMillisecondTicks));
 			if (keyFrame.UsesResource)
 			{
 				frame->SetAttribute("resource", ToUtf8(keyFrame.ResourceKey));
@@ -1298,16 +1583,8 @@ namespace
 			}
 			if (keyFrame.Kind == DesignerKeyFrameKind::Easing)
 			{
-				const char* frameEasing = "Linear";
-				switch (keyFrame.Easing)
-				{
-				case DesignerEasingKind::Quadratic: frameEasing = "Quadratic"; break;
-				case DesignerEasingKind::Cubic: frameEasing = "Cubic"; break;
-				case DesignerEasingKind::Sine: frameEasing = "Sine"; break;
-				case DesignerEasingKind::Linear:
-				default: break;
-				}
-				frame->SetAttribute("easing", frameEasing);
+				frame->SetAttribute("easing", EasingKindText(keyFrame.Easing));
+				WriteEasingParameters(frame, keyFrame.EasingParameters);
 				frame->SetAttribute("easingMode",
 					keyFrame.EasingMode == DesignerEasingMode::EaseIn
 						? "EaseIn"
@@ -1353,6 +1630,16 @@ namespace
 			animation.Kind = DesignerAnimationKind::Size;
 		else if (std::strcmp(type.c_str(), "Matrix") == 0)
 			animation.Kind = DesignerAnimationKind::Matrix;
+		else if (std::strcmp(type.c_str(), "Int32") == 0)
+			animation.Kind = DesignerAnimationKind::Int32;
+		else if (std::strcmp(type.c_str(), "Int64") == 0)
+			animation.Kind = DesignerAnimationKind::Int64;
+		else if (std::strcmp(type.c_str(), "Single") == 0)
+			animation.Kind = DesignerAnimationKind::Single;
+		else if (std::strcmp(type.c_str(), "Boolean") == 0)
+			animation.Kind = DesignerAnimationKind::Boolean;
+		else if (std::strcmp(type.c_str(), "String") == 0)
+			animation.Kind = DesignerAnimationKind::String;
 		else return fail(L"Component visual-state animation type is invalid.");
 		animation.TargetName = FromUtf8(element->GetAttribute("target"));
 		animation.PropertyName = FromUtf8(element->GetAttribute("property"));
@@ -1397,6 +1684,63 @@ namespace
 			&& !TryReadBoolAttribute(
 				element, "isCumulative", animation.IsCumulative))
 			return fail(L"Component animation IsCumulative is invalid.");
+		const auto pathSegmentElements = FindChildElements(element, "pathSegment");
+		const bool hasPathPayload = element->HasAttribute("pathStartX")
+			|| element->HasAttribute("pathStartY")
+			|| element->HasAttribute("pathSource")
+			|| element->HasAttribute("pathRotateWithTangent")
+			|| element->HasAttribute("pathOffsetCumulative")
+			|| element->HasAttribute("pathAngleCumulative")
+			|| !pathSegmentElements.empty();
+		if (element->HasAttribute("linePath")
+			&& !TryReadBoolAttribute(
+				element, "linePath", animation.Path.Enabled))
+			return fail(L"Component animation line-path discriminator is invalid.");
+		if (!animation.Path.Enabled && hasPathPayload)
+			return fail(L"Component animation has line-path payload without a line path.");
+		if (animation.Path.Enabled)
+		{
+			if (!TryReadFloatAttribute(
+				element, "pathStartX", animation.Path.Start.x)
+				|| !TryReadFloatAttribute(
+					element, "pathStartY", animation.Path.Start.y)
+				|| !TryReadBoolAttribute(element, "pathRotateWithTangent",
+					animation.Path.DoesRotateWithTangent)
+				|| !TryReadBoolAttribute(element, "pathOffsetCumulative",
+					animation.Path.IsOffsetCumulative)
+				|| !TryReadBoolAttribute(element, "pathAngleCumulative",
+					animation.Path.IsAngleCumulative))
+				return fail(L"Component animation line-path payload is invalid.");
+			const auto source = element->GetAttribute("pathSource");
+			if (source == "X")
+				animation.Path.Source = DeclarativePathAnimationSource::X;
+			else if (source == "Y")
+				animation.Path.Source = DeclarativePathAnimationSource::Y;
+			else if (source == "Angle")
+				animation.Path.Source = DeclarativePathAnimationSource::Angle;
+			else return fail(L"Component animation line-path Source is invalid.");
+			for (const auto& segmentElement : pathSegmentElements)
+			{
+				if (!ValidateElementShape(segmentElement,
+					{ "type", "p1x", "p1y", "p2x", "p2y", "p3x", "p3y" },
+					{}, L"Animation path segment", outError)) return false;
+				DeclarativePathAnimationSegment segment;
+				const auto segmentType = segmentElement->GetAttribute("type");
+				if (segmentType == "Move") segment.Kind = DeclarativePathSegmentKind::Move;
+				else if (segmentType == "Line") segment.Kind = DeclarativePathSegmentKind::Line;
+				else if (segmentType == "CubicBezier")
+					segment.Kind = DeclarativePathSegmentKind::CubicBezier;
+				else return fail(L"Component animation path segment type is invalid.");
+				if (!TryReadFloatAttribute(segmentElement, "p1x", segment.Point1.x)
+					|| !TryReadFloatAttribute(segmentElement, "p1y", segment.Point1.y)
+					|| !TryReadFloatAttribute(segmentElement, "p2x", segment.Point2.x)
+					|| !TryReadFloatAttribute(segmentElement, "p2y", segment.Point2.y)
+					|| !TryReadFloatAttribute(segmentElement, "p3x", segment.Point3.x)
+					|| !TryReadFloatAttribute(segmentElement, "p3y", segment.Point3.y))
+					return fail(L"Component animation path segment coordinates are invalid.");
+				animation.PathSegments.push_back(segment);
+			}
+		}
 		const auto fillBehavior = element->GetAttribute("fillBehavior");
 		if (fillBehavior.empty()
 			|| std::strcmp(fillBehavior.c_str(), "HoldEnd") == 0)
@@ -1553,15 +1897,10 @@ namespace
 				element->GetAttribute("byFallback"));
 		}
 		const auto easing = element->GetAttribute("easing");
-		if (std::strcmp(easing.c_str(), "Linear") == 0)
-			animation.Easing = DesignerEasingKind::Linear;
-		else if (std::strcmp(easing.c_str(), "Quadratic") == 0)
-			animation.Easing = DesignerEasingKind::Quadratic;
-		else if (std::strcmp(easing.c_str(), "Cubic") == 0)
-			animation.Easing = DesignerEasingKind::Cubic;
-		else if (std::strcmp(easing.c_str(), "Sine") == 0)
-			animation.Easing = DesignerEasingKind::Sine;
-		else return fail(L"Component visual-state animation easing is invalid.");
+		if (!TryParseEasingKind(easing, animation.Easing)
+			|| !TryReadEasingParameters(
+				element, animation.Easing, animation.EasingParameters))
+			return fail(L"Component visual-state animation easing is invalid.");
 		const auto easingMode = element->GetAttribute("easingMode");
 		if (std::strcmp(easingMode.c_str(), "EaseIn") == 0)
 			animation.EasingMode = DesignerEasingMode::EaseIn;
@@ -1586,6 +1925,16 @@ namespace
 			if (!TryParseIntegral(frameElement->GetAttribute("keyTimeMs"),
 				frame.KeyTimeMilliseconds))
 				return fail(L"Component animation KeyTime is invalid.");
+			if (frameElement->HasAttribute("keyTimeSubMsTicks"))
+			{
+				unsigned int subTicks = 0;
+				if (!TryParseIntegral(
+					frameElement->GetAttribute("keyTimeSubMsTicks"), subTicks)
+					|| subTicks >= 10000u)
+					return fail(L"Component animation KeyTime sub-millisecond ticks are invalid.");
+				frame.KeyTimeSubMillisecondTicks =
+					static_cast<uint16_t>(subTicks);
+			}
 			frame.ResourceKey = FromUtf8(frameElement->GetAttribute("resource"));
 			const auto valueKind = FromUtf8(frameElement->GetAttribute("valueKind"));
 			const auto objectValue = FindChildElement(frameElement, "objectValue");
@@ -1627,15 +1976,10 @@ namespace
 			if (frame.Kind == DesignerKeyFrameKind::Easing)
 			{
 				const auto frameEasing = frameElement->GetAttribute("easing");
-				if (std::strcmp(frameEasing.c_str(), "Linear") == 0)
-					frame.Easing = DesignerEasingKind::Linear;
-				else if (std::strcmp(frameEasing.c_str(), "Quadratic") == 0)
-					frame.Easing = DesignerEasingKind::Quadratic;
-				else if (std::strcmp(frameEasing.c_str(), "Cubic") == 0)
-					frame.Easing = DesignerEasingKind::Cubic;
-				else if (std::strcmp(frameEasing.c_str(), "Sine") == 0)
-					frame.Easing = DesignerEasingKind::Sine;
-				else return fail(L"Component animation key-frame easing is invalid.");
+				if (!TryParseEasingKind(frameEasing, frame.Easing)
+					|| !TryReadEasingParameters(
+						frameElement, frame.Easing, frame.EasingParameters))
+					return fail(L"Component animation key-frame easing is invalid.");
 				const auto frameMode = frameElement->GetAttribute("easingMode");
 				if (std::strcmp(frameMode.c_str(), "EaseIn") == 0)
 					frame.EasingMode = DesignerEasingMode::EaseIn;
@@ -1661,15 +2005,201 @@ namespace
 		}
 		std::stable_sort(animation.KeyFrames.begin(), animation.KeyFrames.end(),
 			[](const auto& left, const auto& right)
-			{ return left.KeyTimeMilliseconds < right.KeyTimeMilliseconds; });
-		if (animation.Kind == DesignerAnimationKind::Object
+			{
+				return std::tie(left.KeyTimeMilliseconds,
+					left.KeyTimeSubMillisecondTicks)
+					< std::tie(right.KeyTimeMilliseconds,
+						right.KeyTimeSubMillisecondTicks);
+			});
+		const bool discreteOnly = animation.Kind == DesignerAnimationKind::Object
+			|| animation.Kind == DesignerAnimationKind::Boolean
+			|| animation.Kind == DesignerAnimationKind::String;
+		if (discreteOnly
 			&& (animation.KeyFrames.empty() || animation.HasFrom || animation.HasTo
 				|| animation.HasBy || animation.IsAdditive || animation.IsCumulative
 				|| animation.Easing != DesignerEasingKind::Linear
 				|| std::any_of(animation.KeyFrames.begin(), animation.KeyFrames.end(),
 					[](const auto& frame)
 					{ return frame.Kind != DesignerKeyFrameKind::Discrete; })))
-			return fail(L"Object animation must contain only discrete key frames and cannot declare endpoints, easing, additive, or cumulative behavior.");
+			return fail(L"Discrete-only animation must contain only discrete key frames and cannot declare endpoints, easing, additive, or cumulative behavior.");
+		if (animation.Path.Enabled)
+		{
+			if ((animation.Kind != DesignerAnimationKind::Double
+					&& animation.Kind != DesignerAnimationKind::Point
+					&& animation.Kind != DesignerAnimationKind::Matrix)
+				|| !std::isfinite(animation.Path.Start.x)
+				|| !std::isfinite(animation.Path.Start.y)
+				|| animation.PathSegments.empty()
+				|| animation.HasFrom || animation.HasTo || animation.HasBy
+				|| !animation.KeyFrames.empty()
+				|| animation.Easing != DesignerEasingKind::Linear)
+				return fail(L"Component animation line-path v1 contract is invalid.");
+			if (animation.Kind != DesignerAnimationKind::Double
+				&& animation.Path.Source != DeclarativePathAnimationSource::X)
+				return fail(L"Only DoubleAnimationUsingPath may declare Source.");
+			if (animation.Kind != DesignerAnimationKind::Matrix
+				&& (animation.Path.DoesRotateWithTangent
+					|| animation.Path.IsOffsetCumulative
+					|| animation.Path.IsAngleCumulative))
+				return fail(L"Only MatrixAnimationUsingPath may declare matrix path flags.");
+			if (animation.Kind == DesignerAnimationKind::Matrix
+				&& animation.IsCumulative)
+				return fail(L"MatrixAnimationUsingPath cannot declare IsCumulative.");
+			auto currentPathPoint = animation.Path.Start;
+			bool hasAcceptedPathSegment = false;
+			bool movePending = false;
+			for (const auto& segment : animation.PathSegments)
+			{
+				if (static_cast<unsigned char>(segment.Kind)
+						> static_cast<unsigned char>(
+							DeclarativePathSegmentKind::CubicBezier)
+					|| !std::isfinite(segment.Point1.x)
+					|| !std::isfinite(segment.Point1.y)
+					|| !std::isfinite(segment.Point2.x)
+					|| !std::isfinite(segment.Point2.y)
+					|| !std::isfinite(segment.Point3.x)
+					|| !std::isfinite(segment.Point3.y))
+					return fail(L"Component animation path segment is invalid.");
+				if (segment.Kind == DeclarativePathSegmentKind::Move)
+				{
+					if (!hasAcceptedPathSegment || movePending)
+						return fail(L"Normalized animation snapshot contains an orphan path move.");
+					currentPathPoint = segment.Point3;
+					movePending = true;
+					continue;
+				}
+				auto distance = [](cui::core::Point left, cui::core::Point right)
+					{ return std::hypot(right.x - left.x, right.y - left.y); };
+				const bool degenerate = segment.Kind
+					== DeclarativePathSegmentKind::Line
+					? distance(currentPathPoint, segment.Point3) < 1.0e-6
+					: 3.0 * distance(currentPathPoint, segment.Point1) < 1.0e-6
+						&& distance(segment.Point1, segment.Point2) < 1.0e-6
+						&& distance(segment.Point1, segment.Point3) < 1.0e-6;
+				if (degenerate)
+					return fail(L"Normalized animation snapshot contains a degenerate path segment.");
+				currentPathPoint = segment.Point3;
+				hasAcceptedPathSegment = true;
+				movePending = false;
+			}
+			if (movePending)
+				return fail(L"Normalized animation snapshot ends with an orphan path move.");
+		}
+		return true;
+	}
+
+	static void WriteTimelineGroupSnapshot(
+		XmlDocument& xml,
+		const std::shared_ptr<XmlElement>& parent,
+		const DesignerTimelineGroup& group)
+	{
+		auto item = AppendElement(xml, parent, "timelineGroup");
+		WriteStoryboardTimingSnapshot(item, group.Timing);
+		for (const auto& animation : group.Animations)
+			WriteVisualStateAnimationSnapshot(xml, item, animation);
+		for (const auto& child : group.Children)
+			WriteTimelineGroupSnapshot(xml, item, child);
+	}
+
+	static bool ReadTimelineGroupSnapshot(
+		const std::shared_ptr<XmlElement>& element,
+		DesignerTimelineGroup& group,
+		std::wstring* outError)
+	{
+		if (!ReadStoryboardTimingSnapshot(element, group.Timing, outError))
+			return false;
+		for (const auto& animationElement : FindChildElements(
+			element, "animation"))
+		{
+			DesignerVisualStateAnimation animation;
+			if (!ReadVisualStateAnimationSnapshot(
+				animationElement, animation, outError)) return false;
+			group.Animations.push_back(std::move(animation));
+		}
+		for (const auto& childElement : FindChildElements(
+			element, "timelineGroup"))
+		{
+			DesignerTimelineGroup child;
+			if (!ReadTimelineGroupSnapshot(childElement, child, outError))
+				return false;
+			group.Children.push_back(std::move(child));
+		}
+		if (group.Animations.empty() && group.Children.empty())
+		{
+			if (outError) *outError = L"Timeline-group snapshot is empty.";
+			return false;
+		}
+		return true;
+	}
+
+	static void WriteStoryboardResourceSnapshot(
+		XmlDocument& xml,
+		const std::shared_ptr<XmlElement>& parent,
+		const DesignStoryboardResource& resource)
+	{
+		auto item = AppendElement(xml, parent, "storyboard");
+		item->SetAttribute("key", ToUtf8(resource.Key));
+		if (!resource.SourceDictionary.empty())
+			item->SetAttribute("sourceDictionary",
+				ToUtf8(resource.SourceDictionary));
+		WriteStoryboardTimingSnapshot(item, resource.Timing);
+		for (const auto& animation : resource.Animations)
+			WriteVisualStateAnimationSnapshot(xml, item, animation);
+		for (const auto& group : resource.TimelineGroups)
+			WriteTimelineGroupSnapshot(xml, item, group);
+	}
+
+	static bool ReadStoryboardResourceSnapshot(
+		const std::shared_ptr<XmlElement>& element,
+		DesignStoryboardResource& resource,
+		std::wstring* outError)
+	{
+		resource.Key = FromUtf8(element->GetAttribute("key"));
+		resource.SourceDictionary = FromUtf8(
+			element->GetAttribute("sourceDictionary"));
+		if (resource.Key.empty()
+			|| !ReadStoryboardTimingSnapshot(element, resource.Timing, outError))
+		{
+			if (resource.Key.empty() && outError)
+				*outError = L"Storyboard resource key is missing.";
+			return false;
+		}
+		for (const auto& animationElement : FindChildElements(
+			element, "animation"))
+		{
+			DesignerVisualStateAnimation animation;
+			if (!ReadVisualStateAnimationSnapshot(
+				animationElement, animation, outError)) return false;
+			resource.Animations.push_back(std::move(animation));
+		}
+		for (const auto& groupElement : FindChildElements(
+			element, "timelineGroup"))
+		{
+			DesignerTimelineGroup group;
+			if (!ReadTimelineGroupSnapshot(groupElement, group, outError))
+				return false;
+			resource.TimelineGroups.push_back(std::move(group));
+		}
+		if (resource.Animations.empty() && resource.TimelineGroups.empty())
+		{
+			if (outError) *outError = L"Storyboard resource is empty.";
+			return false;
+		}
+		return true;
+	}
+
+	template<typename Visitor>
+	static bool VisitTimelineGroupAnimations(
+		const std::vector<DesignerTimelineGroup>& groups,
+		Visitor&& visitor)
+	{
+		for (const auto& group : groups)
+		{
+			for (const auto& animation : group.Animations)
+				if (!visitor(animation)) return false;
+			if (!VisitTimelineGroupAnimations(group.Children, visitor))
+				return false;
+		}
 		return true;
 	}
 
@@ -1688,17 +2218,42 @@ namespace
 				: action.Kind == DesignerStoryboardActionKind::Pause
 					? "pauseStoryboard"
 				: action.Kind == DesignerStoryboardActionKind::Resume
-					? "resumeStoryboard" : "stopStoryboard";
+					? "resumeStoryboard"
+				: action.Kind == DesignerStoryboardActionKind::Stop
+					? "stopStoryboard"
+				: action.Kind == DesignerStoryboardActionKind::Remove
+					? "removeStoryboard"
+				: action.Kind == DesignerStoryboardActionKind::Seek
+					? "seekStoryboard"
+				: action.Kind == DesignerStoryboardActionKind::SetSpeedRatio
+					? "setStoryboardSpeedRatio" : "skipStoryboardToFill";
 			auto item = AppendElement(xml, container, name);
 			if (action.Kind == DesignerStoryboardActionKind::Begin)
 			{
 				if (!action.StoryboardName.empty())
 					item->SetAttribute("name", ToUtf8(action.StoryboardName));
+				if (!action.StoryboardResourceKey.empty())
+					item->SetAttribute("storyboardResource",
+						ToUtf8(action.StoryboardResourceKey));
+				if (action.Handoff == DesignerHandoffBehavior::Compose)
+					item->SetAttribute("handoffBehavior", "Compose");
+				WriteStoryboardTimingSnapshot(item, action.StoryboardTiming);
 				for (const auto& animation : action.Animations)
 					WriteVisualStateAnimationSnapshot(xml, item, animation);
+				for (const auto& group : action.TimelineGroups)
+					WriteTimelineGroupSnapshot(xml, item, group);
 			}
-			else item->SetAttribute(
-				"beginStoryboardName", ToUtf8(action.StoryboardName));
+			else
+			{
+				item->SetAttribute(
+					"beginStoryboardName", ToUtf8(action.StoryboardName));
+				if (action.Kind == DesignerStoryboardActionKind::Seek)
+					item->SetAttribute("offsetMs",
+						std::to_string(action.SeekOffsetMilliseconds));
+				else if (action.Kind
+					== DesignerStoryboardActionKind::SetSpeedRatio)
+					item->SetAttribute("speedRatio", DoubleText(action.SpeedRatio));
+			}
 		}
 	}
 
@@ -1719,6 +2274,18 @@ namespace
 			{
 				action.Kind = DesignerStoryboardActionKind::Begin;
 				action.StoryboardName = FromUtf8(element->GetAttribute("name"));
+				action.StoryboardResourceKey = FromUtf8(
+					element->GetAttribute("storyboardResource"));
+				const auto handoff = element->GetAttribute("handoffBehavior");
+				if (handoff == "Compose")
+					action.Handoff = DesignerHandoffBehavior::Compose;
+				else if (!handoff.empty() && handoff != "SnapshotAndReplace")
+				{
+					if (outError) *outError = L"Style BeginStoryboard handoff behavior is invalid.";
+					return false;
+				}
+				if (!ReadStoryboardTimingSnapshot(
+					element, action.StoryboardTiming, outError)) return false;
 				for (const auto& animationElement : FindChildElements(
 					element, "animation"))
 				{
@@ -1727,7 +2294,16 @@ namespace
 						animationElement, animation, outError)) return false;
 					action.Animations.push_back(std::move(animation));
 				}
-				if (action.Animations.empty())
+				for (const auto& groupElement : FindChildElements(
+					element, "timelineGroup"))
+				{
+					DesignerTimelineGroup group;
+					if (!ReadTimelineGroupSnapshot(
+						groupElement, group, outError)) return false;
+					action.TimelineGroups.push_back(std::move(group));
+				}
+				if (action.Animations.empty()
+					&& action.TimelineGroups.empty())
 				{
 					if (outError) *outError =
 						L"Style BeginStoryboard has no animations.";
@@ -1742,6 +2318,16 @@ namespace
 					action.Kind = DesignerStoryboardActionKind::Resume;
 				else if (std::strcmp(element->Name().c_str(), "stopStoryboard") == 0)
 					action.Kind = DesignerStoryboardActionKind::Stop;
+				else if (std::strcmp(element->Name().c_str(), "removeStoryboard") == 0)
+					action.Kind = DesignerStoryboardActionKind::Remove;
+				else if (std::strcmp(element->Name().c_str(), "seekStoryboard") == 0)
+					action.Kind = DesignerStoryboardActionKind::Seek;
+				else if (std::strcmp(element->Name().c_str(),
+					"setStoryboardSpeedRatio") == 0)
+					action.Kind = DesignerStoryboardActionKind::SetSpeedRatio;
+				else if (std::strcmp(element->Name().c_str(),
+					"skipStoryboardToFill") == 0)
+					action.Kind = DesignerStoryboardActionKind::SkipToFill;
 				else
 				{
 					if (outError) *outError = L"Style TriggerAction is invalid.";
@@ -1749,6 +2335,23 @@ namespace
 				}
 				action.StoryboardName = FromUtf8(
 					element->GetAttribute("beginStoryboardName"));
+				if (action.Kind == DesignerStoryboardActionKind::Seek
+					&& !TryParseIntegral(element->GetAttribute("offsetMs"),
+						action.SeekOffsetMilliseconds))
+				{
+					if (outError) *outError = L"Style SeekStoryboard offset is invalid.";
+					return false;
+				}
+				if (action.Kind == DesignerStoryboardActionKind::SetSpeedRatio
+					&& (!TryParseDouble(element->GetAttribute("speedRatio"),
+						action.SpeedRatio)
+						|| !std::isfinite(action.SpeedRatio)
+						|| action.SpeedRatio < 0.0))
+				{
+					if (outError) *outError =
+						L"Style SetStoryboardSpeedRatio ratio is invalid.";
+					return false;
+				}
 				if (action.StoryboardName.empty())
 				{
 					if (outError) *outError =
@@ -1957,6 +2560,8 @@ static void WriteLocalResourcesSnapshot(
 		const auto snapshot = BuildLocalObjectResourceSnapshot(
 			document, document.Nodes, node);
 		auto objects = AppendElement(xml, element, "objectResourcesSnapshot");
+		objects->SetAttribute("storyboardCount", std::to_string(
+			node.LocalObjectResources.Storyboards.size()));
 		objects->SetAttribute("componentCount", std::to_string(
 			node.LocalObjectResources.Components.size()));
 		objects->SetAttribute("dataTemplateCount", std::to_string(
@@ -2036,6 +2641,7 @@ static bool ReadLocalResourcesSnapshot(
 	if (const auto objects = FindChildElement(
 		element, "objectResourcesSnapshot"))
 	{
+		size_t storyboardCount = 0;
 		size_t componentCount = 0;
 		size_t dataTemplateCount = 0;
 		size_t controlTemplateCount = 0;
@@ -2043,6 +2649,11 @@ static bool ReadLocalResourcesSnapshot(
 		size_t groupStyleCount = 0;
 		try
 		{
+			const auto storyboardCountText = objects->GetAttribute(
+				"storyboardCount");
+			if (!storyboardCountText.empty())
+				storyboardCount = static_cast<size_t>(
+					std::stoull(storyboardCountText));
 			componentCount = static_cast<size_t>(std::stoull(
 				objects->GetAttribute("componentCount")));
 			dataTemplateCount = static_cast<size_t>(std::stoull(
@@ -2069,7 +2680,8 @@ static bool ReadLocalResourcesSnapshot(
 		DesignDocument snapshot;
 		if (!DesignDocumentSerializer::FromXml(
 			objects->InnerText(), snapshot, outError, resourceBasePath)) return false;
-		if (componentCount > snapshot.Components.size()
+		if (storyboardCount > snapshot.Storyboards.size()
+			|| componentCount > snapshot.Components.size()
 			|| controlTemplateCount > snapshot.ControlTemplates.size()
 			|| dataTemplateCount > snapshot.DataTemplates.size()
 			|| itemsPanelTemplateCount > snapshot.ItemsPanelTemplates.size()
@@ -2078,6 +2690,9 @@ static bool ReadLocalResourcesSnapshot(
 			if (outError) *outError = L"控件局部对象资源快照不完整。";
 			return false;
 		}
+		objectCandidate.Storyboards.assign(
+			snapshot.Storyboards.end() - storyboardCount,
+			snapshot.Storyboards.end());
 		objectCandidate.Components.assign(
 			snapshot.Components.end() - componentCount,
 			snapshot.Components.end());
@@ -2303,6 +2918,13 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 				item->SetAttribute("ignoreCase", BoolToString(authored.IgnoreCase));
 			}
 		}
+	}
+
+	if (!document.Storyboards.empty())
+	{
+		auto storyboards = AppendElement(xml, root, "storyboards");
+		for (const auto& resource : document.Storyboards)
+			WriteStoryboardResourceSnapshot(xml, storyboards, resource);
 	}
 
 	if (!document.ItemsPanelTemplates.empty())
@@ -2647,22 +3269,21 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 				for (const auto& transition : group.Transitions)
 				{
 					auto item = AppendElement(xml, groupElement, "visualTransition");
+					WriteStoryboardTimingSnapshot(
+						item, transition.StoryboardTiming);
+					if (!transition.StoryboardResourceKey.empty())
+						item->SetAttribute("storyboardResource", ToUtf8(
+							transition.StoryboardResourceKey));
 					if (!transition.FromState.empty())
 						item->SetAttribute("from", ToUtf8(transition.FromState));
 					if (!transition.ToState.empty())
 						item->SetAttribute("to", ToUtf8(transition.ToState));
 					item->SetAttribute("generatedDurationMs", std::to_string(
 						transition.GeneratedDurationMilliseconds));
-					const char* easing = "Linear";
-					switch (transition.GeneratedEasing)
-					{
-					case DesignerEasingKind::Quadratic: easing = "Quadratic"; break;
-					case DesignerEasingKind::Cubic: easing = "Cubic"; break;
-					case DesignerEasingKind::Sine: easing = "Sine"; break;
-					case DesignerEasingKind::Linear:
-					default: break;
-					}
-					item->SetAttribute("generatedEasing", easing);
+					item->SetAttribute("generatedEasing",
+						EasingKindText(transition.GeneratedEasing));
+					WriteEasingParameters(
+						item, transition.GeneratedEasingParameters);
 					item->SetAttribute("generatedEasingMode",
 						transition.GeneratedEasingMode == DesignerEasingMode::EaseIn
 							? "EaseIn"
@@ -2671,12 +3292,19 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 								? "EaseInOut" : "EaseOut");
 					for (const auto& animation : transition.Animations)
 						WriteVisualStateAnimationSnapshot(xml, item, animation);
+					for (const auto& timelineGroup : transition.TimelineGroups)
+						WriteTimelineGroupSnapshot(xml, item, timelineGroup);
 				}
 				for (const auto& state : group.States)
 				{
 					auto stateElement = AppendElement(
 						xml, groupElement, "visualState");
 					stateElement->SetAttribute("name", ToUtf8(state.Name));
+					WriteStoryboardTimingSnapshot(
+						stateElement, state.StoryboardTiming);
+					if (!state.StoryboardResourceKey.empty())
+						stateElement->SetAttribute("storyboardResource", ToUtf8(
+							state.StoryboardResourceKey));
 					for (const auto& condition : state.Conditions)
 					{
 						auto item = AppendElement(xml, stateElement, "condition");
@@ -2734,7 +3362,12 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 							|| animation.Kind == DesignerAnimationKind::Vector
 							|| animation.Kind == DesignerAnimationKind::Rect
 							|| animation.Kind == DesignerAnimationKind::Size
-							|| animation.Kind == DesignerAnimationKind::Matrix)
+							|| animation.Kind == DesignerAnimationKind::Matrix
+							|| animation.Kind == DesignerAnimationKind::Int32
+							|| animation.Kind == DesignerAnimationKind::Int64
+							|| animation.Kind == DesignerAnimationKind::Single
+							|| animation.Kind == DesignerAnimationKind::Boolean
+							|| animation.Kind == DesignerAnimationKind::String)
 						{
 							WriteVisualStateAnimationSnapshot(xml, stateElement, animation);
 							continue;
@@ -2815,16 +3448,9 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 							DoubleText(animation.AccelerationRatio));
 						item->SetAttribute("decelerationRatio",
 							DoubleText(animation.DecelerationRatio));
-						const char* easing = "Linear";
-						switch (animation.Easing)
-						{
-						case DesignerEasingKind::Quadratic: easing = "Quadratic"; break;
-						case DesignerEasingKind::Cubic: easing = "Cubic"; break;
-						case DesignerEasingKind::Sine: easing = "Sine"; break;
-						case DesignerEasingKind::Linear:
-						default: break;
-						}
-						item->SetAttribute("easing", easing);
+						item->SetAttribute("easing",
+							EasingKindText(animation.Easing));
+						WriteEasingParameters(item, animation.EasingParameters);
 						const char* easingMode = "EaseOut";
 						switch (animation.EasingMode)
 						{
@@ -2849,6 +3475,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 							frame->SetAttribute("kind", kind);
 							frame->SetAttribute("keyTimeMs", std::to_string(
 								keyFrame.KeyTimeMilliseconds));
+							frame->SetAttribute("keyTimeSubMsTicks", std::to_string(
+								keyFrame.KeyTimeSubMillisecondTicks));
 							if (keyFrame.UsesResource)
 								frame->SetAttribute("resource", ToUtf8(keyFrame.ResourceKey));
 							else
@@ -2859,16 +3487,9 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 							}
 							if (keyFrame.Kind == DesignerKeyFrameKind::Easing)
 							{
-								const char* frameEasing = "Linear";
-								switch (keyFrame.Easing)
-								{
-								case DesignerEasingKind::Quadratic: frameEasing = "Quadratic"; break;
-								case DesignerEasingKind::Cubic: frameEasing = "Cubic"; break;
-								case DesignerEasingKind::Sine: frameEasing = "Sine"; break;
-								case DesignerEasingKind::Linear:
-								default: break;
-								}
-								frame->SetAttribute("easing", frameEasing);
+								frame->SetAttribute("easing",
+									EasingKindText(keyFrame.Easing));
+								WriteEasingParameters(frame, keyFrame.EasingParameters);
 								const char* frameMode = keyFrame.EasingMode
 									== DesignerEasingMode::EaseIn ? "EaseIn"
 									: keyFrame.EasingMode == DesignerEasingMode::EaseInOut
@@ -2884,6 +3505,9 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 							}
 						}
 					}
+					for (const auto& timelineGroup : state.TimelineGroups)
+						WriteTimelineGroupSnapshot(
+							xml, stateElement, timelineGroup);
 				}
 			}
 			for (const auto& trigger : definition.EventTriggers)
@@ -2899,7 +3523,15 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 						: action.Kind == DesignerStoryboardActionKind::Pause
 							? "pauseStoryboard"
 							: action.Kind == DesignerStoryboardActionKind::Resume
-								? "resumeStoryboard" : "stopStoryboard";
+								? "resumeStoryboard"
+						: action.Kind == DesignerStoryboardActionKind::Stop
+							? "stopStoryboard"
+						: action.Kind == DesignerStoryboardActionKind::Remove
+							? "removeStoryboard"
+						: action.Kind == DesignerStoryboardActionKind::Seek
+							? "seekStoryboard"
+						: action.Kind == DesignerStoryboardActionKind::SetSpeedRatio
+							? "setStoryboardSpeedRatio" : "skipStoryboardToFill";
 					auto actionElement = AppendElement(
 						xml, triggerElement, actionName);
 					if (action.Kind == DesignerStoryboardActionKind::Begin)
@@ -2907,12 +3539,33 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 						if (!action.StoryboardName.empty())
 							actionElement->SetAttribute(
 								"name", ToUtf8(action.StoryboardName));
+						if (!action.StoryboardResourceKey.empty())
+							actionElement->SetAttribute(
+								"storyboardResource",
+								ToUtf8(action.StoryboardResourceKey));
+						if (action.Handoff == DesignerHandoffBehavior::Compose)
+							actionElement->SetAttribute("handoffBehavior", "Compose");
+						WriteStoryboardTimingSnapshot(
+							actionElement, action.StoryboardTiming);
 						for (const auto& animation : action.Animations)
 							WriteVisualStateAnimationSnapshot(
 								xml, actionElement, animation);
+						for (const auto& timelineGroup : action.TimelineGroups)
+							WriteTimelineGroupSnapshot(
+								xml, actionElement, timelineGroup);
 					}
-					else actionElement->SetAttribute(
-						"beginStoryboardName", ToUtf8(action.StoryboardName));
+					else
+					{
+						actionElement->SetAttribute(
+							"beginStoryboardName", ToUtf8(action.StoryboardName));
+						if (action.Kind == DesignerStoryboardActionKind::Seek)
+							actionElement->SetAttribute("offsetMs",
+								std::to_string(action.SeekOffsetMilliseconds));
+						else if (action.Kind
+							== DesignerStoryboardActionKind::SetSpeedRatio)
+							actionElement->SetAttribute(
+								"speedRatio", DoubleText(action.SpeedRatio));
+					}
 				}
 			}
 			if (!definition.Template.empty())
@@ -3014,7 +3667,7 @@ bool DesignDocumentSerializer::FromXml(
 		root,
 		{ "schema", "version", "nextId" },
 		{ "window", "codeBehind", "dataContext", "dataTypes", "dataLists",
-			"collectionViews", "itemsPanelTemplates", "dataTemplates",
+			"collectionViews", "storyboards", "itemsPanelTemplates", "dataTemplates",
 			"controlTemplatesSnapshot", "groupStyles", "styleSheet",
 			"components", "controls" },
 		L"Current design snapshot", outError))
@@ -3416,6 +4069,22 @@ bool DesignDocumentSerializer::FromXml(
 					document.CollectionViews.push_back(std::move(definition));
 				}
 			}
+
+		if (auto storyboards = FindChildElement(root, "storyboards"))
+		{
+			for (const auto& item : FindChildElements(storyboards, "storyboard"))
+			{
+				DesignStoryboardResource resource;
+				if (!ReadStoryboardResourceSnapshot(item, resource, outError)
+					|| document.FindStoryboard(resource.Key))
+				{
+					if (outError && outError->empty())
+						*outError = L"Storyboard resource key is duplicated.";
+					return false;
+				}
+				document.Storyboards.push_back(std::move(resource));
+			}
+		}
 
 		if (auto templates = FindChildElement(root, "itemsPanelTemplates"))
 			{
@@ -4177,6 +4846,10 @@ bool DesignDocumentSerializer::FromXml(
 					{
 						DesignerVisualState state;
 						state.Name = FromUtf8(stateElement->GetAttribute("name"));
+						if (!ReadStoryboardTimingSnapshot(
+							stateElement, state.StoryboardTiming, outError)) return false;
+						state.StoryboardResourceKey = FromUtf8(
+							stateElement->GetAttribute("storyboardResource"));
 						if (state.Name.empty()
 							|| std::any_of(group.States.begin(), group.States.end(),
 								[&](const auto& existing)
@@ -4324,7 +4997,12 @@ bool DesignDocumentSerializer::FromXml(
 								|| std::strcmp(type.c_str(), "Vector") == 0
 								|| std::strcmp(type.c_str(), "Rect") == 0
 								|| std::strcmp(type.c_str(), "Size") == 0
-								|| std::strcmp(type.c_str(), "Matrix") == 0)
+								|| std::strcmp(type.c_str(), "Matrix") == 0
+								|| std::strcmp(type.c_str(), "Int32") == 0
+								|| std::strcmp(type.c_str(), "Int64") == 0
+								|| std::strcmp(type.c_str(), "Single") == 0
+								|| std::strcmp(type.c_str(), "Boolean") == 0
+								|| std::strcmp(type.c_str(), "String") == 0)
 							{
 								if (!ReadVisualStateAnimationSnapshot(
 									animationElement, animation, outError)) return false;
@@ -4616,15 +5294,9 @@ bool DesignDocumentSerializer::FromXml(
 									animationElement->GetAttribute("by"));
 							}
 							const auto easing = animationElement->GetAttribute("easing");
-							if (std::strcmp(easing.c_str(), "Linear") == 0)
-								animation.Easing = DesignerEasingKind::Linear;
-							else if (std::strcmp(easing.c_str(), "Quadratic") == 0)
-								animation.Easing = DesignerEasingKind::Quadratic;
-							else if (std::strcmp(easing.c_str(), "Cubic") == 0)
-								animation.Easing = DesignerEasingKind::Cubic;
-							else if (std::strcmp(easing.c_str(), "Sine") == 0)
-								animation.Easing = DesignerEasingKind::Sine;
-							else
+							if (!TryParseEasingKind(easing, animation.Easing)
+								|| !TryReadEasingParameters(animationElement,
+									animation.Easing, animation.EasingParameters))
 							{
 								if (outError) *outError = L"Component visual-state animation easing is invalid.";
 								return false;
@@ -4664,6 +5336,18 @@ bool DesignDocumentSerializer::FromXml(
 									if (outError) *outError = L"Component animation KeyTime is invalid.";
 									return false;
 								}
+								if (keyFrameElement->HasAttribute("keyTimeSubMsTicks"))
+								{
+									unsigned int subTicks = 0;
+									if (!TryParseIntegral(keyFrameElement->GetAttribute(
+										"keyTimeSubMsTicks"), subTicks) || subTicks >= 10000u)
+									{
+										if (outError) *outError = L"Component animation KeyTime sub-millisecond ticks are invalid.";
+										return false;
+									}
+									keyFrame.KeyTimeSubMillisecondTicks =
+										static_cast<uint16_t>(subTicks);
+								}
 								keyFrame.ResourceKey = FromUtf8(
 									keyFrameElement->GetAttribute("resource"));
 								const auto valueKind = FromUtf8(
@@ -4689,15 +5373,9 @@ bool DesignDocumentSerializer::FromXml(
 								if (keyFrame.Kind == DesignerKeyFrameKind::Easing)
 								{
 									const auto frameEasing = keyFrameElement->GetAttribute("easing");
-									if (std::strcmp(frameEasing.c_str(), "Linear") == 0)
-										keyFrame.Easing = DesignerEasingKind::Linear;
-									else if (std::strcmp(frameEasing.c_str(), "Quadratic") == 0)
-										keyFrame.Easing = DesignerEasingKind::Quadratic;
-									else if (std::strcmp(frameEasing.c_str(), "Cubic") == 0)
-										keyFrame.Easing = DesignerEasingKind::Cubic;
-									else if (std::strcmp(frameEasing.c_str(), "Sine") == 0)
-										keyFrame.Easing = DesignerEasingKind::Sine;
-									else
+									if (!TryParseEasingKind(frameEasing, keyFrame.Easing)
+										|| !TryReadEasingParameters(keyFrameElement,
+											keyFrame.Easing, keyFrame.EasingParameters))
 									{
 										if (outError) *outError = L"Component animation key-frame easing is invalid.";
 										return false;
@@ -4735,7 +5413,10 @@ bool DesignDocumentSerializer::FromXml(
 							std::stable_sort(animation.KeyFrames.begin(),
 								animation.KeyFrames.end(), [](const auto& left, const auto& right)
 							{
-								return left.KeyTimeMilliseconds < right.KeyTimeMilliseconds;
+								return std::tie(left.KeyTimeMilliseconds,
+									left.KeyTimeSubMillisecondTicks)
+									< std::tie(right.KeyTimeMilliseconds,
+										right.KeyTimeSubMillisecondTicks);
 							});
 							const bool objectPath = ClassifyStoryboardObjectPath(
 								animation.PropertyName) != StoryboardObjectPathKind::None;
@@ -4781,12 +5462,90 @@ bool DesignDocumentSerializer::FromXml(
 									controlledKey, group.Name);
 							state.Animations.push_back(std::move(animation));
 						}
+						for (const auto& timelineGroupElement : FindChildElements(
+							stateElement, "timelineGroup"))
+						{
+							DesignerTimelineGroup timelineGroup;
+							if (!ReadTimelineGroupSnapshot(
+								timelineGroupElement, timelineGroup, outError))
+								return false;
+							state.TimelineGroups.push_back(std::move(timelineGroup));
+						}
+						std::vector<const DesignerVisualStateAnimation*>
+							nestedStateAnimations;
+						if (!VisitTimelineGroupAnimations(state.TimelineGroups,
+							[&](const DesignerVisualStateAnimation& animation)
+							{
+								const bool objectPath = ClassifyStoryboardObjectPath(
+									animation.PropertyName)
+									!= StoryboardObjectPathKind::None;
+								const auto rootProperty = StoryboardAnimationRootProperty(
+									animation.PropertyName);
+								auto conflicts = [&](const DesignerVisualStateAnimation& existing)
+								{
+									if (std::wcscmp(existing.TargetName.c_str(),
+										animation.TargetName.c_str()) != 0) return false;
+									const bool existingPath = ClassifyStoryboardObjectPath(
+										existing.PropertyName)
+										!= StoryboardObjectPathKind::None;
+									return std::wcscmp(existing.PropertyName.c_str(),
+										animation.PropertyName.c_str()) == 0
+										|| (std::wcscmp(StoryboardAnimationRootProperty(
+											existing.PropertyName).c_str(),
+											rootProperty.c_str()) == 0
+											&& (!existingPath || !objectPath));
+								};
+								const bool duplicate = std::any_of(
+									state.Setters.begin(), state.Setters.end(),
+									[&](const auto& setter)
+									{
+										return std::wcscmp(setter.TargetName.c_str(),
+											animation.TargetName.c_str()) == 0
+											&& std::wcscmp(setter.PropertyName.c_str(),
+												rootProperty.c_str()) == 0;
+									})
+									|| std::any_of(state.Animations.begin(),
+										state.Animations.end(), conflicts)
+									|| std::any_of(nestedStateAnimations.begin(),
+										nestedStateAnimations.end(), [&](const auto* existing)
+										{ return conflicts(*existing); });
+								if (duplicate)
+								{
+									if (outError) *outError = L"Component visual-state Setter/animation target is duplicated.";
+									return false;
+								}
+								const auto controlledKey = animation.TargetName + L"|"
+									+ rootProperty;
+								const auto controlled = std::find_if(
+									visualStateControlledProperties.begin(),
+									visualStateControlledProperties.end(),
+									[&](const auto& existing)
+									{ return std::wcscmp(existing.first.c_str(),
+										controlledKey.c_str()) == 0; });
+								if (controlled != visualStateControlledProperties.end()
+									&& std::wcscmp(controlled->second.c_str(),
+										group.Name.c_str()) != 0)
+								{
+									if (outError) *outError = L"Different visual-state groups animate the same property.";
+									return false;
+								}
+								if (controlled == visualStateControlledProperties.end())
+									visualStateControlledProperties.emplace_back(
+										controlledKey, group.Name);
+								nestedStateAnimations.push_back(&animation);
+								return true;
+							})) return false;
 						group.States.push_back(std::move(state));
 					}
 					for (const auto& transitionElement : FindChildElements(
 						groupElement, "visualTransition"))
 					{
 						DesignerVisualTransition transition;
+						if (!ReadStoryboardTimingSnapshot(
+							transitionElement, transition.StoryboardTiming,
+							outError)) return false;
+						transition.StoryboardResourceKey = FromUtf8(
+							transitionElement->GetAttribute("storyboardResource"));
 						transition.FromState = FromUtf8(
 							transitionElement->GetAttribute("from"));
 						transition.ToState = FromUtf8(
@@ -4821,15 +5580,10 @@ bool DesignDocumentSerializer::FromXml(
 						}
 						const auto easing = transitionElement->GetAttribute(
 							"generatedEasing");
-						if (std::strcmp(easing.c_str(), "Linear") == 0)
-							transition.GeneratedEasing = DesignerEasingKind::Linear;
-						else if (std::strcmp(easing.c_str(), "Quadratic") == 0)
-							transition.GeneratedEasing = DesignerEasingKind::Quadratic;
-						else if (std::strcmp(easing.c_str(), "Cubic") == 0)
-							transition.GeneratedEasing = DesignerEasingKind::Cubic;
-						else if (std::strcmp(easing.c_str(), "Sine") == 0)
-							transition.GeneratedEasing = DesignerEasingKind::Sine;
-						else
+						if (!TryParseEasingKind(easing, transition.GeneratedEasing)
+							|| !TryReadEasingParameters(transitionElement,
+								transition.GeneratedEasing,
+								transition.GeneratedEasingParameters))
 						{
 							if (outError) *outError = L"Component visual transition easing is invalid.";
 							return false;
@@ -4894,6 +5648,72 @@ bool DesignDocumentSerializer::FromXml(
 									controlledKey, group.Name);
 							transition.Animations.push_back(std::move(animation));
 						}
+						for (const auto& timelineGroupElement : FindChildElements(
+							transitionElement, "timelineGroup"))
+						{
+							DesignerTimelineGroup timelineGroup;
+							if (!ReadTimelineGroupSnapshot(
+								timelineGroupElement, timelineGroup, outError))
+								return false;
+							transition.TimelineGroups.push_back(
+								std::move(timelineGroup));
+						}
+						std::vector<const DesignerVisualStateAnimation*>
+							nestedTransitionAnimations;
+						if (!VisitTimelineGroupAnimations(transition.TimelineGroups,
+							[&](const DesignerVisualStateAnimation& animation)
+							{
+								const bool objectPath = ClassifyStoryboardObjectPath(
+									animation.PropertyName)
+									!= StoryboardObjectPathKind::None;
+								const auto rootProperty = StoryboardAnimationRootProperty(
+									animation.PropertyName);
+								auto conflicts = [&](const DesignerVisualStateAnimation& existing)
+								{
+									if (std::wcscmp(existing.TargetName.c_str(),
+										animation.TargetName.c_str()) != 0) return false;
+									const bool existingPath = ClassifyStoryboardObjectPath(
+										existing.PropertyName)
+										!= StoryboardObjectPathKind::None;
+									return std::wcscmp(existing.PropertyName.c_str(),
+										animation.PropertyName.c_str()) == 0
+										|| (std::wcscmp(StoryboardAnimationRootProperty(
+											existing.PropertyName).c_str(),
+											rootProperty.c_str()) == 0
+											&& (!existingPath || !objectPath));
+								};
+								const bool duplicate = std::any_of(
+									transition.Animations.begin(),
+									transition.Animations.end(), conflicts)
+									|| std::any_of(nestedTransitionAnimations.begin(),
+										nestedTransitionAnimations.end(), [&](const auto* existing)
+										{ return conflicts(*existing); });
+								if (duplicate)
+								{
+									if (outError) *outError = L"Component visual transition animation target is duplicated.";
+									return false;
+								}
+								const auto controlledKey = animation.TargetName + L"|"
+									+ rootProperty;
+								const auto controlled = std::find_if(
+									visualStateControlledProperties.begin(),
+									visualStateControlledProperties.end(),
+									[&](const auto& existing)
+									{ return std::wcscmp(existing.first.c_str(),
+										controlledKey.c_str()) == 0; });
+								if (controlled != visualStateControlledProperties.end()
+									&& std::wcscmp(controlled->second.c_str(),
+										group.Name.c_str()) != 0)
+								{
+									if (outError) *outError = L"Different visual-state groups animate the same transition property.";
+									return false;
+								}
+								if (controlled == visualStateControlledProperties.end())
+									visualStateControlledProperties.emplace_back(
+										controlledKey, group.Name);
+								nestedTransitionAnimations.push_back(&animation);
+								return true;
+							})) return false;
 						group.Transitions.push_back(std::move(transition));
 					}
 					if (group.States.empty() || fallbackCount != 1)
@@ -4932,6 +5752,21 @@ bool DesignDocumentSerializer::FromXml(
 							action.Kind = DesignerStoryboardActionKind::Begin;
 							action.StoryboardName = FromUtf8(
 								actionElement->GetAttribute("name"));
+							action.StoryboardResourceKey = FromUtf8(
+								actionElement->GetAttribute("storyboardResource"));
+							const auto handoff = actionElement->GetAttribute(
+								"handoffBehavior");
+							if (handoff == "Compose")
+								action.Handoff = DesignerHandoffBehavior::Compose;
+							else if (!handoff.empty()
+								&& handoff != "SnapshotAndReplace")
+							{
+								if (outError) *outError = L"Component BeginStoryboard handoff behavior is invalid.";
+								return false;
+							}
+							if (!ReadStoryboardTimingSnapshot(
+								actionElement, action.StoryboardTiming,
+								outError)) return false;
 							if (!action.StoryboardName.empty())
 							{
 								if (std::any_of(beginStoryboardNames.begin(),
@@ -4973,7 +5808,18 @@ bool DesignDocumentSerializer::FromXml(
 								}
 								action.Animations.push_back(std::move(animation));
 							}
-							if (action.Animations.empty())
+							for (const auto& timelineGroupElement : FindChildElements(
+								actionElement, "timelineGroup"))
+							{
+								DesignerTimelineGroup timelineGroup;
+								if (!ReadTimelineGroupSnapshot(
+									timelineGroupElement, timelineGroup, outError))
+									return false;
+								action.TimelineGroups.push_back(
+									std::move(timelineGroup));
+							}
+							if (action.Animations.empty()
+								&& action.TimelineGroups.empty())
 							{
 								if (outError) *outError = L"Component BeginStoryboard is empty.";
 								return false;
@@ -4987,6 +5833,14 @@ bool DesignDocumentSerializer::FromXml(
 								action.Kind = DesignerStoryboardActionKind::Resume;
 							else if (actionName == "stopStoryboard")
 								action.Kind = DesignerStoryboardActionKind::Stop;
+							else if (actionName == "removeStoryboard")
+								action.Kind = DesignerStoryboardActionKind::Remove;
+							else if (actionName == "seekStoryboard")
+								action.Kind = DesignerStoryboardActionKind::Seek;
+							else if (actionName == "setStoryboardSpeedRatio")
+								action.Kind = DesignerStoryboardActionKind::SetSpeedRatio;
+							else if (actionName == "skipStoryboardToFill")
+								action.Kind = DesignerStoryboardActionKind::SkipToFill;
 							else
 							{
 								if (outError) *outError = L"Component EventTrigger action is invalid.";
@@ -4994,6 +5848,26 @@ bool DesignDocumentSerializer::FromXml(
 							}
 							action.StoryboardName = FromUtf8(
 								actionElement->GetAttribute("beginStoryboardName"));
+							if (action.Kind == DesignerStoryboardActionKind::Seek
+								&& !TryParseIntegral(
+									actionElement->GetAttribute("offsetMs"),
+									action.SeekOffsetMilliseconds))
+							{
+								if (outError) *outError = L"Component SeekStoryboard offset is invalid.";
+								return false;
+							}
+							if (action.Kind
+								== DesignerStoryboardActionKind::SetSpeedRatio
+								&& (!TryParseDouble(
+									actionElement->GetAttribute("speedRatio"),
+									action.SpeedRatio)
+									|| !std::isfinite(action.SpeedRatio)
+									|| action.SpeedRatio < 0.0))
+							{
+								if (outError) *outError =
+									L"Component SetStoryboardSpeedRatio ratio is invalid.";
+								return false;
+							}
 							if (action.StoryboardName.empty())
 							{
 								if (outError) *outError = L"Component Storyboard control action is missing its name.";
@@ -5161,6 +6035,16 @@ bool DesignDocumentSerializer::FromXml(
 							: metadata && metadata->CanWrite()
 								&& (animation.Kind == DesignerAnimationKind::Object
 									? true
+									: animation.Kind == DesignerAnimationKind::Boolean
+										? metadata->ValueKind() == BindingValueKind::Bool
+									: animation.Kind == DesignerAnimationKind::String
+										? metadata->ValueKind() == BindingValueKind::String
+									: animation.Kind == DesignerAnimationKind::Int32
+										? metadata->ValueKind() == BindingValueKind::Int
+									: animation.Kind == DesignerAnimationKind::Int64
+										? metadata->ValueKind() == BindingValueKind::Int64
+									: animation.Kind == DesignerAnimationKind::Single
+										? metadata->ValueKind() == BindingValueKind::Float
 									: animation.Kind == DesignerAnimationKind::Double
 									? metadata->ValueKind() == BindingValueKind::Int
 										|| metadata->ValueKind() == BindingValueKind::Int64
@@ -5238,12 +6122,21 @@ bool DesignDocumentSerializer::FromXml(
 					for (const auto& group : definition.VisualStateGroups)
 					{
 						for (const auto& transition : group.Transitions)
+						{
 							for (const auto& animation : transition.Animations)
 								if (!validateTransitionAnimation(animation))
 								{
 									if (outError) *outError = L"Component visual-transition animation value, resource, target, or type is invalid.";
 									return false;
 								}
+							if (!VisitTimelineGroupAnimations(
+								transition.TimelineGroups,
+								validateTransitionAnimation))
+							{
+								if (outError) *outError = L"Component nested visual-transition animation value, resource, target, or type is invalid.";
+								return false;
+							}
+						}
 						for (const auto& state : group.States)
 						{
 							for (const auto& condition : state.Conditions)
@@ -5316,6 +6209,16 @@ bool DesignDocumentSerializer::FromXml(
 									: metadata && metadata->CanWrite()
 										&& (animation.Kind == DesignerAnimationKind::Object
 											? true
+											: animation.Kind == DesignerAnimationKind::Boolean
+												? metadata->ValueKind() == BindingValueKind::Bool
+											: animation.Kind == DesignerAnimationKind::String
+												? metadata->ValueKind() == BindingValueKind::String
+											: animation.Kind == DesignerAnimationKind::Int32
+												? metadata->ValueKind() == BindingValueKind::Int
+											: animation.Kind == DesignerAnimationKind::Int64
+												? metadata->ValueKind() == BindingValueKind::Int64
+											: animation.Kind == DesignerAnimationKind::Single
+												? metadata->ValueKind() == BindingValueKind::Float
 											: animation.Kind == DesignerAnimationKind::Double
 											? metadata->ValueKind() == BindingValueKind::Int
 												|| metadata->ValueKind() == BindingValueKind::Int64
@@ -5406,16 +6309,32 @@ bool DesignDocumentSerializer::FromXml(
 									return false;
 								}
 							}
+							if (!VisitTimelineGroupAnimations(
+								state.TimelineGroups,
+								validateTransitionAnimation))
+							{
+								if (outError) *outError = L"Component nested visual-state animation value, resource, target, or type is invalid.";
+								return false;
+							}
 						}
 					}
 					for (const auto& trigger : definition.EventTriggers)
 						for (const auto& action : trigger.Actions)
+						{
 							for (const auto& animation : action.Animations)
 								if (!validateTransitionAnimation(animation))
 								{
 									if (outError) *outError = L"Component EventTrigger animation value, resource, target, or type is invalid.";
 									return false;
 								}
+							if (!VisitTimelineGroupAnimations(
+								action.TimelineGroups,
+								validateTransitionAnimation))
+							{
+								if (outError) *outError = L"Component nested EventTrigger animation value, resource, target, or type is invalid.";
+								return false;
+							}
+						}
 				}
 				document.Components.push_back(std::move(definition));
 			}
@@ -5716,6 +6635,223 @@ bool DesignDocumentSerializer::FromXml(
 		return false;
 	if (!DesignDataResourceUtils::ValidateAndCanonicalize(document, outError))
 		return false;
+	auto validateVisualStateResources = [&](const auto& visualStateGroups,
+		const std::vector<DesignStoryboardResource>& localStoryboards,
+		const wchar_t* context)
+	{
+		auto validate = [&](const std::wstring& key,
+			const DesignerStoryboardTiming& timing,
+			const std::vector<DesignerVisualStateAnimation>& animations,
+			const std::vector<DesignerTimelineGroup>& timelineGroups)
+		{
+			if (key.empty()) return true;
+			const auto local = std::find_if(localStoryboards.rbegin(),
+				localStoryboards.rend(), [&](const auto& candidate)
+				{ return std::wcscmp(candidate.Key.c_str(), key.c_str()) == 0; });
+			const DesignStoryboardResource* resource =
+				local == localStoryboards.rend()
+					? document.FindStoryboard(key) : &*local;
+			if (!resource || timing != resource->Timing
+				|| animations != resource->Animations
+				|| timelineGroups != resource->TimelineGroups)
+			{
+				if (outError) *outError = std::wstring(context)
+					+ L" Storyboard resource reference is missing or diverges "
+						L"from its immutable definition.";
+				return false;
+			}
+			return true;
+		};
+		for (const auto& group : visualStateGroups)
+		{
+			for (const auto& state : group.States)
+				if (!validate(state.StoryboardResourceKey,
+					state.StoryboardTiming, state.Animations,
+					state.TimelineGroups)) return false;
+			for (const auto& transition : group.Transitions)
+				if (!validate(transition.StoryboardResourceKey,
+					transition.StoryboardTiming, transition.Animations,
+					transition.TimelineGroups)) return false;
+		}
+		return true;
+	};
+	for (const auto& component : document.Components)
+	{
+		if (component.Template.empty()) continue;
+		const auto& templateRoot = component.Template.front();
+		for (const auto& resource : templateRoot.LocalObjectResources.Storyboards)
+		{
+			auto validTarget = [&](const DesignerVisualStateAnimation& animation)
+			{
+				return animation.TargetName.empty()
+					|| std::any_of(component.Template.begin(),
+						component.Template.end(), [&](const auto& node)
+						{
+							return std::wcscmp(animation.TargetName.c_str(),
+								node.Name.c_str()) == 0;
+						});
+			};
+			if (!std::all_of(resource.Animations.begin(),
+				resource.Animations.end(), validTarget)
+				|| !VisitTimelineGroupAnimations(resource.TimelineGroups,
+					validTarget))
+			{
+				if (outError) *outError = L"Storyboard resource target is outside its component template NameScope.";
+				return false;
+			}
+		}
+		for (const auto& trigger : component.EventTriggers)
+			for (const auto& action : trigger.Actions)
+			{
+				if (action.Kind != DesignerStoryboardActionKind::Begin
+					|| action.StoryboardResourceKey.empty()) continue;
+				const auto localResource = std::find_if(
+					templateRoot.LocalObjectResources.Storyboards.rbegin(),
+					templateRoot.LocalObjectResources.Storyboards.rend(),
+					[&](const auto& candidate)
+					{
+						return std::wcscmp(candidate.Key.c_str(),
+							action.StoryboardResourceKey.c_str()) == 0;
+					});
+				const DesignStoryboardResource* resource =
+					localResource
+						== templateRoot.LocalObjectResources.Storyboards.rend()
+						? document.FindStoryboard(action.StoryboardResourceKey)
+						: &*localResource;
+				if (!resource
+					|| action.StoryboardTiming != resource->Timing
+					|| action.Animations != resource->Animations
+					|| action.TimelineGroups != resource->TimelineGroups)
+				{
+					if (outError) *outError = L"BeginStoryboard resource reference is missing or diverges from its immutable definition.";
+					return false;
+				}
+			}
+		if (!validateVisualStateResources(component.VisualStateGroups,
+			templateRoot.LocalObjectResources.Storyboards,
+			L"Component VisualState/VisualTransition")) return false;
+	}
+	for (const auto& controlTemplate : document.ControlTemplates)
+	{
+		if (controlTemplate.Template.empty()) continue;
+		const auto& templateRoot = controlTemplate.Template.front();
+		for (const auto& resource : templateRoot.LocalObjectResources.Storyboards)
+		{
+			auto validTarget = [&](const DesignerVisualStateAnimation& animation)
+			{
+				return animation.TargetName.empty()
+					|| std::any_of(controlTemplate.Template.begin(),
+						controlTemplate.Template.end(), [&](const auto& node)
+						{
+							return std::wcscmp(animation.TargetName.c_str(),
+								node.Name.c_str()) == 0;
+						});
+			};
+			if (!std::all_of(resource.Animations.begin(),
+				resource.Animations.end(), validTarget)
+				|| !VisitTimelineGroupAnimations(resource.TimelineGroups,
+					validTarget))
+			{
+				if (outError) *outError = L"ControlTemplate Storyboard resource target is outside its template NameScope.";
+				return false;
+			}
+		}
+		for (const auto& trigger : controlTemplate.EventTriggers)
+			for (const auto& action : trigger.Actions)
+			{
+				if (action.Kind != DesignerStoryboardActionKind::Begin
+					|| action.StoryboardResourceKey.empty()) continue;
+				const auto localResource = std::find_if(
+					templateRoot.LocalObjectResources.Storyboards.rbegin(),
+					templateRoot.LocalObjectResources.Storyboards.rend(),
+					[&](const auto& candidate)
+					{
+						return std::wcscmp(candidate.Key.c_str(),
+							action.StoryboardResourceKey.c_str()) == 0;
+					});
+				const DesignStoryboardResource* resource =
+					localResource
+						== templateRoot.LocalObjectResources.Storyboards.rend()
+						? document.FindStoryboard(action.StoryboardResourceKey)
+						: &*localResource;
+				if (!resource
+					|| action.StoryboardTiming != resource->Timing
+					|| action.Animations != resource->Animations
+					|| action.TimelineGroups != resource->TimelineGroups)
+				{
+					if (outError) *outError = L"ControlTemplate BeginStoryboard resource reference is missing or diverges from its immutable definition.";
+					return false;
+				}
+			}
+		if (!validateVisualStateResources(controlTemplate.VisualStateGroups,
+			templateRoot.LocalObjectResources.Storyboards,
+			L"ControlTemplate VisualState/VisualTransition")) return false;
+	}
+	auto validateStyleActions = [&](const DesignerStyleSheet& sheet,
+		const std::vector<DesignStoryboardResource>& visibleStoryboards)
+	{
+		auto validateActions = [&](const auto& actions)
+		{
+			for (const auto& action : actions)
+			{
+				if (action.Kind != DesignerStoryboardActionKind::Begin
+					|| action.StoryboardResourceKey.empty()) continue;
+				const auto resource = std::find_if(
+					visibleStoryboards.rbegin(), visibleStoryboards.rend(),
+					[&](const auto& candidate)
+					{
+						return std::wcscmp(candidate.Key.c_str(),
+							action.StoryboardResourceKey.c_str()) == 0;
+					});
+				if (resource == visibleStoryboards.rend()
+					|| action.StoryboardTiming != resource->Timing
+					|| action.Animations != resource->Animations
+					|| action.TimelineGroups != resource->TimelineGroups)
+				{
+					if (outError) *outError = L"Style BeginStoryboard resource reference is missing or diverges from its immutable definition.";
+					return false;
+				}
+			}
+			return true;
+		};
+		for (const auto& rule : sheet.Rules)
+		{
+			if (!validateActions(rule.EnterActions)
+				|| !validateActions(rule.ExitActions)) return false;
+			for (const auto& trigger : rule.Triggers)
+				if (!validateActions(trigger.EnterActions)
+					|| !validateActions(trigger.ExitActions)) return false;
+		}
+		return true;
+	};
+	if (!validateStyleActions(document.StyleSheet, document.Storyboards))
+		return false;
+	std::function<bool(const std::vector<DesignNode>&)> validateNodeStyles;
+	validateNodeStyles = [&](const std::vector<DesignNode>& nodes)
+	{
+		for (const auto& node : nodes)
+		{
+			const auto visible = document.VisibleObjectResources(nodes, node);
+			if (!validateStyleActions(
+				node.LocalResources, visible.Storyboards)) return false;
+			for (const auto& component : node.LocalObjectResources.Components)
+				if (!validateNodeStyles(component.Template)) return false;
+			for (const auto& controlTemplate :
+				node.LocalObjectResources.ControlTemplates)
+				if (!validateNodeStyles(controlTemplate.Template)) return false;
+			for (const auto& dataTemplate :
+				node.LocalObjectResources.DataTemplates)
+				if (!validateNodeStyles(dataTemplate.Template)) return false;
+		}
+		return true;
+	};
+	if (!validateNodeStyles(document.Nodes)) return false;
+	for (const auto& component : document.Components)
+		if (!validateNodeStyles(component.Template)) return false;
+	for (const auto& controlTemplate : document.ControlTemplates)
+		if (!validateNodeStyles(controlTemplate.Template)) return false;
+	for (const auto& dataTemplate : document.DataTemplates)
+		if (!validateNodeStyles(dataTemplate.Template)) return false;
 	DesignDocumentEventIndex eventIndex;
 	if (!DesignDocumentEventIndex::Build(document, eventIndex, outError))
 		return false;

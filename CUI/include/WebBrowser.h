@@ -161,6 +161,9 @@ protected:
 	{
 		return PresentationSurfaceKind::NativeComposition;
 	}
+	bool PrepareNativeCompositionVisual() override;
+	bool SupportsNativeCompositionVisualLease() const noexcept override;
+	IDCompositionVisual* GetNativeCompositionVisual() const noexcept override;
 	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;
 public:

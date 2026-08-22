@@ -3117,10 +3117,10 @@ bool RunDesignerSelfTest(std::wstring& report)
               <Storyboard>
                 <DoubleAnimation Storyboard.TargetName="StaticCodeChrome"
                   Storyboard.TargetProperty="(Canvas.Left)"
-                  From="0" To="12" Duration="0:0:0.200"/>
+                  From="0" To="12" Duration="Automatic"/>
                 <DoubleAnimation Storyboard.TargetName="StaticCodeChrome"
                   Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(TranslateTransform.X)"
-                  From="0" To="8" Duration="0:0:0.200"/>
+                  From="0" To="8"/>
               </Storyboard>
             </BeginStoryboard>
           </EventTrigger>
@@ -3129,7 +3129,11 @@ bool RunDesignerSelfTest(std::wstring& report)
           <VisualStateGroup x:Name="StaticCommonStates">
             <VisualStateGroup.Transitions>
               <VisualTransition From="Normal" To="PointerOver"
-                GeneratedDuration="0:0:0.100"/>
+                GeneratedDuration="0:0:0.100">
+                <VisualTransition.GeneratedEasingFunction>
+                  <PowerEase EasingMode="EaseInOut" Power="3.5" />
+                </VisualTransition.GeneratedEasingFunction>
+              </VisualTransition>
             </VisualStateGroup.Transitions>
             <VisualState x:Name="PointerOver">
               <VisualState.StateTriggers>
@@ -3153,21 +3157,34 @@ bool RunDesignerSelfTest(std::wstring& report)
         <Trigger Property="IsMouseOver" Value="true">
           <Setter Property="BorderThickness" Value="5.5" />
           <Trigger.EnterActions>
-            <BeginStoryboard x:Name="StaticStyleHoverClock">
+            <BeginStoryboard x:Name="StaticStyleHoverClock"
+              HandoffBehavior="Compose">
               <Storyboard>
                 <ThicknessAnimation Storyboard.TargetProperty="BorderThickness"
                   From="5.5" To="{StaticResource StaticHoverBorder}"
-                  Duration="0:0:0.080" />
+                  Duration="0:0:0.080">
+                  <ThicknessAnimation.EasingFunction>
+                    <BackEase EasingMode="EaseIn" Amplitude="1.5" />
+                  </ThicknessAnimation.EasingFunction>
+                </ThicknessAnimation>
                 <DoubleAnimationUsingKeyFrames
                   Storyboard.TargetProperty="(Control.RenderTransform).(TranslateTransform.X)"
                   Duration="0:0:0.080">
-                  <LinearDoubleKeyFrame KeyTime="0:0:0.080" Value="6" />
+                  <LinearDoubleKeyFrame KeyTime="Paced" Value="1" />
+                  <LinearDoubleKeyFrame KeyTime="Paced" Value="7" />
+                  <LinearDoubleKeyFrame KeyTime="Paced" Value="8" />
                 </DoubleAnimationUsingKeyFrames>
               </Storyboard>
             </BeginStoryboard>
+            <SeekStoryboard BeginStoryboardName="StaticStyleHoverClock"
+              Offset="0:0:0.040" Origin="BeginTime" />
+            <SetStoryboardSpeedRatio
+              BeginStoryboardName="StaticStyleHoverClock" SpeedRatio="2" />
+            <SkipStoryboardToFill
+              BeginStoryboardName="StaticStyleHoverClock" />
           </Trigger.EnterActions>
           <Trigger.ExitActions>
-            <StopStoryboard BeginStoryboardName="StaticStyleHoverClock" />
+            <RemoveStoryboard BeginStoryboardName="StaticStyleHoverClock" />
           </Trigger.ExitActions>
         </Trigger>
         <MultiTrigger>
@@ -3304,6 +3321,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 	bool xamlMultiDataTriggerInactive = false;
 	bool xamlMultiDataTriggerApplied = false;
 	bool xamlMultiDataTriggerRestored = false;
+	bool xamlExitControlPending = false;
+	bool xamlExitControlCommitted = false;
 	if (xamlButton)
 	{
 		xamlDataTriggerInactive = xamlButton->IsVisible;
@@ -3327,6 +3346,10 @@ bool RunDesignerSelfTest(std::wstring& report)
 		xamlMultiTriggerApplied = std::fabs(xamlButton->FontSize - 18.0) < 0.001;
 		cui::framework::InputAccess::PublishPointerOverState(
 			*xamlButton, false, false);
+		xamlExitControlPending = xamlButton->HasActiveVisualStateAnimations();
+		xamlExitControlCommitted =
+			cui::framework::PresentationAccess::AdvanceVisualStateAnimations(
+				*xamlButton, ::GetTickCount64() + 1u);
 		xamlTriggerRestored = std::fabs(
 			xamlButton->BorderThickness.MaxEdge() - 2.5f) < 0.001f;
 		xamlMultiTriggerRestored = std::fabs(xamlButton->FontSize - 16.0) < 0.001;
@@ -3413,6 +3436,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& cui::framework::StyleAccess::DocumentStyles(*xamlAction) != nullptr;
 	const bool runtimeXamlTriggersReady = xamlTriggerApplied
 		&& xamlTriggerRestored
+		&& xamlExitControlPending
+		&& xamlExitControlCommitted
 		&& xamlMultiTriggerInactive
 		&& xamlMultiTriggerApplied
 		&& xamlMultiTriggerRestored
@@ -3433,7 +3458,22 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& canonicalRuntimeXaml.find("<Trigger.EnterActions>")
 			!= std::string::npos
 		&& canonicalRuntimeXaml.find(
-			"<BeginStoryboard x:Name=\"StaticStyleHoverClock\">")
+			"<BeginStoryboard x:Name=\"StaticStyleHoverClock\" "
+			"HandoffBehavior=\"Compose\">")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<SetStoryboardSpeedRatio BeginStoryboardName=\"StaticStyleHoverClock\" SpeedRatio=\"2\"")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<SkipStoryboardToFill BeginStoryboardName=\"StaticStyleHoverClock\"")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find("KeyTime=\"0:00:00.0685714\"")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<BackEase EasingMode=\"EaseIn\" Amplitude=\"1.5\"")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<PowerEase EasingMode=\"EaseInOut\" Power=\"3.5\"")
 			!= std::string::npos
 		&& canonicalRuntimeXaml.find("<Trigger.ExitActions>")
 			!= std::string::npos
@@ -3465,6 +3505,15 @@ bool RunDesignerSelfTest(std::wstring& report)
 		"TemplateAccess::RegisterTemplatePart(__templateOwner");
 	const auto runtimeXamlCompiledInteractionInstall = xamlStyleGeneratedCpp.find(
 		"TemplateAccess::InstallCompiledInteractions(__templateOwner");
+	const auto naturalDurationLoweringCount = [&]
+	{
+		size_t count = 0;
+		for (size_t offset = 0;
+			(offset = xamlStyleGeneratedCpp.find("1000ULL", offset))
+				!= std::string::npos;
+			offset += 7) ++count;
+		return count;
+	}();
 	const bool runtimeXamlCompiledTargetOrder =
 		runtimeXamlCompiledTargetParent != std::string::npos
 		&& runtimeXamlCompiledTargetRegistration != std::string::npos
@@ -3589,9 +3638,19 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& xamlStyleGeneratedCpp.find(
 			"static constexpr CompiledInteractionKeyFrameOp "
 			"__styleSheet_program_key_frames") != std::string::npos
+		&& xamlStyleGeneratedCpp.find("5714u, { 0.0, 0.0 } }")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DeclarativeEasingKind::Back, DeclarativeEasingMode::EaseIn, "
+			"{ 1.5, 0.0 }") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DeclarativeEasingKind::Power, "
+			"DeclarativeEasingMode::EaseInOut, { 3.5, 0.0 }")
+			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
 			"static constexpr CompiledInteractionAnimationOp "
 			"__styleSheet_program_animations") != std::string::npos
+		&& naturalDurationLoweringCount >= 2
 		&& xamlStyleGeneratedCpp.find(
 			"static constexpr CompiledInteractionStoryboardOp "
 			"__styleSheet_program_storyboards") != std::string::npos
@@ -3599,10 +3658,24 @@ bool RunDesignerSelfTest(std::wstring& report)
 			"static constexpr CompiledInteractionActionOp "
 			"__styleSheet_program_actions") != std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"{ DeclarativeStoryboardActionKind::Begin, 0u }")
+			"DeclarativeStoryboardActionKind::Begin, 0u, "
+			"DeclarativeHandoffBehavior::Compose")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"{ DeclarativeStoryboardActionKind::Stop, 0u }")
+			"{ DeclarativeStoryboardActionKind::Remove, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace }")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DeclarativeStoryboardActionKind::Seek, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace, 40ull")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DeclarativeStoryboardActionKind::SetSpeedRatio, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace, 0ull, 2.000000")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"{ DeclarativeStoryboardActionKind::SkipToFill, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace }")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
 			"BindingValue(Thickness(7.f, 7.f, 7.f, 7.f))")
@@ -3762,6 +3835,67 @@ bool RunDesignerSelfTest(std::wstring& report)
 		+ L", inherited=" + SelfTestFlag(generatedExpandedStyleInheritance)
 		+ L", identity=" + SelfTestFlag(runtimeXamlIdentityReady)
 		+ L", rollback=" + SelfTestFlag(runtimeXamlRollbackReady)
+		+ L", valueDetail="
+		+ std::to_wstring(xamlAction && ReadControlStringProperty(
+			xamlAction, L"Content") == L"动态更新值") + L"/"
+		+ std::to_wstring(xamlButton && !xamlButton->IsDefault) + L"/"
+		+ std::to_wstring(xamlButton
+			? xamlButton->BorderThickness.MaxEdge() : -1.0f) + L"/"
+		+ std::to_wstring(xamlButton ? xamlButton->FontSize : -1.0) + L"/"
+		+ std::to_wstring(xamlAction && xamlAction->Width.IsFixed()) + L"/"
+		+ std::to_wstring(xamlAction ? xamlAction->Width.value : -1.0f) + L"/"
+		+ std::to_wstring(xamlAction && cui::framework::StyleAccess::
+			DocumentStyles(*xamlAction) != nullptr)
+		+ L", triggerDetail="
+		+ std::to_wstring(xamlTriggerApplied) + L"/"
+		+ std::to_wstring(xamlExitControlPending) + L"/"
+		+ std::to_wstring(xamlExitControlCommitted) + L"/"
+		+ std::to_wstring(xamlTriggerRestored) + L"/"
+		+ std::to_wstring(xamlMultiTriggerInactive) + L"/"
+		+ std::to_wstring(xamlMultiTriggerApplied) + L"/"
+		+ std::to_wstring(xamlMultiTriggerRestored) + L"/"
+		+ std::to_wstring(xamlDataTriggerInactive) + L"/"
+		+ std::to_wstring(xamlDataTriggerApplied) + L"/"
+		+ std::to_wstring(xamlDataTriggerRestored) + L"/"
+		+ std::to_wstring(xamlMultiDataTriggerInactive) + L"/"
+		+ std::to_wstring(xamlMultiDataTriggerApplied) + L"/"
+		+ std::to_wstring(xamlMultiDataTriggerRestored)
+		+ L", generatedDetail="
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledStyleDataConditionOp "
+			"__styleSheet_program_data_conditions") != std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"class CuiGeneratedControlTemplate final") != std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"static const CompiledInteractionProgramView "
+			"__cuiInteractionProgram") != std::string::npos) + L"/"
+		+ std::to_wstring(runtimeXamlCompiledTargetOrder) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionKeyFrameOp "
+			"__styleSheet_program_key_frames") != std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"5714u, { 0.0, 0.0 } }") != std::string::npos) + L"/"
+		+ std::to_wstring(naturalDurationLoweringCount >= 2) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"DeclarativeStoryboardActionKind::Begin, 0u, "
+			"DeclarativeHandoffBehavior::Compose") != std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"{ DeclarativeStoryboardActionKind::Remove, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace }")
+			!= std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"DeclarativeStoryboardActionKind::Seek, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace, 40ull")
+			!= std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"DeclarativeStoryboardActionKind::SetSpeedRatio, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace, 0ull, 2.000000")
+			!= std::string::npos) + L"/"
+		+ std::to_wstring(xamlStyleGeneratedCpp.find(
+			"{ DeclarativeStoryboardActionKind::SkipToFill, 0u, "
+			"DeclarativeHandoffBehavior::SnapshotAndReplace }")
+			!= std::string::npos) + L"/"
+		+ std::to_wstring(generatedExpandedStyleInheritance)
 		+ L", error=" + runtimeXamlFrontendError + L"]");
 	DesignerStyleSheet cyclicStyles;
 	DesignerStyleRule cyclicA;
@@ -9498,11 +9632,11 @@ bool RunDesignerSelfTest(std::wstring& report)
               <VisualStateGroup.Transitions>
                 <VisualTransition To="Active" GeneratedDuration="0:0:0.100">
                   <VisualTransition.Storyboard>
-                    <Storyboard>
+                    <Storyboard BeginTime="0:0:0.010" SpeedRatio="1.25">
                       <DoubleAnimation Storyboard.TargetName="chrome"
                           Storyboard.TargetProperty="(Canvas.Left)"
                           To="{StaticResource TransitionRadius}"
-						  Duration="0:0:0.100" RepeatBehavior="0.5x"
+						  Duration="Automatic" RepeatBehavior="0.5x"
 						  AutoReverse="true" FillBehavior="Stop" SpeedRatio="2"
 						  IsAdditive="true" IsCumulative="true"
 						  AccelerationRatio="0.2" DecelerationRatio="0.3" />
@@ -9520,7 +9654,10 @@ bool RunDesignerSelfTest(std::wstring& report)
                           Value="{StaticResource ActiveColor}" />
                 </VisualState.Setters>
                 <VisualState.Storyboard>
-                  <Storyboard>
+                  <Storyboard BeginTime="0:0:0.025" Duration="0:0:0.350"
+					RepeatBehavior="2x" AutoReverse="true" FillBehavior="Stop"
+					SpeedRatio="1.5" AccelerationRatio="0.1"
+					DecelerationRatio="0.2">
 					<DoubleAnimationUsingKeyFrames Storyboard.TargetName="chrome"
 											 Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
 										 RepeatBehavior="Forever" AutoReverse="true"
@@ -9532,8 +9669,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 					<DoubleAnimation Storyboard.TargetName="chrome"
 						Storyboard.TargetProperty="(Canvas.Left)"
 						By="{StaticResource StateIncrement}"
-						IsAdditive="true" IsCumulative="true"
-						Duration="0:0:0.100" />
+						IsAdditive="true" IsCumulative="true" />
 					<ThicknessAnimation Storyboard.TargetName="chrome"
 						Storyboard.TargetProperty="Padding"
 						To="{StaticResource ActivePadding}"
@@ -9575,6 +9711,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& stateDocument.Components.front().VisualStateGroups.front()
 				.Transitions.front().Animations.front().RepeatCount == 0.5
 			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().DurationMilliseconds == 1000
+			&& stateDocument.Components.front().VisualStateGroups.front()
 				.Transitions.front().Animations.front().AutoReverse
 			&& stateDocument.Components.front().VisualStateGroups.front()
 				.Transitions.front().Animations.front().IsAdditive
@@ -9592,7 +9730,33 @@ bool RunDesignerSelfTest(std::wstring& report)
 				.Transitions.front().Animations.front().DecelerationRatio - 0.3)
 				< 0.0001
 			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().StoryboardTiming.BeginTimeMilliseconds == 10
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().StoryboardTiming.SpeedRatio - 1.25) < 0.0001
+			&& stateDocument.Components.front().VisualStateGroups.front()
 				.States.size() > 1
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.BeginTimeMilliseconds == 25
+			&& !stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.DurationAutomatic
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.DurationMilliseconds == 350
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.RepeatBehavior
+					== DesignerRepeatBehaviorKind::Count
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.RepeatCount - 2.0) < 0.0001
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.AutoReverse
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.FillBehavior
+					== DesignerTimelineFillBehavior::Stop
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.SpeedRatio - 1.5) < 0.0001
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.AccelerationRatio - 0.1) < 0.0001
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].StoryboardTiming.DecelerationRatio - 0.2) < 0.0001
 			&& !stateDocument.Components.front().VisualStateGroups.front()
 				.States[1].Animations.empty()
 			&& stateDocument.Components.front().VisualStateGroups.front()
@@ -9612,6 +9776,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 				.States[1].Animations[1].IsAdditive
 			&& stateDocument.Components.front().VisualStateGroups.front()
 				.States[1].Animations[1].IsCumulative
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[1].DurationMilliseconds == 1000
 			&& stateDocument.Components.front().VisualStateGroups.front()
 				.States[1].Animations[1].ByUsesResource
 			&& stateDocument.Components.front().VisualStateGroups.front()
@@ -9634,6 +9800,30 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& stateDocument.Components.front().VisualStateGroups.front()
 				.States[1].Animations[3].KeyFrames.front().ResourceKey
 					== L"ActiveColor";
+		DesignerModel::DesignDocument stateSnapshotRoundTrip;
+		const bool timingSnapshotRoundTrip = stateParsed
+			&& DesignerModel::DesignDocumentSerializer::FromXml(
+				DesignerModel::DesignDocumentSerializer::ToXml(stateDocument),
+				stateSnapshotRoundTrip, &stateError)
+			&& EquivalentDocumentContent(
+				stateSnapshotRoundTrip, stateDocument);
+		bool timingXamlRoundTrip = false;
+		if (stateParsed)
+		{
+			try
+			{
+				DesignerModel::DesignDocument canonicalStateDocument;
+				timingXamlRoundTrip = DesignerModel::XamlDocumentParser::FromXaml(
+					DesignerModel::XamlDocumentSerializer::ToXaml(stateDocument),
+					canonicalStateDocument, &stateError)
+					&& EquivalentXamlContent(
+						canonicalStateDocument, stateDocument);
+			}
+			catch (const std::exception& error)
+			{
+				stateError = Convert::Utf8ToUnicode(error.what());
+			}
+		}
 		auto invalidResources = stateCanvas.GetDocumentStyleSheet();
 		for (auto& resource : invalidResources.Resources)
 			if (resource.Key == L"StateIncrement")
@@ -9653,8 +9843,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& preservedScale->Value.Kind == DesignerStyleValueKind::Double
 			&& preservedScale->Value.Text == L"3";
 		AppendFailure(failures,
-			stateParsed && stateApplied && timingPreserved && invalidTypeRejected
-			&& oldResourcePreserved,
+			stateParsed && stateApplied && timingPreserved
+			&& timingSnapshotRoundTrip && timingXamlRoundTrip
+			&& invalidTypeRejected && oldResourcePreserved,
 			L"unused component VisualState Setter/Storyboard resources were not validated transactionally: "
 				+ stateError);
 	}

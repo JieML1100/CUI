@@ -1806,11 +1806,21 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| Canvas::GetLeft(*(rootPart)) >= 24.0f)
 			return fail(L"FeatureCard 关键帧 Storyboard 未实际推进。");
 		if (!card->RaiseStopPulse()
+			|| !card->HasActiveVisualStateAnimations()
+			|| rootPart->GetPropertyValueSource(Control::CanvasLeftProperty())
+				!= DependencyPropertyValueSource::Animation)
+			return fail(L"FeatureCard StopStoryboard 未保持 next-tick 控制语义。");
+		if (!cui::framework::PresentationAccess::AdvanceVisualStateAnimations(
+				*card, pulseTick + 121)
 			|| card->HasActiveVisualStateAnimations()
 			|| std::abs(Canvas::GetLeft(*(rootPart)) - 12.0f) > 0.001f
 			|| rootPart->GetPropertyValueSource(Control::CanvasLeftProperty())
-				!= DependencyPropertyValueSource::VisualState)
-			return fail(L"FeatureCard StopStoryboard 未恢复 VisualState 值源。");
+				!= DependencyPropertyValueSource::Animation
+			|| rootPart->GetPropertyExpressionKind(
+				Control::CanvasLeftProperty(),
+				DependencyPropertyValueSource::Animation)
+				!= DependencyPropertyExpressionKind::Animation)
+			return fail(L"FeatureCard StopStoryboard 未在下一 tick 恢复 VisualState 值并保留可控动画源。");
 
 		const auto sourceBefore = _featureInvocations;
 		const auto bubbleBefore = _featureBubbleInvocations;
@@ -3354,10 +3364,14 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			triggerButton->BorderThickness.MaxEdge() - 4.0f) > 0.001f)
 			return fail(L"MultiTrigger 属性/状态 AND 条件未生效。");
 		if (!_dataContext->SetValue(L"WpfStatus", std::wstring(L"Idle"))
+			|| !triggerButton->HasActiveVisualStateAnimations())
+			return fail(L"DataTrigger ExitActions StopStoryboard 未保持 next-tick 控制语义。");
+		if (!cui::framework::PresentationAccess::AdvanceVisualStateAnimations(
+				*triggerButton, stylePulseTick + 121)
 			|| triggerButton->HasActiveVisualStateAnimations()
 			|| std::abs(triggerButton->FontSize - 13.0) > 0.001
 			|| triggerButton->IsDefault)
-			return fail(L"DataTrigger ExitActions StopStoryboard 或样式回退未生效。");
+			return fail(L"DataTrigger ExitActions StopStoryboard 未在下一 tick 回退样式值。");
 		(void)_dataContext->SetValue(L"WpfIsAdmin", false);
 
 		auto* templateList = dynamic_cast<ListBox*>(

@@ -310,6 +310,11 @@ enum class DesignerAnimationKind : unsigned char
 	Size,
 	Matrix,
 	Object,
+	Int32,
+	Int64,
+	Single,
+	Boolean,
+	String,
 };
 
 enum class DesignerEasingKind : unsigned char
@@ -318,6 +323,14 @@ enum class DesignerEasingKind : unsigned char
 	Quadratic,
 	Cubic,
 	Sine,
+	Back,
+	Bounce,
+	Circle,
+	Elastic,
+	Exponential,
+	Power,
+	Quartic,
+	Quintic,
 };
 
 enum class DesignerEasingMode : unsigned char
@@ -325,6 +338,14 @@ enum class DesignerEasingMode : unsigned char
 	EaseIn,
 	EaseOut,
 	EaseInOut,
+};
+
+struct DesignerEasingParameters final
+{
+	double Primary = 0.0;
+	double Secondary = 0.0;
+
+	bool operator==(const DesignerEasingParameters&) const = default;
 };
 
 enum class DesignerKeyFrameKind : unsigned char
@@ -348,6 +369,25 @@ enum class DesignerTimelineFillBehavior : unsigned char
 	Stop,
 };
 
+struct DesignerStoryboardTiming final
+{
+	unsigned long long BeginTimeMilliseconds = 0;
+	bool DurationAutomatic = true;
+	unsigned long long DurationMilliseconds = 0;
+	DesignerRepeatBehaviorKind RepeatBehavior =
+		DesignerRepeatBehaviorKind::Count;
+	double RepeatCount = 1.0;
+	unsigned long long RepeatDurationMilliseconds = 0;
+	bool AutoReverse = false;
+	DesignerTimelineFillBehavior FillBehavior =
+		DesignerTimelineFillBehavior::HoldEnd;
+	double SpeedRatio = 1.0;
+	double AccelerationRatio = 0.0;
+	double DecelerationRatio = 0.0;
+
+	bool operator==(const DesignerStoryboardTiming&) const = default;
+};
+
 struct DesignerAnimationKeyFrame
 {
 	DesignerKeyFrameKind Kind = DesignerKeyFrameKind::Linear;
@@ -361,6 +401,9 @@ struct DesignerAnimationKeyFrame
 	float KeySplineY1 = 0.0f;
 	float KeySplineX2 = 1.0f;
 	float KeySplineY2 = 1.0f;
+	/** Remaining WPF TimeSpan ticks (100 ns) after whole milliseconds. */
+	uint16_t KeyTimeSubMillisecondTicks = 0;
+	DesignerEasingParameters EasingParameters;
 
 	bool operator==(const DesignerAnimationKeyFrame&) const = default;
 };
@@ -385,6 +428,8 @@ struct DesignerVisualStateAnimation
 	DesignerStyleValue By;
 	bool IsAdditive = false;
 	bool IsCumulative = false;
+	DeclarativePathAnimationHeader Path;
+	std::vector<DeclarativePathAnimationSegment> PathSegments;
 	unsigned long long BeginTimeMilliseconds = 0;
 	unsigned long long DurationMilliseconds = 0;
 	DesignerRepeatBehaviorKind RepeatBehavior =
@@ -399,9 +444,20 @@ struct DesignerVisualStateAnimation
 	double DecelerationRatio = 0.0;
 	DesignerEasingKind Easing = DesignerEasingKind::Linear;
 	DesignerEasingMode EasingMode = DesignerEasingMode::EaseOut;
+	DesignerEasingParameters EasingParameters;
 	std::vector<DesignerAnimationKeyFrame> KeyFrames;
 
 	bool operator==(const DesignerVisualStateAnimation&) const = default;
+};
+
+/** One nested WPF ParallelTimeline with target-independent timing. */
+struct DesignerTimelineGroup
+{
+	DesignerStoryboardTiming Timing;
+	std::vector<DesignerVisualStateAnimation> Animations;
+	std::vector<DesignerTimelineGroup> Children;
+
+	bool operator==(const DesignerTimelineGroup&) const = default;
 };
 
 enum class DesignerStoryboardActionKind : unsigned char
@@ -410,13 +466,30 @@ enum class DesignerStoryboardActionKind : unsigned char
 	Pause,
 	Resume,
 	Stop,
+	Remove,
+	Seek,
+	SetSpeedRatio,
+	SkipToFill,
+};
+
+enum class DesignerHandoffBehavior : unsigned char
+{
+	SnapshotAndReplace,
+	Compose,
 };
 
 struct DesignerEventTriggerAction
 {
 	DesignerStoryboardActionKind Kind = DesignerStoryboardActionKind::Begin;
 	std::wstring StoryboardName;
+	/** Authored StaticResource key; normalized timeline payload remains immutable. */
+	std::wstring StoryboardResourceKey;
 	std::vector<DesignerVisualStateAnimation> Animations;
+	std::vector<DesignerTimelineGroup> TimelineGroups;
+	DesignerStoryboardTiming StoryboardTiming;
+	DesignerHandoffBehavior Handoff = DesignerHandoffBehavior::SnapshotAndReplace;
+	unsigned long long SeekOffsetMilliseconds = 0;
+	double SpeedRatio = 1.0;
 
 	bool operator==(const DesignerEventTriggerAction&) const = default;
 };
@@ -432,10 +505,14 @@ struct DesignerEventTrigger
 struct DesignerVisualState
 {
 	std::wstring Name;
+	/** Authored StaticResource key; normalized timeline payload remains immutable. */
+	std::wstring StoryboardResourceKey;
 	std::vector<DesignerVisualStateCondition> Conditions;
 	std::vector<std::wstring> EventNames;
 	std::vector<DesignerVisualStateSetter> Setters;
 	std::vector<DesignerVisualStateAnimation> Animations;
+	std::vector<DesignerTimelineGroup> TimelineGroups;
+	DesignerStoryboardTiming StoryboardTiming;
 
 	bool operator==(const DesignerVisualState&) const = default;
 };
@@ -444,10 +521,15 @@ struct DesignerVisualTransition
 {
 	std::wstring FromState;
 	std::wstring ToState;
+	/** Authored StaticResource key; normalized timeline payload remains immutable. */
+	std::wstring StoryboardResourceKey;
 	unsigned long long GeneratedDurationMilliseconds = 0;
 	DesignerEasingKind GeneratedEasing = DesignerEasingKind::Linear;
 	DesignerEasingMode GeneratedEasingMode = DesignerEasingMode::EaseOut;
+	DesignerEasingParameters GeneratedEasingParameters;
 	std::vector<DesignerVisualStateAnimation> Animations;
+	std::vector<DesignerTimelineGroup> TimelineGroups;
+	DesignerStoryboardTiming StoryboardTiming;
 
 	bool operator==(const DesignerVisualTransition&) const = default;
 };

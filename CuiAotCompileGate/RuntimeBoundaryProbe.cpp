@@ -20,6 +20,9 @@ static_assert(CUI_ENABLE_DYNAMIC_XAML == 0,
 	"AOT consumers must compile against the production CUI ABI");
 static_assert(CUI_ENABLE_DESIGN_METADATA == 0,
 	"AOT consumers must not expose dependency-property design metadata");
+static_assert(std::same_as<
+	decltype(Control::OpacityProperty()), const DependencyProperty&>,
+	"AOT consumers must retain the whole-Control Opacity property identity");
 
 template<typename T>
 concept HasDynamicXamlDescriptor = requires(const T& value)
@@ -801,7 +804,7 @@ static_assert(!HasStyleRemoveResource<ControlStyleSheet>);
 static_assert(!HasStyleClearResources<ControlStyleSheet>);
 static_assert(!HasStyleRevision<ControlStyleSheet>);
 static_assert(!HasStyleSubscribeChanged<ControlStyleSheet>);
-static_assert(CompiledStyleProgramViewVersion == 5);
+static_assert(CompiledStyleProgramViewVersion == 18);
 static_assert(std::is_same_v<
 	decltype(CompiledStyleProgramView{}.DataPaths),
 	std::span<const CompiledBindingPathView>>);
@@ -835,8 +838,14 @@ static_assert(std::same_as<
 	decltype(CompiledStyleProgramView{}.KeyFrames),
 	std::span<const CompiledInteractionKeyFrameOp>>);
 static_assert(std::same_as<
+	decltype(CompiledStyleProgramView{}.PathSegments),
+	std::span<const DeclarativePathAnimationSegment>>);
+static_assert(std::same_as<
 	decltype(CompiledStyleProgramView{}.Animations),
 	std::span<const CompiledInteractionAnimationOp>>);
+static_assert(std::same_as<
+	decltype(CompiledStyleProgramView{}.TimelineGroups),
+	std::span<const CompiledInteractionTimelineGroupOp>>);
 static_assert(std::same_as<
 	decltype(CompiledStyleProgramView{}.Storyboards),
 	std::span<const CompiledInteractionStoryboardOp>>);
@@ -886,7 +895,7 @@ static_assert(!HasLegacyInteractionInstall<cui::framework::TemplateAccess>);
 static_assert(!HasLegacyInteractionInstall<cui::framework::XamlAccess>);
 static_assert(!HasStringVisualStateNavigation<Control>);
 static_assert(HasTypedVisualStateNavigation<Control>);
-static_assert(CompiledInteractionProgramViewVersion == 2);
+static_assert(CompiledInteractionProgramViewVersion == 16);
 static_assert(CompiledInteractionInvalidIndex == UINT32_MAX);
 static_assert(sizeof(VisualStateGroupToken) == sizeof(std::uint64_t));
 static_assert(sizeof(VisualStateToken) == sizeof(std::uint64_t));
@@ -908,8 +917,19 @@ static_assert(CompiledInteractionRecord<CompiledStoryboardObjectPathOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionPropertyOperand>);
 static_assert(CompiledInteractionRecord<CompiledInteractionConditionOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionSetterOp>);
+static_assert(CompiledInteractionRecord<DeclarativeEasingParameters>);
+static_assert(std::same_as<decltype(
+	DeclarativeEasingParameters{}.Primary), double>);
+static_assert(std::same_as<decltype(
+	DeclarativeEasingParameters{}.Secondary), double>);
+static_assert(DeclarativeEasingParameters{}.Primary == 0.0);
+static_assert(DeclarativeEasingParameters{}.Secondary == 0.0);
 static_assert(CompiledInteractionRecord<CompiledInteractionKeyFrameOp>);
+static_assert(std::same_as<decltype(
+	CompiledInteractionKeyFrameOp{}.KeyTimeSubMillisecondTicks), std::uint16_t>);
+static_assert(CompiledInteractionKeyFrameOp{}.KeyTimeSubMillisecondTicks == 0);
 static_assert(CompiledInteractionRecord<CompiledInteractionAnimationOp>);
+static_assert(CompiledInteractionRecord<CompiledInteractionTimelineGroupOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionStateOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionTransitionOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionGroupOp>);
@@ -917,6 +937,12 @@ static_assert(CompiledInteractionRecord<CompiledInteractionStoryboardOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionActionOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionEventTriggerOp>);
 static_assert(CompiledInteractionRecord<CompiledInteractionProgramView>);
+static_assert(std::same_as<
+	decltype(CompiledInteractionProgramView{}.TimelineGroups),
+	std::span<const CompiledInteractionTimelineGroupOp>>);
+static_assert(std::same_as<
+	decltype(CompiledInteractionProgramView{}.PathSegments),
+	std::span<const DeclarativePathAnimationSegment>>);
 static_assert(std::same_as<
 	decltype(CompiledInteractionProgramView{}.Version), std::uint32_t>);
 static_assert(std::same_as<
@@ -931,4 +957,8 @@ static_assert(std::same_as<
 	decltype(CompiledInteractionTransitionOp{}.ToStateIndex), std::uint32_t>);
 static_assert(std::same_as<
 	decltype(CompiledInteractionActionOp{}.StoryboardIndex), std::uint32_t>);
+static_assert(std::same_as<
+	decltype(CompiledInteractionActionOp{}.SeekOffsetMilliseconds), std::uint64_t>);
+static_assert(std::same_as<
+	decltype(CompiledInteractionActionOp{}.SpeedRatio), double>);
 static_assert(HasCompiledInteractionInstall<cui::framework::TemplateAccess>);

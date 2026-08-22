@@ -27,6 +27,24 @@ constexpr float DEG_TO_RAD = std::numbers::pi_v<float> / 180.0f;
 constexpr float OUTLINE_OFFSET = 1.0f;
 
 namespace {
+	class GraphicsWorkClock final {
+	public:
+		GraphicsWorkClock() noexcept { (void)::QueryPerformanceCounter(&_start); }
+		double ElapsedMicroseconds() const noexcept {
+			LARGE_INTEGER now{};
+			(void)::QueryPerformanceCounter(&now);
+			static const LONGLONG frequency = []() noexcept {
+				LARGE_INTEGER value{};
+				return ::QueryPerformanceFrequency(&value) && value.QuadPart > 0
+					? value.QuadPart : LONGLONG{ 1 };
+			}();
+			return static_cast<double>(now.QuadPart - _start.QuadPart)
+				* 1'000'000.0 / static_cast<double>(frequency);
+		}
+	private:
+		LARGE_INTEGER _start{};
+	};
+
 	// DirectWrite stores drawing effects on the reusable text layout. Selection
 	// foreground is a one-frame paint concern (as in WPF's text selection
 	// renderer), so every effect draw must leave the caller's layout clean.
@@ -57,8 +75,8 @@ namespace {
 		ComPtr<ID2D1Device> d2dDevice;
 		uint64_t generation = 0;
 		std::atomic<uint64_t> publishedGeneration{ 0 };
-		bool supportsVideo = false;
-		bool isHardware = false;
+		GraphicsSharedD3DDeviceInfo deviceInfo{};
+		bool forceWarpForTesting = false;
 	};
 
 	SharedD2D11Resources& Shared() {
@@ -78,8 +96,7 @@ namespace {
 		s.dxgiDevice.Reset();
 		s.d3dContext.Reset();
 		s.d3dDevice.Reset();
-		s.supportsVideo = false;
-		s.isHardware = false;
+		s.deviceInfo = {};
 	}
 
 	HRESULT CreateSharedDeviceIfNeededLocked(SharedD2D11Resources& s) {
@@ -109,7 +126,7 @@ namespace {
 		ComPtr<ID3D11Device> dev;
 		ComPtr<ID3D11DeviceContext> ctx;
 		bool supportsVideo = true;
-		bool isHardware = true;
+		bool isHardware = !s.forceWarpForTesting;
 		auto tryCreate = [&](D3D_DRIVER_TYPE driverType,
 			UINT attemptFlags, bool& videoSupport) {
 			dev.Reset();
@@ -146,8 +163,10 @@ namespace {
 			return result;
 		};
 
-		HRESULT hr = tryCreateWithDebugFallback(
-			D3D_DRIVER_TYPE_HARDWARE, supportsVideo);
+		HRESULT hr = s.forceWarpForTesting
+			? E_FAIL
+			: tryCreateWithDebugFallback(
+				D3D_DRIVER_TYPE_HARDWARE, supportsVideo);
 		if (FAILED(hr)) {
 			isHardware = false;
 			hr = tryCreateWithDebugFallback(
@@ -187,10 +206,42 @@ namespace {
 		s.d3dContext = ctx;
 		s.dxgiDevice = dxgiDevice;
 		s.d2dDevice = d2dDevice;
-		s.supportsVideo = supportsVideo;
-		s.isHardware = isHardware;
 		++s.generation;
 		if (s.generation == 0) ++s.generation;
+		GraphicsSharedD3DDeviceInfo deviceInfo{};
+		deviceInfo.Generation = s.generation;
+		deviceInfo.SupportsVideo = supportsVideo;
+		deviceInfo.IsHardware = isHardware;
+		deviceInfo.FeatureLevel = static_cast<uint32_t>(obtained);
+		ComPtr<IDXGIAdapter> adapter;
+		ComPtr<IDXGIAdapter1> adapter1;
+		DXGI_ADAPTER_DESC1 adapterDescription{};
+		if (SUCCEEDED(dxgiDevice->GetAdapter(adapter.GetAddressOf()))
+			&& adapter && SUCCEEDED(adapter.As(&adapter1)) && adapter1
+			&& SUCCEEDED(adapter1->GetDesc1(&adapterDescription)))
+		{
+			deviceInfo.IsSoftwareAdapter =
+				(adapterDescription.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+			deviceInfo.VendorId = adapterDescription.VendorId;
+			deviceInfo.DeviceId = adapterDescription.DeviceId;
+			deviceInfo.SubSysId = adapterDescription.SubSysId;
+			deviceInfo.Revision = adapterDescription.Revision;
+			deviceInfo.AdapterLuid =
+				(static_cast<uint64_t>(static_cast<uint32_t>(
+					adapterDescription.AdapterLuid.HighPart)) << 32)
+				| static_cast<uint32_t>(
+					adapterDescription.AdapterLuid.LowPart);
+			deviceInfo.DedicatedVideoMemoryBytes =
+				static_cast<uint64_t>(adapterDescription.DedicatedVideoMemory);
+			deviceInfo.DedicatedSystemMemoryBytes =
+				static_cast<uint64_t>(adapterDescription.DedicatedSystemMemory);
+			deviceInfo.SharedSystemMemoryBytes =
+				static_cast<uint64_t>(adapterDescription.SharedSystemMemory);
+			(void)::wcsncpy_s(
+				deviceInfo.AdapterDescription,
+				adapterDescription.Description, _TRUNCATE);
+		}
+		s.deviceInfo = deviceInfo;
 		s.publishedGeneration.store(s.generation, std::memory_order_release);
 		return S_OK;
 	}
@@ -252,11 +303,7 @@ HRESULT Graphics_AcquireSharedD3DDevice(
 	if (d3dContext) s.d3dContext.CopyTo(d3dContext);
 	if (dxgiDevice) s.dxgiDevice.CopyTo(dxgiDevice);
 	if (d2dDevice) s.d2dDevice.CopyTo(d2dDevice);
-	if (info) {
-		info->Generation = s.generation;
-		info->SupportsVideo = s.supportsVideo;
-		info->IsHardware = s.isHardware;
-	}
+	if (info) *info = s.deviceInfo;
 	return S_OK;
 }
 
@@ -276,8 +323,7 @@ HRESULT Graphics_RotateSharedD3DDeviceForTesting(
 	auto previousD3DContext = s.d3dContext;
 	auto previousDxgiDevice = s.dxgiDevice;
 	auto previousD2DDevice = s.d2dDevice;
-	const bool previousSupportsVideo = s.supportsVideo;
-	const bool previousIsHardware = s.isHardware;
+	const auto previousDeviceInfo = s.deviceInfo;
 	ResetSharedDeviceLocked(s);
 	const HRESULT hr = CreateSharedDeviceIfNeededLocked(s);
 	if (FAILED(hr)) {
@@ -285,16 +331,17 @@ HRESULT Graphics_RotateSharedD3DDeviceForTesting(
 		s.d3dContext = std::move(previousD3DContext);
 		s.dxgiDevice = std::move(previousDxgiDevice);
 		s.d2dDevice = std::move(previousD2DDevice);
-		s.supportsVideo = previousSupportsVideo;
-		s.isHardware = previousIsHardware;
+		s.deviceInfo = previousDeviceInfo;
 		return hr;
 	}
-	if (info) {
-		info->Generation = s.generation;
-		info->SupportsVideo = s.supportsVideo;
-		info->IsHardware = s.isHardware;
-	}
+	if (info) *info = s.deviceInfo;
 	return S_OK;
+}
+
+void Graphics_SetForceWarpSharedD3DDeviceForTesting(bool forceWarp) noexcept {
+	auto& s = Shared();
+	std::scoped_lock lock(s.mutex);
+	s.forceWarpForTesting = forceWarp;
 }
 
 ID3D11Device* Graphics_GetSharedD3DDevice() {
@@ -397,7 +444,7 @@ void D2DGraphics::ResetTarget() {
 		AbortCommandRecording();
 	}
 	_transformStack.clear();
-	_geometryClipLayerStack.clear();
+	_opacityLayerDepth = 0u;
 	_geometryClipGeometryStack.clear();
 	pSwapChain.Reset();
 	pTargetBitmap.Reset();
@@ -414,6 +461,7 @@ void D2DGraphics::ResetTarget() {
 	_presentDirtyRect = {};
 	_hasPresentDirtyRect = false;
 	_swapChainHasPresentedFrame = false;
+	_targetOriginTransform = D2D1::Matrix3x2F::Identity();
 }
 
 HRESULT D2DGraphics::ConfigDefaultObjects() {
@@ -433,6 +481,7 @@ HRESULT D2DGraphics::Initialize(const InitOptions& options) {
 	case SurfaceKind::Compatible:
 	case SurfaceKind::Hwnd:
 	case SurfaceKind::DxgiSwapChain:
+	case SurfaceKind::CompositionSurface:
 	case SurfaceKind::CommandRecorder:
 	default:
 		hr = E_INVALIDARG;
@@ -571,20 +620,31 @@ HRESULT D2DGraphics::CreateTargetBitmapForSwapChain(IDXGISwapChain* swapChain) {
 }
 
 HRESULT D2DGraphics::InitializeWithSwapChain(IDXGISwapChain* swapChain) {
+	return InitializeWithSwapChain(swapChain, nullptr);
+}
+
+HRESULT D2DGraphics::InitializeWithSwapChain(
+	IDXGISwapChain* swapChain,
+	ID2D1Device* sharedDevice) {
 	if (!swapChain) {
 		return E_INVALIDARG;
 	}
 	ResetTarget();
-	ComPtr<IDXGIDevice> dxgiDevice;
-	HRESULT hr = swapChain->GetDevice(IID_PPV_ARGS(&dxgiDevice));
-	if (FAILED(hr)) {
-		return hr;
-	}
-
 	ComPtr<ID2D1Device> d2dDevice;
-	hr = _D2DFactory->CreateDevice(dxgiDevice.Get(), &d2dDevice);
-	if (FAILED(hr)) {
-		return hr;
+	HRESULT hr = S_OK;
+	if (sharedDevice) {
+		d2dDevice = sharedDevice;
+	}
+	else {
+		ComPtr<IDXGIDevice> dxgiDevice;
+		hr = swapChain->GetDevice(IID_PPV_ARGS(&dxgiDevice));
+		if (FAILED(hr)) {
+			return hr;
+		}
+		hr = _D2DFactory->CreateDevice(dxgiDevice.Get(), &d2dDevice);
+		if (FAILED(hr)) {
+			return hr;
+		}
 	}
 
 	ComPtr<ID2D1DeviceContext> dc;
@@ -626,6 +686,8 @@ HRESULT D2DGraphics::InitializeCommandRecorder(ID2D1Device* device) {
 void D2DGraphics::BeginRender() {
 	_lastEndDrawHr = S_OK;
 	_lastPresentHr = S_OK;
+	_lastEndDrawMicroseconds = 0.0;
+	_lastPresentMicroseconds = 0.0;
 	if (!pDeviceContext) {
 		_lastEndDrawHr = E_POINTER;
 		return;
@@ -1606,27 +1668,75 @@ void D2DGraphics::PopDrawRect() {
 	if (!ctx) return;
 	ctx->PopAxisAlignedClip();
 }
+bool D2DGraphics::PushOpacity(float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !std::isfinite(opacity)
+		|| opacity < 0.0f || opacity > 1.0f) return false;
+	// Device contexts can own and recycle the backing layer. Opacity groups do
+	// not require a caller-visible ID2D1Layer, so an explicit CreateLayer here
+	// only adds one device-resource allocation to every raster group push.
+	auto params = D2D1::LayerParameters1(
+		D2D1::InfiniteRect(), nullptr,
+		D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+		D2D1::IdentityMatrix(), opacity, nullptr,
+		D2D1_LAYER_OPTIONS1_NONE);
+	ctx->PushLayer(&params, nullptr);
+	++_opacityLayerDepth;
+	return true;
+}
+void D2DGraphics::PopOpacity() {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || _opacityLayerDepth == 0u) return;
+	ctx->PopLayer();
+	--_opacityLayerDepth;
+}
 bool D2DGraphics::PushGeometryClip(ID2D1Geometry* geometry) {
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx || !geometry) return false;
 
-	ComPtr<ID2D1Layer> layer;
-	if (FAILED(ctx->CreateLayer(ctx->GetSize(), &layer)))
+	// ID2D1DeviceContext can manage its layer resource internally. Passing a
+	// null layer lets Direct2D reuse that storage across layers/effect graphs and
+	// avoids one device-resource allocation for every retained surface replay.
+	// Retain the immutable factory geometry before mutating the D2D stack so an
+	// allocation failure cannot leave an unmatched PushLayer in the transaction.
+	try
+	{
+		_geometryClipGeometryStack.emplace_back(geometry);
+	}
+	catch (...)
+	{
 		return false;
-	auto params = D2D1::LayerParameters(
-		D2D1::InfiniteRect(), geometry, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-	ctx->PushLayer(&params, layer.Get());
-	_geometryClipLayerStack.push_back(std::move(layer));
-	_geometryClipGeometryStack.emplace_back(geometry);
+	}
+	auto params = D2D1::LayerParameters1(
+		D2D1::InfiniteRect(), geometry,
+		D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+		D2D1::IdentityMatrix(), 1.0f, nullptr,
+		D2D1_LAYER_OPTIONS1_NONE);
+	ctx->PushLayer(&params, nullptr);
 	return true;
+}
+bool D2DGraphics::PushTransformedRectangleClip(
+	D2D1_RECT_F rect,
+	const D2D1_MATRIX_3X2_F& transform) {
+	if (!_D2DFactory || !std::isfinite(rect.left) || !std::isfinite(rect.top)
+		|| !std::isfinite(rect.right) || !std::isfinite(rect.bottom)
+		|| rect.right <= rect.left || rect.bottom <= rect.top)
+		return false;
+
+	ComPtr<ID2D1RectangleGeometry> rectangle;
+	if (FAILED(_D2DFactory->CreateRectangleGeometry(rect, &rectangle)))
+		return false;
+	ComPtr<ID2D1TransformedGeometry> transformed;
+	if (FAILED(_D2DFactory->CreateTransformedGeometry(
+		rectangle.Get(), &transform, &transformed)))
+		return false;
+	return PushGeometryClip(transformed.Get());
 }
 void D2DGraphics::PopGeometryClip() {
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx || _geometryClipLayerStack.empty()) return;
+	if (!ctx || _geometryClipGeometryStack.empty()) return;
 	ctx->PopLayer();
-	_geometryClipLayerStack.pop_back();
-	if (!_geometryClipGeometryStack.empty())
-		_geometryClipGeometryStack.pop_back();
+	_geometryClipGeometryStack.pop_back();
 }
 bool D2DGraphics::PushRoundClip(float left, float top, float width, float height, float radius) {
 	if (!pDeviceContext || width <= 0.0f || height <= 0.0f || radius <= 0.0f) return false;
@@ -1655,7 +1765,7 @@ void D2DGraphics::PushLocalTransform(
 	D2D1_MATRIX_3X2_F current;
 	ctx->GetTransform(&current);
 	_transformStack.push_back(current);
-	ctx->SetTransform(transform);
+	ctx->SetTransform(transform * _targetOriginTransform);
 	ctx->PushAxisAlignedClip(D2D1::RectF(0.f, 0.f, clipW, clipH), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 }
 void D2DGraphics::PopLocalTransform() {
@@ -1699,7 +1809,7 @@ bool D2DGraphics::BeginCommandRecording() {
 	if (!pDeviceContext || surfaceKind != SurfaceKind::CommandRecorder
 		|| _commandRecording) return false;
 	_transformStack.clear();
-	_geometryClipLayerStack.clear();
+	_opacityLayerDepth = 0u;
 	_geometryClipGeometryStack.clear();
 	_recordingCommandList.Reset();
 	HRESULT hr = pDeviceContext->CreateCommandList(&_recordingCommandList);
@@ -1725,7 +1835,7 @@ HRESULT D2DGraphics::EndCommandRecording(
 	pDeviceContext->SetTarget(nullptr);
 	_commandRecording = false;
 	_transformStack.clear();
-	_geometryClipLayerStack.clear();
+	_opacityLayerDepth = 0u;
 	_geometryClipGeometryStack.clear();
 	if (SUCCEEDED(_lastEndDrawHr))
 		_lastEndDrawHr = _recordingCommandList->Close();
@@ -1749,7 +1859,7 @@ void D2DGraphics::AbortCommandRecording() noexcept {
 	pDeviceContext->SetTarget(nullptr);
 	_recordingCommandList.Reset();
 	_transformStack.clear();
-	_geometryClipLayerStack.clear();
+	_opacityLayerDepth = 0u;
 	_geometryClipGeometryStack.clear();
 	_commandRecording = false;
 }
@@ -1823,20 +1933,29 @@ void D2DGraphics::DrawDxgiSurface(IDXGISurface* surface, float x, float y, float
 	wicDirty = true;
 }
 
-ID2D1LinearGradientBrush* D2DGraphics::CreateLinearGradientBrush(D2D1_GRADIENT_STOP* stops, unsigned int stopcount) {
+ID2D1LinearGradientBrush* D2DGraphics::CreateLinearGradientBrush(
+	D2D1_GRADIENT_STOP* stops,
+	unsigned int stopcount,
+	D2D1_GAMMA gamma) {
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx || !stops || stopcount == 0) return nullptr;
 	ComPtr<ID2D1GradientStopCollection> collection;
-	if (FAILED(ctx->CreateGradientStopCollection(stops, stopcount, &collection))) return nullptr;
+	if (FAILED(ctx->CreateGradientStopCollection(
+		stops, stopcount, gamma, D2D1_EXTEND_MODE_CLAMP, &collection))) return nullptr;
 	ComPtr<ID2D1LinearGradientBrush> brush;
 	if (FAILED(ctx->CreateLinearGradientBrush({}, collection.Get(), &brush))) return nullptr;
 	return brush.Detach();
 }
-ID2D1RadialGradientBrush* D2DGraphics::CreateRadialGradientBrush(D2D1_GRADIENT_STOP* stops, unsigned int stopcount, D2D1_POINT_2F center) {
+ID2D1RadialGradientBrush* D2DGraphics::CreateRadialGradientBrush(
+	D2D1_GRADIENT_STOP* stops,
+	unsigned int stopcount,
+	D2D1_POINT_2F center,
+	D2D1_GAMMA gamma) {
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx || !stops || stopcount == 0) return nullptr;
 	ComPtr<ID2D1GradientStopCollection> collection;
-	if (FAILED(ctx->CreateGradientStopCollection(stops, stopcount, &collection))) return nullptr;
+	if (FAILED(ctx->CreateGradientStopCollection(
+		stops, stopcount, gamma, D2D1_EXTEND_MODE_CLAMP, &collection))) return nullptr;
 	D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES props{};
 	props.center = center;
 	ComPtr<ID2D1RadialGradientBrush> brush;
@@ -1868,10 +1987,11 @@ D2D1_SIZE_F D2DGraphics::Size() {
 }
 
 void D2DGraphics::SetTransform(D2D1_MATRIX_3X2_F matrix) {
-	if (pDeviceContext) pDeviceContext->SetTransform(matrix);
+	if (pDeviceContext)
+		pDeviceContext->SetTransform(matrix * _targetOriginTransform);
 }
 void D2DGraphics::ClearTransform() {
-	if (pDeviceContext) pDeviceContext->SetTransform(D2D1::Matrix3x2F::Identity());
+	if (pDeviceContext) pDeviceContext->SetTransform(_targetOriginTransform);
 }
 
 D2D1_SIZE_F D2DGraphics::GetTextLayoutSize(IDWriteTextLayout* textLayout) {
@@ -2233,9 +2353,14 @@ void HwndGraphics::EndRender() {
 
 // ---------------- CompositionSwapChainGraphics ----------------
 
-CompositionSwapChainGraphics::CompositionSwapChainGraphics(IDXGISwapChain1* swapChain) {
+CompositionSwapChainGraphics::CompositionSwapChainGraphics(
+	IDXGISwapChain1* swapChain,
+	UINT presentSyncInterval,
+	ID2D1Device* sharedDevice) {
 	swapChain1 = swapChain;
-	InitializeWithSwapChain(swapChain);
+	_presentSyncInterval = presentSyncInterval > 4u
+		? 4u : presentSyncInterval;
+	InitializeWithSwapChain(swapChain, sharedDevice);
 }
 
 void CompositionSwapChainGraphics::ReSize(UINT width, UINT height) {
@@ -2271,10 +2396,14 @@ void CompositionSwapChainGraphics::EndRender() {
 		_lastEndDrawHr = E_POINTER;
 		return;
 	}
+	const GraphicsWorkClock endDrawClock;
 	_lastEndDrawHr = pDeviceContext->EndDraw();
+	_lastEndDrawMicroseconds = endDrawClock.ElapsedMicroseconds();
 	_lastPresentHr = S_OK;
 	if (pSwapChain) {
-		_lastPresentHr = PresentSwapChain(1, 0);
+		const GraphicsWorkClock presentClock;
+		_lastPresentHr = PresentSwapChain(_presentSyncInterval, 0);
+		_lastPresentMicroseconds = presentClock.ElapsedMicroseconds();
 	}
 	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET
 		|| IsDeviceRemovedHr(_lastEndDrawHr)

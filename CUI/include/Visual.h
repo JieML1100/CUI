@@ -58,6 +58,8 @@ enum class PresentationInvalidationKind : uint8_t
 	Content = 1u << 0,
 	Geometry = 1u << 1,
 	Composition = 1u << 2,
+	/** Geometry moved by RenderTransform; isolated DComp content may be reused. */
+	Transform = 1u << 3,
 };
 
 inline PresentationInvalidationKind operator|(
@@ -83,6 +85,48 @@ struct PresentationRevisionSnapshot
 	uint64_t Composition = 1;
 };
 
+/** CPU wall-time breakdown for the most recent successful presentation frame. */
+struct PresentationFrameTimingStatistics
+{
+	double LayoutMicroseconds = 0.0;
+	double SceneSynchronizationMicroseconds = 0.0;
+	double CompositionPreparationMicroseconds = 0.0;
+	double TransactionBeginMicroseconds = 0.0;
+	double PrimarySetupMicroseconds = 0.0;
+	double SceneRenderMicroseconds = 0.0;
+	double SurfaceFinalizeMicroseconds = 0.0;
+	double CompositionCommitMicroseconds = 0.0;
+	double TotalMicroseconds = 0.0;
+};
+
+/** CPU work performed while resolving retained scene layers for one frame. */
+struct PresentationPreparationStatistics
+{
+	double ScratchMicroseconds = 0.0;
+	double NodePreparationMicroseconds = 0.0;
+	double SegmentMicroseconds = 0.0;
+	double RootStateMicroseconds = 0.0;
+	double AncestorClipMicroseconds = 0.0;
+	double BoundsMicroseconds = 0.0;
+	double TransformClassificationMicroseconds = 0.0;
+	double LayerAcquireStageMicroseconds = 0.0;
+	double TopologyCommitMicroseconds = 0.0;
+	double GroupStageMicroseconds = 0.0;
+	size_t PreparedNodeCount = 0;
+	size_t SegmentCount = 0;
+	size_t PhysicalLayerRequiredCount = 0;
+	size_t DeferredUnmaterializedCount = 0;
+	size_t EarlyViewportDeferredCount = 0;
+	/** Device-independent D2D mask geometries created during this preparation. */
+	size_t AncestorGeometryMaskMaterializationCount = 0;
+	/** Segment mask bindings satisfied by an already materialized geometry. */
+	size_t AncestorGeometryMaskReuseCount = 0;
+	/** Physical arbitrary-Geometry surfaces containing multiple sibling members. */
+	size_t GeometryRasterGroupCount = 0;
+	/** Logical sibling isolation members packed into those shared surfaces. */
+	size_t GeometryRasterMemberCount = 0;
+};
+
 /** Classification of work performed by the most recent scene frame. */
 struct PresentationFrameStatistics
 {
@@ -93,6 +137,30 @@ struct PresentationFrameStatistics
 	size_t GeometryDirtyNodes = 0;
 	size_t CompositionDirtyNodes = 0;
 	size_t GeometryRecomputedNodes = 0;
+	size_t CompositionTransformOnlyNodes = 0;
+	size_t CompositionOnlySegments = 0;
+	size_t SceneSurfacesOpened = 0;
+	/** Arbitrary Geometry layer pushes submitted for retained scene surfaces. */
+	size_t AncestorGeometryMaskLayerPushCount = 0;
+	/** Raster subtree opacity groups submitted through Direct2D layers. */
+	size_t OpacityLayerPushCount = 0;
+	/** Shared arbitrary-Geometry surfaces updated through a strict partial rect. */
+	size_t GeometryRasterPartialUpdateCount = 0;
+	/** Shared arbitrary-Geometry surfaces conservatively redrawn in full. */
+	size_t GeometryRasterFullReplayCount = 0;
+	/** Nodes replayed because they intersect a shared Geometry damage rect. */
+	size_t GeometryRasterPartialReplayNodes = 0;
+	/** Clean nodes proven disjoint from a shared Geometry damage rect. */
+	size_t GeometryRasterPartialSkippedNodes = 0;
+	/** Total logical-pixel area submitted across shared Geometry partial updates. */
+	uint64_t GeometryRasterPartialDamageArea = 0;
+	double SceneSurfaceOpenMicroseconds = 0.0;
+	double SceneSurfaceCloseMicroseconds = 0.0;
+	double SceneSurfaceEndDrawMicroseconds = 0.0;
+	double SceneSurfacePresentMicroseconds = 0.0;
+	double SceneSurfaceSubmitMicroseconds = 0.0;
+	double SceneCommandRecordMicroseconds = 0.0;
+	double SceneCommandReplayMicroseconds = 0.0;
 	size_t ImmediateDrawNodes = 0;
 	size_t DamageReplayNodes = 0;
 	size_t CommandRecordedNodes = 0;
@@ -101,6 +169,10 @@ struct PresentationFrameStatistics
 	size_t CommandCacheInvalidatedNodes = 0;
 	size_t NativeCommitNodes = 0;
 	size_t CulledNodes = 0;
+	/** Nodes rejected before opening their retained scene swap chain. */
+	size_t PreSurfaceCulledNodes = 0;
+	PresentationPreparationStatistics Preparation;
+	PresentationFrameTimingStatistics Timing;
 };
 
 /** Owns the retained visual relation, transform, clip and dirty-region state. */

@@ -5,6 +5,7 @@
 #include <string>
 #include <limits>
 #include <optional>
+#include <unordered_set>
 #include "ContentControl.h"
 #include "Application.h"
 #include "InputManager.h"
@@ -22,6 +23,7 @@ class WindowUiaProvider;
 class PlatformWindowHost;
 class PresentationRenderHost;
 class PresentationScene;
+class AnimationFrameScheduler;
 class FocusManager;
 
 namespace cui::framework
@@ -112,6 +114,7 @@ private:
 	class Button* ResolveDialogButton(bool cancel) const;
 	void RefreshDefaultedButtons();
 	std::vector<Control*> GetAccessibleControls() const;
+	Control* ResolveAccessibleControl(Control* candidate) const noexcept;
 	Control* ResolveAccessibleRepresentative(
 		Control* control, std::span<Control* const> accessible) const;
 	bool TryGetAccessibilityVirtualFocusedNode(
@@ -151,6 +154,11 @@ private:
 	bool _showInTaskbar = true;
 	UINT_PTR _animTimerId = 0xC001;
 	UINT _animIntervalMs = 0;
+	std::unique_ptr<AnimationFrameScheduler> _animationFrameScheduler;
+	bool _animationUsesLegacyTimer = false;
+	std::vector<ControlWeakReference> _activeDeclarativeAnimationControls;
+	std::vector<ControlWeakReference> _retainedNativeAnimationControls;
+	bool _animationRegistryDegraded = false;
 	bool _contentRenderedRaised = false;
 	CursorKind _currentCursor = CursorKind::Arrow;
 
@@ -192,9 +200,26 @@ private:
 		const RECT& logicalDirty,
 		const RECT& logicalClient) noexcept;
 	void ClearCaptionStates();
-	void RefreshAnimationTimer();
+	void RefreshAnimationTimer() noexcept;
+	bool IsAnimationFrameSchedulerRunningForTesting() const noexcept;
 	void InvalidateControl(class Control* control, float inflateDip = 2.0f, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
+	void InvalidateAnimatedControlsAt(
+		unsigned long long nowMilliseconds,
+		bool immediate = false);
+	void SynchronizeActiveDeclarativeAnimationControl(
+		class Control* control, bool hasRetainedRoots) noexcept;
+	std::vector<class Control*> GetRegisteredDeclarativeAnimationControls();
+	std::vector<class Control*>
+		GetActiveRegisteredDeclarativeAnimationControls();
+	void AdvanceRegisteredDeclarativeAnimationControls(
+		std::span<class Control* const> controls,
+		unsigned long long nowMilliseconds,
+		bool immediate = false);
+	void SynchronizeRetainedNativeAnimationControl(
+		class Control* control, bool hasRetainedAnimation) noexcept;
+	std::vector<class Control*> GetRegisteredNativeAnimationControls();
+	std::vector<class Control*> GetActiveRegisteredNativeAnimationControls();
 	static bool RectIntersects(const RECT& a, const RECT& b);
 	static RECT ToRECT(D2D1_RECT_F rect, int inflatePx = 0);
 
@@ -220,6 +245,7 @@ private:
 	std::unique_ptr<PresentationRenderHost> _renderHost;
 	std::unique_ptr<PresentationScene> _presentationScene;
 	uint64_t _observedResourceGeneration = 0;
+	uint64_t _observedDeviceResourceGeneration = 0;
 	struct TransientPresentationEntry final
 	{
 		ControlWeakReference Root;
@@ -482,12 +508,22 @@ private:
 	uint64_t GetPresentationCommittedFrameCount() const noexcept;
 	uint64_t GetPresentationAbortedFrameCount() const noexcept;
 	uint64_t GetPresentationDeviceRecoveryCount() const noexcept;
+	bool TryGetPresentationSceneLayerPixelDigestForTesting(
+		size_t index,
+		UINT& width,
+		UINT& height,
+		uint64_t& digest,
+		size_t& nonTransparentPixels) const noexcept;
+	bool AcquirePresentationSceneLayerPixelReadbackLeaseForTesting() noexcept;
+	void ReleasePresentationSceneLayerPixelReadbackLeaseForTesting() noexcept;
 	uint64_t GetPresentationLastSurfaceFailureSequence() const noexcept;
 	uint8_t GetPresentationLastFailedSurfaceRole() const noexcept;
 	HRESULT GetPresentationLastFailedEndDrawHr() const noexcept;
 	HRESULT GetPresentationLastFailedPresentHr() const noexcept;
 	size_t GetPresentationNodeCount() const noexcept;
 	size_t GetPresentationDrawingLayerCount() const noexcept;
+	size_t GetPresentationOpacityGroupCount() const noexcept;
+	size_t GetPresentationGroupedNativeVisualCount() const noexcept;
 	PresentationFrameStatistics GetPresentationFrameStatistics() const noexcept;
 	bool UpdateDirtyRect(const RECT& dirty, bool force = false);
 	IDCompositionVisual* GetWebContainerVisual() const;

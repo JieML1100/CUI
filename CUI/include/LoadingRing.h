@@ -32,6 +32,7 @@ public:
 
 	LoadingRing();
 	bool IsAnimationRunning() override;
+	bool HasRetainedNativeAnimation() override { return _active; }
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 protected:

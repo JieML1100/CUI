@@ -117,6 +117,28 @@ namespace
 		return stream.str();
 	}
 
+	std::wstring KeyTimeText(
+		unsigned long long milliseconds,
+		uint16_t subMillisecondTicks)
+	{
+		if (subMillisecondTicks == 0) return TimeSpanText(milliseconds);
+		const auto days = milliseconds / 86400000ULL;
+		milliseconds %= 86400000ULL;
+		const auto hours = milliseconds / 3600000ULL;
+		milliseconds %= 3600000ULL;
+		const auto minutes = milliseconds / 60000ULL;
+		milliseconds %= 60000ULL;
+		const auto seconds = milliseconds / 1000ULL;
+		const auto fractionTicks = (milliseconds % 1000ULL) * 10000ULL
+			+ subMillisecondTicks;
+		std::wostringstream stream;
+		if (days > 0) stream << days << L'.';
+		stream << (days > 0 ? std::setw(2) : std::setw(1)) << std::setfill(L'0')
+			<< hours << L':' << std::setw(2) << minutes << L':'
+			<< std::setw(2) << seconds << L'.' << std::setw(7) << fractionTicks;
+		return stream.str();
+	}
+
 	Element Append(
 		XmlDocument& document,
 		const Element& parent,
@@ -549,6 +571,13 @@ namespace
 				if (mapping == "absolute") Set(brush, "MappingMode", L"Absolute");
 				else if (mapping != "relative")
 					throw std::invalid_argument("Gradient brush MappingMode is invalid");
+				const auto interpolation = value.value(
+					"colorInterpolation", std::string("srgb"));
+				if (interpolation == "scrgb")
+					Set(brush, "ColorInterpolationMode", L"ScRgbLinearInterpolation");
+				else if (interpolation != "srgb")
+					throw std::invalid_argument(
+						"Gradient brush ColorInterpolationMode is invalid");
 				if (type == "linear")
 				{
 					Set(brush, "StartPoint", NumberText(value.value("startX", 0.0))
@@ -861,6 +890,45 @@ namespace
 			}
 		}
 
+		void WriteStoryboardTiming(
+			const Element& storyboard,
+			const DesignerStoryboardTiming& timing)
+		{
+			if (timing.BeginTimeMilliseconds > 0)
+				Set(storyboard, "BeginTime", TimeSpanText(
+					timing.BeginTimeMilliseconds));
+			if (!timing.DurationAutomatic)
+				Set(storyboard, "Duration", TimeSpanText(
+					timing.DurationMilliseconds));
+			switch (timing.RepeatBehavior)
+			{
+			case DesignerRepeatBehaviorKind::Duration:
+				Set(storyboard, "RepeatBehavior", TimeSpanText(
+					timing.RepeatDurationMilliseconds));
+				break;
+			case DesignerRepeatBehaviorKind::Forever:
+				Set(storyboard, "RepeatBehavior", L"Forever");
+				break;
+			case DesignerRepeatBehaviorKind::Count:
+			default:
+				if (timing.RepeatCount != 1.0)
+					Set(storyboard, "RepeatBehavior",
+						NumberText(timing.RepeatCount, 17) + L"x");
+				break;
+			}
+			if (timing.AutoReverse) Set(storyboard, "AutoReverse", L"true");
+			if (timing.FillBehavior == DesignerTimelineFillBehavior::Stop)
+				Set(storyboard, "FillBehavior", L"Stop");
+			if (timing.SpeedRatio != 1.0)
+				Set(storyboard, "SpeedRatio", NumberText(timing.SpeedRatio, 17));
+			if (timing.AccelerationRatio != 0.0)
+				Set(storyboard, "AccelerationRatio",
+					NumberText(timing.AccelerationRatio, 17));
+			if (timing.DecelerationRatio != 0.0)
+				Set(storyboard, "DecelerationRatio",
+					NumberText(timing.DecelerationRatio, 17));
+		}
+
 		void WriteVisualStateAnimation(
 			const Element& storyboard,
 			const DesignComponentDefinition& component,
@@ -881,19 +949,34 @@ namespace
 						: animation.Kind == DesignerAnimationKind::Size
 							? std::string("Size")
 						: animation.Kind == DesignerAnimationKind::Matrix
-							? std::string("Matrix") : std::string("Double");
-			if (animation.Kind == DesignerAnimationKind::Object
+							? std::string("Matrix")
+						: animation.Kind == DesignerAnimationKind::Int32
+							? std::string("Int32")
+						: animation.Kind == DesignerAnimationKind::Int64
+							? std::string("Int64")
+						: animation.Kind == DesignerAnimationKind::Single
+							? std::string("Single")
+						: animation.Kind == DesignerAnimationKind::Boolean
+							? std::string("Boolean")
+						: animation.Kind == DesignerAnimationKind::String
+							? std::string("String") : std::string("Double");
+			const bool discreteOnly = animation.Kind == DesignerAnimationKind::Object
+				|| animation.Kind == DesignerAnimationKind::Boolean
+				|| animation.Kind == DesignerAnimationKind::String;
+			if (discreteOnly
 				&& animation.KeyFrames.empty())
 				throw std::invalid_argument(
 					"ObjectAnimationUsingKeyFrames requires key frames");
-			const auto animationName = valueType + (animation.KeyFrames.empty()
-				? "Animation" : "AnimationUsingKeyFrames");
+			const auto animationName = valueType + (animation.Path.Enabled
+				? "AnimationUsingPath"
+				: animation.KeyFrames.empty()
+					? "Animation" : "AnimationUsingKeyFrames");
 			auto item = Append(_xml, storyboard, animationName);
 			if (!animation.TargetName.empty())
 				Set(item, "Storyboard.TargetName", animation.TargetName);
 			Set(item, "Storyboard.TargetProperty",
 				PublicPropertyName(animation.PropertyName));
-			if (animation.KeyFrames.empty())
+			if (animation.KeyFrames.empty() && !animation.Path.Enabled)
 			{
 				if (animation.HasFrom)
 					Set(item, "From", animation.FromUsesResource
@@ -929,10 +1012,29 @@ namespace
 				break;
 			}
 			if (animation.AutoReverse) Set(item, "AutoReverse", L"true");
-			if (animation.Kind != DesignerAnimationKind::Object)
+			if (!discreteOnly)
 			{
 				if (animation.IsAdditive) Set(item, "IsAdditive", L"true");
-				if (animation.IsCumulative) Set(item, "IsCumulative", L"true");
+				if (animation.IsCumulative
+					&& !(animation.Path.Enabled
+						&& animation.Kind == DesignerAnimationKind::Matrix))
+					Set(item, "IsCumulative", L"true");
+			}
+			if (animation.Path.Enabled)
+			{
+				if (animation.Kind == DesignerAnimationKind::Double
+					&& animation.Path.Source != DeclarativePathAnimationSource::X)
+					Set(item, "Source", animation.Path.Source
+						== DeclarativePathAnimationSource::Y ? L"Y" : L"Angle");
+				if (animation.Kind == DesignerAnimationKind::Matrix)
+				{
+					if (animation.Path.DoesRotateWithTangent)
+						Set(item, "DoesRotateWithTangent", L"true");
+					if (animation.Path.IsOffsetCumulative)
+						Set(item, "IsOffsetCumulative", L"true");
+					if (animation.Path.IsAngleCumulative)
+						Set(item, "IsAngleCumulative", L"true");
+				}
 			}
 			if (animation.FillBehavior == DesignerTimelineFillBehavior::Stop)
 				Set(item, "FillBehavior", L"Stop");
@@ -947,7 +1049,8 @@ namespace
 			auto writeEasing = [&](const Element& owner,
 				const std::string& ownerName,
 				DesignerEasingKind kind,
-				DesignerEasingMode mode)
+				DesignerEasingMode mode,
+				DesignerEasingParameters parameters)
 			{
 				auto easingProperty = Append(_xml, owner,
 					ownerName + ".EasingFunction");
@@ -956,6 +1059,14 @@ namespace
 				{
 				case DesignerEasingKind::Quadratic: easingName = "QuadraticEase"; break;
 				case DesignerEasingKind::Sine: easingName = "SineEase"; break;
+				case DesignerEasingKind::Back: easingName = "BackEase"; break;
+				case DesignerEasingKind::Bounce: easingName = "BounceEase"; break;
+				case DesignerEasingKind::Circle: easingName = "CircleEase"; break;
+				case DesignerEasingKind::Elastic: easingName = "ElasticEase"; break;
+				case DesignerEasingKind::Exponential: easingName = "ExponentialEase"; break;
+				case DesignerEasingKind::Power: easingName = "PowerEase"; break;
+				case DesignerEasingKind::Quartic: easingName = "QuarticEase"; break;
+				case DesignerEasingKind::Quintic: easingName = "QuinticEase"; break;
 				case DesignerEasingKind::Cubic:
 				case DesignerEasingKind::Linear:
 				default: break;
@@ -965,18 +1076,77 @@ namespace
 					Set(easing, "EasingMode",
 						mode == DesignerEasingMode::EaseIn
 							? L"EaseIn" : L"EaseInOut");
+				switch (kind)
+				{
+				case DesignerEasingKind::Back:
+					Set(easing, "Amplitude", NumberText(parameters.Primary, 17));
+					break;
+				case DesignerEasingKind::Bounce:
+					Set(easing, "Bounces", NumberText(parameters.Secondary, 17));
+					Set(easing, "Bounciness", NumberText(parameters.Primary, 17));
+					break;
+				case DesignerEasingKind::Elastic:
+					Set(easing, "Oscillations", NumberText(parameters.Secondary, 17));
+					Set(easing, "Springiness", NumberText(parameters.Primary, 17));
+					break;
+				case DesignerEasingKind::Exponential:
+					Set(easing, "Exponent", NumberText(parameters.Primary, 17));
+					break;
+				case DesignerEasingKind::Power:
+					Set(easing, "Power", NumberText(parameters.Primary, 17));
+					break;
+				default: break;
+				}
 			};
+			if (animation.Path.Enabled)
+			{
+				auto property = Append(_xml, item,
+					animationName + ".PathGeometry");
+				auto geometry = Append(_xml, property, "PathGeometry");
+				auto figure = Append(_xml, geometry, "PathFigure");
+				Set(figure, "StartPoint",
+					NumberText(animation.Path.Start.x) + L","
+					+ NumberText(animation.Path.Start.y));
+				for (const auto& source : animation.PathSegments)
+				{
+					if (source.Kind == DeclarativePathSegmentKind::Move)
+					{
+						figure = Append(_xml, geometry, "PathFigure");
+						Set(figure, "StartPoint",
+							NumberText(source.Point3.x) + L","
+							+ NumberText(source.Point3.y));
+					}
+					else if (source.Kind == DeclarativePathSegmentKind::Line)
+					{
+						auto segment = Append(_xml, figure, "LineSegment");
+						Set(segment, "Point", NumberText(source.Point3.x) + L","
+							+ NumberText(source.Point3.y));
+					}
+					else
+					{
+						auto segment = Append(_xml, figure, "BezierSegment");
+						Set(segment, "Point1", NumberText(source.Point1.x) + L","
+							+ NumberText(source.Point1.y));
+						Set(segment, "Point2", NumberText(source.Point2.x) + L","
+							+ NumberText(source.Point2.y));
+						Set(segment, "Point3", NumberText(source.Point3.x) + L","
+							+ NumberText(source.Point3.y));
+					}
+				}
+				return;
+			}
 			if (animation.KeyFrames.empty())
 			{
 				if (animation.Easing != DesignerEasingKind::Linear)
 					writeEasing(item, animationName,
-						animation.Easing, animation.EasingMode);
+						animation.Easing, animation.EasingMode,
+						animation.EasingParameters);
 				return;
 			}
 			for (const auto& keyFrame : animation.KeyFrames)
 			{
 				std::string prefix;
-				if (animation.Kind == DesignerAnimationKind::Object
+				if (discreteOnly
 					&& keyFrame.Kind != DesignerKeyFrameKind::Discrete)
 					throw std::invalid_argument(
 						"ObjectAnimationUsingKeyFrames only supports DiscreteObjectKeyFrame");
@@ -990,8 +1160,9 @@ namespace
 				}
 				const auto keyFrameName = prefix + valueType + "KeyFrame";
 				auto frame = Append(_xml, item, keyFrameName);
-				Set(frame, "KeyTime", TimeSpanText(
-					keyFrame.KeyTimeMilliseconds));
+				Set(frame, "KeyTime", KeyTimeText(
+					keyFrame.KeyTimeMilliseconds,
+					keyFrame.KeyTimeSubMillisecondTicks));
 				if (keyFrame.UsesResource)
 					Set(frame, "Value", L"{StaticResource "
 						+ keyFrame.ResourceKey + L"}");
@@ -1034,7 +1205,8 @@ namespace
 				if (keyFrame.Kind == DesignerKeyFrameKind::Easing
 					&& keyFrame.Easing != DesignerEasingKind::Linear)
 					writeEasing(frame, keyFrameName,
-						keyFrame.Easing, keyFrame.EasingMode);
+						keyFrame.Easing, keyFrame.EasingMode,
+						keyFrame.EasingParameters);
 				else if (keyFrame.Kind == DesignerKeyFrameKind::Spline)
 					Set(frame, "KeySpline",
 						NumberText(keyFrame.KeySplineX1) + L","
@@ -1044,21 +1216,81 @@ namespace
 			}
 		}
 
+		void WriteTimelineGroup(
+			const Element& parent,
+			const DesignComponentDefinition& component,
+			const DesignerTimelineGroup& group)
+		{
+			auto timeline = Append(_xml, parent, "ParallelTimeline");
+			WriteStoryboardTiming(timeline, group.Timing);
+			for (const auto& animation : group.Animations)
+				WriteVisualStateAnimation(timeline, component, animation);
+			for (const auto& child : group.Children)
+				WriteTimelineGroup(timeline, component, child);
+		}
+
+		void WriteStoryboardResource(
+			const Element& parent,
+			const DesignStoryboardResource& resource)
+		{
+			auto storyboard = Append(_xml, parent, "Storyboard");
+			Set(storyboard, "x:Key", resource.Key);
+			WriteStoryboardTiming(storyboard, resource.Timing);
+			const DesignComponentDefinition emptyComponent;
+			const auto& component = _templateComponent
+				? *_templateComponent : emptyComponent;
+			for (const auto& animation : resource.Animations)
+				WriteVisualStateAnimation(storyboard, component, animation);
+			for (const auto& group : resource.TimelineGroups)
+				WriteTimelineGroup(storyboard, component, group);
+		}
+
 		void WriteGeneratedTransitionEasing(
 			const Element& transition,
 			DesignerEasingKind kind,
-			DesignerEasingMode mode)
+			DesignerEasingMode mode,
+			DesignerEasingParameters parameters)
 		{
 			if (kind == DesignerEasingKind::Linear) return;
 			auto property = Append(
 				_xml, transition, "VisualTransition.GeneratedEasingFunction");
-			const char* easingName = kind == DesignerEasingKind::Quadratic
-				? "QuadraticEase" : kind == DesignerEasingKind::Sine
-					? "SineEase" : "CubicEase";
+			const char* easingName = "CubicEase";
+			switch (kind)
+			{
+			case DesignerEasingKind::Quadratic: easingName = "QuadraticEase"; break;
+			case DesignerEasingKind::Sine: easingName = "SineEase"; break;
+			case DesignerEasingKind::Back: easingName = "BackEase"; break;
+			case DesignerEasingKind::Bounce: easingName = "BounceEase"; break;
+			case DesignerEasingKind::Circle: easingName = "CircleEase"; break;
+			case DesignerEasingKind::Elastic: easingName = "ElasticEase"; break;
+			case DesignerEasingKind::Exponential: easingName = "ExponentialEase"; break;
+			case DesignerEasingKind::Power: easingName = "PowerEase"; break;
+			case DesignerEasingKind::Quartic: easingName = "QuarticEase"; break;
+			case DesignerEasingKind::Quintic: easingName = "QuinticEase"; break;
+			case DesignerEasingKind::Cubic:
+			case DesignerEasingKind::Linear:
+			default: break;
+			}
 			auto easing = Append(_xml, property, easingName);
 			if (mode != DesignerEasingMode::EaseOut)
 				Set(easing, "EasingMode", mode == DesignerEasingMode::EaseIn
 					? L"EaseIn" : L"EaseInOut");
+			switch (kind)
+			{
+			case DesignerEasingKind::Back:
+				Set(easing, "Amplitude", NumberText(parameters.Primary, 17)); break;
+			case DesignerEasingKind::Bounce:
+				Set(easing, "Bounces", NumberText(parameters.Secondary, 17));
+				Set(easing, "Bounciness", NumberText(parameters.Primary, 17)); break;
+			case DesignerEasingKind::Elastic:
+				Set(easing, "Oscillations", NumberText(parameters.Secondary, 17));
+				Set(easing, "Springiness", NumberText(parameters.Primary, 17)); break;
+			case DesignerEasingKind::Exponential:
+				Set(easing, "Exponent", NumberText(parameters.Primary, 17)); break;
+			case DesignerEasingKind::Power:
+				Set(easing, "Power", NumberText(parameters.Primary, 17)); break;
+			default: break;
+			}
 		}
 
 		void WriteVisualStateGroups(
@@ -1088,14 +1320,23 @@ namespace
 								source.GeneratedDurationMilliseconds));
 						WriteGeneratedTransitionEasing(transition,
 							source.GeneratedEasing,
-							source.GeneratedEasingMode);
-						if (!source.Animations.empty())
+							source.GeneratedEasingMode,
+							source.GeneratedEasingParameters);
+						if (!source.StoryboardResourceKey.empty())
+							Set(transition, "Storyboard", L"{StaticResource "
+								+ source.StoryboardResourceKey + L"}");
+						else if (!source.Animations.empty()
+							|| !source.TimelineGroups.empty())
 						{
 							auto property = Append(
 								_xml, transition, "VisualTransition.Storyboard");
 							auto storyboard = Append(_xml, property, "Storyboard");
+							WriteStoryboardTiming(storyboard,
+								source.StoryboardTiming);
 							for (const auto& animation : source.Animations)
 								WriteVisualStateAnimation(storyboard, component, animation);
+							for (const auto& timelineGroup : source.TimelineGroups)
+								WriteTimelineGroup(storyboard, component, timelineGroup);
 						}
 					}
 				}
@@ -1103,6 +1344,9 @@ namespace
 				{
 					auto stateElement = Append(_xml, groupElement, "VisualState");
 					Set(stateElement, "x:Name", state.Name);
+					if (!state.StoryboardResourceKey.empty())
+						Set(stateElement, "Storyboard", L"{StaticResource "
+							+ state.StoryboardResourceKey + L"}");
 					if (!state.Conditions.empty() || !state.EventNames.empty())
 					{
 						auto triggers = Append(
@@ -1129,14 +1373,20 @@ namespace
 						for (const auto& setter : state.Setters)
 							WriteVisualStateSetter(setters, setter);
 					}
-					if (!state.Animations.empty())
+					if (state.StoryboardResourceKey.empty()
+						&& (!state.Animations.empty()
+							|| !state.TimelineGroups.empty()))
 					{
 						auto storyboardProperty = Append(
 							_xml, stateElement, "VisualState.Storyboard");
 						auto storyboard = Append(
 							_xml, storyboardProperty, "Storyboard");
+						WriteStoryboardTiming(storyboard,
+							state.StoryboardTiming);
 						for (const auto& animation : state.Animations)
 							WriteVisualStateAnimation(storyboard, component, animation);
+						for (const auto& timelineGroup : state.TimelineGroups)
+							WriteTimelineGroup(storyboard, component, timelineGroup);
 					}
 				}
 			}
@@ -1162,18 +1412,50 @@ namespace
 						: action.Kind == DesignerStoryboardActionKind::Pause
 							? "PauseStoryboard"
 							: action.Kind == DesignerStoryboardActionKind::Resume
-								? "ResumeStoryboard" : "StopStoryboard";
+								? "ResumeStoryboard"
+							: action.Kind == DesignerStoryboardActionKind::Stop
+								? "StopStoryboard" : "RemoveStoryboard";
+					if (action.Kind == DesignerStoryboardActionKind::Seek)
+						actionName = "SeekStoryboard";
+					else if (action.Kind == DesignerStoryboardActionKind::SetSpeedRatio)
+						actionName = "SetStoryboardSpeedRatio";
+					else if (action.Kind == DesignerStoryboardActionKind::SkipToFill)
+						actionName = "SkipStoryboardToFill";
 					auto item = Append(_xml, trigger, actionName);
 					if (action.Kind == DesignerStoryboardActionKind::Begin)
 					{
 						if (!action.StoryboardName.empty())
 							Set(item, "x:Name", action.StoryboardName);
-						auto storyboard = Append(_xml, item, "Storyboard");
-						for (const auto& animation : action.Animations)
-							WriteVisualStateAnimation(
-								storyboard, component, animation);
+						if (action.Handoff == DesignerHandoffBehavior::Compose)
+							Set(item, "HandoffBehavior", L"Compose");
+						if (!action.StoryboardResourceKey.empty())
+							Set(item, "Storyboard", L"{StaticResource "
+								+ action.StoryboardResourceKey + L"}");
+						else
+						{
+							auto storyboard = Append(_xml, item, "Storyboard");
+							WriteStoryboardTiming(storyboard,
+								action.StoryboardTiming);
+							for (const auto& animation : action.Animations)
+								WriteVisualStateAnimation(
+									storyboard, component, animation);
+							for (const auto& timelineGroup : action.TimelineGroups)
+								WriteTimelineGroup(storyboard, component, timelineGroup);
+						}
 					}
-					else Set(item, "BeginStoryboardName", action.StoryboardName);
+					else
+					{
+						Set(item, "BeginStoryboardName", action.StoryboardName);
+						if (action.Kind == DesignerStoryboardActionKind::Seek)
+						{
+							Set(item, "Offset", TimeSpanText(
+								action.SeekOffsetMilliseconds));
+							Set(item, "Origin", L"BeginTime");
+						}
+						else if (action.Kind
+							== DesignerStoryboardActionKind::SetSpeedRatio)
+							Set(item, "SpeedRatio", NumberText(action.SpeedRatio, 17));
+					}
 				}
 			}
 		}
@@ -1196,17 +1478,49 @@ namespace
 					: action.Kind == DesignerStoryboardActionKind::Pause
 						? "PauseStoryboard"
 					: action.Kind == DesignerStoryboardActionKind::Resume
-						? "ResumeStoryboard" : "StopStoryboard";
+						? "ResumeStoryboard"
+					: action.Kind == DesignerStoryboardActionKind::Stop
+						? "StopStoryboard" : "RemoveStoryboard";
+				if (action.Kind == DesignerStoryboardActionKind::Seek)
+					actionName = "SeekStoryboard";
+				else if (action.Kind == DesignerStoryboardActionKind::SetSpeedRatio)
+					actionName = "SetStoryboardSpeedRatio";
+				else if (action.Kind == DesignerStoryboardActionKind::SkipToFill)
+					actionName = "SkipStoryboardToFill";
 				auto item = Append(_xml, property, actionName);
 				if (action.Kind == DesignerStoryboardActionKind::Begin)
 				{
 					if (!action.StoryboardName.empty())
 						Set(item, "x:Name", action.StoryboardName);
-					auto storyboard = Append(_xml, item, "Storyboard");
-					for (const auto& animation : action.Animations)
-						WriteVisualStateAnimation(storyboard, target, animation);
+					if (action.Handoff == DesignerHandoffBehavior::Compose)
+						Set(item, "HandoffBehavior", L"Compose");
+					if (!action.StoryboardResourceKey.empty())
+						Set(item, "Storyboard", L"{StaticResource "
+							+ action.StoryboardResourceKey + L"}");
+					else
+					{
+						auto storyboard = Append(_xml, item, "Storyboard");
+						WriteStoryboardTiming(storyboard,
+							action.StoryboardTiming);
+						for (const auto& animation : action.Animations)
+							WriteVisualStateAnimation(storyboard, target, animation);
+						for (const auto& timelineGroup : action.TimelineGroups)
+							WriteTimelineGroup(storyboard, target, timelineGroup);
+					}
 				}
-				else Set(item, "BeginStoryboardName", action.StoryboardName);
+				else
+				{
+					Set(item, "BeginStoryboardName", action.StoryboardName);
+					if (action.Kind == DesignerStoryboardActionKind::Seek)
+					{
+						Set(item, "Offset", TimeSpanText(
+							action.SeekOffsetMilliseconds));
+						Set(item, "Origin", L"BeginTime");
+					}
+					else if (action.Kind
+						== DesignerStoryboardActionKind::SetSpeedRatio)
+						Set(item, "SpeedRatio", NumberText(action.SpeedRatio, 17));
+				}
 			}
 		}
 
@@ -1323,6 +1637,7 @@ namespace
 		void WriteResources(const Element& root)
 		{
 			if (_document.StyleSheet.Empty() && _document.Components.empty()
+				&& _document.Storyboards.empty()
 				&& _document.ControlTemplates.empty()
 				&& _document.DataTypes.empty() && _document.DataTemplates.empty()
 				&& _document.ItemsPanelTemplates.empty()
@@ -1345,6 +1660,9 @@ namespace
 				}
 				resourceTarget = dictionary;
 			}
+			for (const auto& storyboard : _document.Storyboards)
+				if (storyboard.SourceDictionary.empty())
+					WriteStoryboardResource(resourceTarget, storyboard);
 			for (const auto& type : _document.DataTypes)
 			{
 				if (!type.SourceDictionary.empty()) continue;
@@ -1975,6 +2293,12 @@ namespace
 			scoped.CollectionViews = _document.CollectionViews;
 			auto visible = _document.VisibleObjectResources(
 				_document.Nodes, node);
+			for (const auto& local : node.LocalObjectResources.Storyboards)
+				visible.Storyboards.erase(std::remove_if(
+					visible.Storyboards.begin(), visible.Storyboards.end(),
+					[&](const auto& current)
+					{ return Equals(current.Key, local.Key); }),
+					visible.Storyboards.end());
 			for (const auto& local : node.LocalObjectResources.Components)
 				visible.Components.erase(std::remove_if(
 					visible.Components.begin(), visible.Components.end(),
@@ -2004,6 +2328,8 @@ namespace
 					[&](const auto& current)
 					{ return Equals(current.Key, local.Key); }),
 					visible.GroupStyles.end());
+			for (auto& storyboard : visible.Storyboards)
+				storyboard.SourceDictionary = L"__cui_lexical_context__";
 			for (auto& component : visible.Components)
 				component.SourceDictionary = L"__cui_lexical_context__";
 			for (auto& dataTemplate : visible.DataTemplates)
@@ -2014,11 +2340,15 @@ namespace
 				itemsPanel.SourceDictionary = L"__cui_lexical_context__";
 			for (auto& groupStyle : visible.GroupStyles)
 				groupStyle.SourceDictionary = L"__cui_lexical_context__";
+			scoped.Storyboards = std::move(visible.Storyboards);
 			scoped.Components = std::move(visible.Components);
 			scoped.ControlTemplates = std::move(visible.ControlTemplates);
 			scoped.DataTemplates = std::move(visible.DataTemplates);
 			scoped.ItemsPanelTemplates = std::move(visible.ItemsPanelTemplates);
 			scoped.GroupStyles = std::move(visible.GroupStyles);
+			scoped.Storyboards.insert(scoped.Storyboards.end(),
+				node.LocalObjectResources.Storyboards.begin(),
+				node.LocalObjectResources.Storyboards.end());
 			scoped.Components.insert(scoped.Components.end(),
 				node.LocalObjectResources.Components.begin(),
 				node.LocalObjectResources.Components.end());
@@ -2036,7 +2366,7 @@ namespace
 				node.LocalObjectResources.GroupStyles.end());
 
 			XmlDocument temporary;
-			Writer writer(scoped, temporary);
+			Writer writer(scoped, temporary, _templateComponent);
 			const auto root = writer.Write();
 			Element resources;
 			for (const auto& child : root->ChildNodes())
@@ -2052,7 +2382,8 @@ namespace
 			for (const auto& child : resources->ChildNodes())
 			{
 				auto element = std::dynamic_pointer_cast<XmlElement>(child);
-				if (!element || (element->Name() != "ComponentDefinition"
+				if (!element || (element->Name() != "Storyboard"
+					&& element->Name() != "ComponentDefinition"
 					&& element->Name() != "DataTemplate"
 					&& element->Name() != "ControlTemplate"
 					&& element->Name() != "ItemsPanelTemplate"

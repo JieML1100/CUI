@@ -15,6 +15,8 @@
 namespace
 {
 	constexpr wchar_t PortableFormatName[] =
+		L"CUI.RichTextDocumentFragment.Binary.v8";
+	constexpr wchar_t Version7PortableFormatName[] =
 		L"CUI.RichTextDocumentFragment.Binary.v7";
 	constexpr wchar_t Version6PortableFormatName[] =
 		L"CUI.RichTextDocumentFragment.Binary.v6";
@@ -30,7 +32,9 @@ namespace
 		L"CUI.RichTextDocumentFragment.Binary.v1";
 	constexpr std::uint8_t PortableMagic[] = {
 		'C', 'U', 'I', 'A', 'T', 'B', '0', '1' };
-	constexpr std::uint32_t PortableVersion = 7;
+	constexpr std::uint32_t PortableVersion = 8;
+	constexpr std::uint32_t GradientInterpolationPortableVersion = 8;
+	constexpr std::uint32_t LanguagePortableVersion = 7;
 	constexpr std::uint32_t FontStretchPortableVersion = 6;
 	constexpr std::uint32_t DirectionPortableVersion = 5;
 	constexpr std::uint32_t ParagraphPortableVersion = 4;
@@ -54,6 +58,13 @@ namespace
 	{
 		static const UINT format =
 			RegisterClipboardFormatW(LegacyPortableFormatName);
+		return format;
+	}
+
+	UINT Version7AttributedFormat() noexcept
+	{
+		static const UINT format =
+			RegisterClipboardFormatW(Version7PortableFormatName);
 		return format;
 	}
 
@@ -307,6 +318,7 @@ namespace
 				cui::drawing::BrushMappingMode::RelativeToBoundingBox)) return false;
 		writer.U32(kind);
 		writer.U32(mapping);
+		writer.U32(static_cast<std::uint32_t>(brush.ColorInterpolationMode));
 		const float values[] = {
 			brush.Color.r, brush.Color.g, brush.Color.b, brush.Color.a,
 			brush.Opacity,
@@ -341,7 +353,10 @@ namespace
 		return true;
 	}
 
-	bool ReadBrush(Reader& reader, cui::drawing::Brush& brush)
+	bool ReadBrush(
+		Reader& reader,
+		cui::drawing::Brush& brush,
+		bool allowGradientInterpolation)
 	{
 		std::uint32_t kind = 0;
 		std::uint32_t mapping = 0;
@@ -352,6 +367,16 @@ namespace
 				cui::drawing::BrushMappingMode::RelativeToBoundingBox)) return false;
 		brush.Kind = static_cast<cui::drawing::BrushKind>(kind);
 		brush.MappingMode = static_cast<cui::drawing::BrushMappingMode>(mapping);
+		if (allowGradientInterpolation)
+		{
+			std::uint32_t interpolation = 0;
+			if (!reader.U32(interpolation)
+				|| interpolation > static_cast<std::uint32_t>(
+					cui::drawing::GradientColorInterpolationMode::SRgbLinearInterpolation))
+				return false;
+			brush.ColorInterpolationMode = static_cast<
+				cui::drawing::GradientColorInterpolationMode>(interpolation);
+		}
 		float* values[] = {
 			&brush.Color.r, &brush.Color.g, &brush.Color.b, &brush.Color.a,
 			&brush.Opacity,
@@ -445,7 +470,8 @@ namespace
 		Reader& reader,
 		RichTextCharacterStyle& style,
 		bool allowFontStretch,
-		bool allowLanguage)
+		bool allowLanguage,
+		bool allowGradientInterpolation)
 	{
 		std::uint32_t mask = 0;
 		std::uint32_t allowedMask = KnownStyleMask;
@@ -455,13 +481,13 @@ namespace
 		if ((mask & Foreground) != 0)
 		{
 			cui::drawing::Brush value;
-			if (!ReadBrush(reader, value)) return false;
+			if (!ReadBrush(reader, value, allowGradientInterpolation)) return false;
 			style.Foreground = std::move(value);
 		}
 		if ((mask & Background) != 0)
 		{
 			cui::drawing::Brush value;
-			if (!ReadBrush(reader, value)) return false;
+			if (!ReadBrush(reader, value, allowGradientInterpolation)) return false;
 			style.Background = std::move(value);
 		}
 		if ((mask & FontFamily) != 0)
@@ -993,6 +1019,8 @@ namespace
 		cui::richtext::clipboard::DataObject result;
 		result.Attributed = ReadBytes(AttributedFormat());
 		if (!result.Attributed)
+			result.Attributed = ReadBytes(Version7AttributedFormat());
+		if (!result.Attributed)
 			result.Attributed = ReadBytes(Version6AttributedFormat());
 		if (!result.Attributed)
 			result.Attributed = ReadBytes(Version5AttributedFormat());
@@ -1013,6 +1041,7 @@ namespace
 	bool CanPasteWin32() noexcept
 	{
 		const UINT attributed = AttributedFormat();
+		const UINT version7Attributed = Version7AttributedFormat();
 		const UINT version6Attributed = Version6AttributedFormat();
 		const UINT version5Attributed = Version5AttributedFormat();
 		const UINT version4Attributed = Version4AttributedFormat();
@@ -1022,6 +1051,8 @@ namespace
 		const UINT rtf = RtfFormat();
 		return (attributed != 0
 			&& IsClipboardFormatAvailable(attributed) != FALSE)
+			|| (version7Attributed != 0
+				&& IsClipboardFormatAvailable(version7Attributed) != FALSE)
 			|| (version6Attributed != 0
 				&& IsClipboardFormatAvailable(version6Attributed) != FALSE)
 			|| (version5Attributed != 0
@@ -1234,6 +1265,7 @@ std::optional<RichTextDocumentFragment> Decode(
 		if (!header.U32(version) || !header.U64(payloadSize)
 			|| !header.U32(checksum) || !header.U32(reserved)
 			|| (version != PortableVersion
+				&& version != LanguagePortableVersion
 				&& version != FontStretchPortableVersion
 				&& version != DirectionPortableVersion
 				&& version != ParagraphPortableVersion
@@ -1264,7 +1296,9 @@ std::optional<RichTextDocumentFragment> Decode(
 				|| length > (std::numeric_limits<std::size_t>::max)()
 				|| !ReadStyle(reader, style,
 					version >= FontStretchPortableVersion,
-					version >= PortableVersion)) return std::nullopt;
+					version >= LanguagePortableVersion,
+					version >= GradientInterpolationPortableVersion))
+				return std::nullopt;
 			fragment.Spans.push_back(RichTextStyleSpan{
 				static_cast<std::size_t>(start),
 				static_cast<std::size_t>(length), std::move(style) });
@@ -1295,7 +1329,9 @@ std::optional<RichTextDocumentFragment> Decode(
 							RichTextStructureKind::ParagraphBreak)
 						|| !ReadStyle(reader, localStyle,
 							version >= FontStretchPortableVersion,
-							version >= PortableVersion)) return false;
+							version >= LanguagePortableVersion,
+							version >= GradientInterpolationPortableVersion))
+						return false;
 					const auto [found, inserted] = decodedIds.emplace(
 						encodedId, 0);
 					if (inserted)

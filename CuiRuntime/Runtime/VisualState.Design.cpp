@@ -215,6 +215,9 @@ namespace
 				|| !TransformMember(segments.back().Name, output.Member)
 				|| (grouped && !checkedIndex(segments[2].Index, output.Index0)))
 				return fail(L"RenderTransform 动画路径末端无效。");
+			if (direct)
+				output.Flags =
+					CompiledStoryboardObjectPathFlags::DirectTransform;
 		}
 		else if (rootProperty == L"Clip")
 		{
@@ -236,18 +239,26 @@ namespace
 				return fail(L"Clip 动画路径缺少末端。");
 			if (segments[cursor].Name == L"Transform")
 			{
-				if (cursor + 4 != segments.size()
-					|| segments[cursor + 1].Name != L"Children"
-					|| LocalTypeName(segments[cursor + 1].OwnerType) != L"TransformGroup"
-					|| segments[cursor + 2].Kind != PathSegmentKind::Index)
+				const bool direct = cursor + 2 == segments.size()
+					&& segments[cursor + 1].Kind == PathSegmentKind::Property;
+				const bool grouped = cursor + 4 == segments.size()
+					&& segments[cursor + 1].Name == L"Children"
+					&& LocalTypeName(segments[cursor + 1].OwnerType) == L"TransformGroup"
+					&& segments[cursor + 2].Kind == PathSegmentKind::Index;
+				if (!direct && !grouped)
 					return fail(L"Geometry.Transform 动画路径形状无效。");
 				output.Kind = CompiledStoryboardObjectPathKind::GeometryTransform;
 				if (!GeometryKind(segments[cursor].OwnerType, output.ExpectedObjectKind)
-					|| !TransformKind(segments.back().OwnerType,
+					|| !TransformKind(segments[direct ? cursor + 1 : cursor + 3].OwnerType,
 						output.ExpectedAuxiliaryKind)
-					|| !TransformMember(segments.back().Name, output.Member)
-					|| !checkedIndex(segments[cursor + 2].Index, output.Index0))
+					|| !TransformMember(segments[direct ? cursor + 1 : cursor + 3].Name,
+						output.Member)
+					|| (grouped
+						&& !checkedIndex(segments[cursor + 2].Index, output.Index0)))
 					return fail(L"Geometry.Transform 动画路径末端无效。");
+				if (direct)
+					output.Flags =
+						CompiledStoryboardObjectPathFlags::DirectTransform;
 			}
 			else if (segments[cursor].Name == L"Figures")
 			{
@@ -293,24 +304,33 @@ namespace
 			|| rootProperty == L"Foreground"
 			|| rootProperty == L"BorderBrush")
 		{
-			const bool transform = segments.size() == 5
+			const bool directTransform = segments.size() == 3
+				&& (segments[1].Name == L"Transform"
+					|| segments[1].Name == L"RelativeTransform")
+				&& segments[2].Kind == PathSegmentKind::Property;
+			const bool groupedTransform = segments.size() == 5
 				&& (segments[1].Name == L"Transform"
 					|| segments[1].Name == L"RelativeTransform")
 				&& LocalTypeName(segments[2].OwnerType) == L"TransformGroup"
 				&& segments[2].Name == L"Children"
 				&& segments[3].Kind == PathSegmentKind::Index;
-			if (transform)
+			if (directTransform || groupedTransform)
 			{
 				output.Kind = CompiledStoryboardObjectPathKind::BrushTransform;
 				if (!BrushKind(segments[1].OwnerType, output.ExpectedObjectKind)
-					|| !TransformKind(segments.back().OwnerType,
+					|| !TransformKind(segments[directTransform ? 2 : 4].OwnerType,
 						output.ExpectedAuxiliaryKind)
-					|| !TransformMember(segments.back().Name, output.Member)
-					|| !checkedIndex(segments[3].Index, output.Index0))
+					|| !TransformMember(segments[directTransform ? 2 : 4].Name,
+						output.Member)
+					|| (groupedTransform
+						&& !checkedIndex(segments[3].Index, output.Index0)))
 					return fail(L"Brush.Transform 动画路径末端无效。");
+				if (directTransform)
+					output.Flags = output.Flags
+						| CompiledStoryboardObjectPathFlags::DirectTransform;
 				if (segments[1].Name == L"RelativeTransform")
-					output.Flags =
-						CompiledStoryboardObjectPathFlags::RelativeTransform;
+					output.Flags = output.Flags
+						| CompiledStoryboardObjectPathFlags::RelativeTransform;
 			}
 			else
 			{

@@ -1,4 +1,4 @@
-﻿#include "Control.h"
+#include "Control.h"
 #include "EventInfrastructure.h"
 #include "Binding.h"
 #include "Window.h"
@@ -17,9 +17,11 @@
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <numbers>
 #include <cwctype>
 #include <atomic>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <type_traits>
 #include <variant>
@@ -45,6 +47,18 @@ namespace cui::framework::design
 
 namespace
 {
+	thread_local std::span<Control* const>
+		RenderTransformSuppressionRoots{};
+
+	bool IsRenderTransformSuppressedForRecording(
+		const Control* control) noexcept
+	{
+		return control && std::find(
+			RenderTransformSuppressionRoots.begin(),
+			RenderTransformSuppressionRoots.end(), control)
+			!= RenderTransformSuppressionRoots.end();
+	}
+
 	/**
 	 * Visual/inheritance chains are normally fewer than a dozen controls deep.
 	 * Using unordered_set for cycle protection on every coordinate transform or
@@ -748,6 +762,7 @@ namespace
 			L"MinHeight",
 			L"MaxWidth",
 			L"MaxHeight",
+			L"Opacity",
 			L"ClipToBounds",
 			L"Clip",
 			L"RenderTransform",
@@ -818,6 +833,7 @@ namespace
 			MakeBindingSourcePropertyToken(L"MinHeight"),
 			MakeBindingSourcePropertyToken(L"MaxWidth"),
 			MakeBindingSourcePropertyToken(L"MaxHeight"),
+			MakeBindingSourcePropertyToken(L"Opacity"),
 			MakeBindingSourcePropertyToken(L"ClipToBounds"),
 			MakeBindingSourcePropertyToken(L"Clip"),
 			MakeBindingSourcePropertyToken(L"RenderTransform"),
@@ -1827,6 +1843,26 @@ void Control::PropagatePresentationWindow(
 			window->RefreshReverseInheritedInputProperties();
 }
 
+void Control::OnPresentationWindowChanged(
+	PresentationWindow* previousWindow,
+	PresentationWindow* currentWindow)
+{
+	if (previousWindow && previousWindow != currentWindow)
+	{
+		previousWindow->SynchronizeActiveDeclarativeAnimationControl(
+			this, false);
+		previousWindow->SynchronizeRetainedNativeAnimationControl(
+			this, false);
+	}
+	if (currentWindow)
+	{
+		currentWindow->SynchronizeActiveDeclarativeAnimationControl(
+			this, HasRetainedVisualStateAnimationRoots());
+		currentWindow->SynchronizeRetainedNativeAnimationControl(
+			this, HasRetainedNativeAnimation());
+	}
+}
+
 void Control::SetLogicalParentCore(Control* value)
 {
 	if (_logicalParent == value) return;
@@ -2413,6 +2449,13 @@ void Control::InvalidatePresentationGeometrySubtree() noexcept
 	MarkPresentationInvalidation(PresentationInvalidationKind::Geometry);
 }
 
+void Control::InvalidatePresentationTransformSubtree() noexcept
+{
+	MarkPresentationInvalidation(
+		PresentationInvalidationKind::Geometry
+		| PresentationInvalidationKind::Transform);
+}
+
 void Control::InvalidateDescendantRenderGeometry() noexcept
 {
 	InvalidatePresentationGeometrySubtree();
@@ -2437,24 +2480,53 @@ void Control::BeginRender(float clipW, float clipH)
 		this->GetPresentationWindow()->GetTitleBarHeightDip());
 	// Layout coordinates are relative to the form content. The control-local
 	// transform is followed by ancestor transforms and finally the title bar.
-	const auto transform = AsMatrix(GetLocalToRenderTransform())
+	const auto transform = AsMatrix(GetLocalToRenderTransformForRecording())
 		* D2D1::Matrix3x2F::Translation(0.0f, titleBarOffset);
 	this->GetDrawingContext()->PushLocalTransform(transform, clipW, clipH);
 
-	std::vector<const Control*> clipOwners;
-	InlinePointerSet<const Control> visited;
+	struct ClipOwner
+	{
+		Control* Owner = nullptr;
+		bool IsChildrenRectangle = false;
+	};
+	std::vector<ClipOwner> clipOwners;
+	InlinePointerSet<Control> visited;
+	auto* clipSuppressionRoot = RenderTransformSuppressionRoots.empty()
+		? nullptr : RenderTransformSuppressionRoots.back();
+	bool insideSuppressedIsolation = clipSuppressionRoot != nullptr;
 	for (auto* current = this;
 		current && visited.Insert(current);
 		current = current->_visualParent)
-		if (current->_clip) clipOwners.push_back(current);
+	{
+		const bool recordClip = !clipSuppressionRoot
+			|| insideSuppressedIsolation;
+		if (recordClip && current->_clip)
+			clipOwners.push_back({ current, false });
+		// ClipToBounds clips descendants, not the owner's own rendering. Express
+		// the rectangle in this control's local recording coordinates so rotated
+		// and skewed ancestors retain their true geometry instead of an AABB.
+		if (recordClip && current != this && current->ClipsChildren())
+			clipOwners.push_back({ current, true });
+		if (current == clipSuppressionRoot)
+			insideSuppressedIsolation = false;
+	}
 	if (clipOwners.empty()) return;
 	std::reverse(clipOwners.begin(), clipOwners.end());
-	auto renderToLocal = AsMatrix(GetLocalToRenderTransform());
+	auto renderToLocal = AsMatrix(GetLocalToRenderTransformForRecording());
 	if (!renderToLocal.Invert()) return;
-	for (const auto* owner : clipOwners)
+	for (const auto& item : clipOwners)
 	{
-		const auto ownerToLocal = AsMatrix(owner->GetLocalToRenderTransform())
+		auto* owner = item.Owner;
+		const auto ownerToLocal = AsMatrix(
+			owner->GetLocalToRenderTransformForRecording())
 			* renderToLocal;
+		if (item.IsChildrenRectangle)
+		{
+			if (this->GetDrawingContext()->PushTransformedRectangleClip(
+				owner->GetVisualChildrenClipRect(), ownerToLocal))
+				++_activeGeometryClipCount;
+			continue;
+		}
 		Microsoft::WRL::ComPtr<ID2D1Geometry> native;
 		native.Attach(owner->_clip->CreateD2DGeometry(&ownerToLocal));
 		if (native && this->GetDrawingContext()->PushGeometryClip(native.Get()))
@@ -2586,6 +2658,16 @@ std::optional<cui::drawing::Brush> Control::GetLocalBorderBrush() const
 		? std::nullopt
 		: std::optional<cui::drawing::Brush>(std::move(brush));
 }
+GET_CPP(Control, double, Opacity)
+{
+	static const auto& property = OpacityProperty();
+	return GetDependencyPropertyValue<double>(property);
+}
+SET_CPP(Control, double, Opacity)
+{
+	static const auto& property = OpacityProperty();
+	(void)SetDependencyPropertyValue(property, value);
+}
 GET_CPP(Control, bool, ClipToBounds)
 {
 	static const auto& property =
@@ -2603,6 +2685,8 @@ void Control::SetClip(const cui::drawing::Geometry& geometry)
 	if (_clip && *_clip == geometry) return;
 	InvalidateVisualBoundsSubtree();
 	_clip = geometry;
+	if (auto* window = GetPresentationWindow())
+		window->InvalidatePresentationStructure();
 	InvalidatePresentationGeometrySubtree();
 	InvalidateVisualBoundsSubtree();
 }
@@ -2611,6 +2695,8 @@ void Control::ClearClip()
 	if (!_clip) return;
 	InvalidateVisualBoundsSubtree();
 	_clip.reset();
+	if (auto* window = GetPresentationWindow())
+		window->InvalidatePresentationStructure();
 	InvalidatePresentationGeometrySubtree();
 	InvalidateVisualBoundsSubtree();
 }
@@ -2622,9 +2708,19 @@ void Control::SetRenderTransform(const cui::drawing::Transform& transform)
 		return;
 	}
 	if (_renderTransform && *_renderTransform == transform) return;
+	const bool shapeChanged = !_renderTransform
+		|| _renderTransform->Operations.size() != transform.Operations.size()
+		|| !std::equal(
+			_renderTransform->Operations.begin(),
+			_renderTransform->Operations.end(), transform.Operations.begin(),
+			[](const auto& left, const auto& right)
+				{ return left.Kind == right.Kind; });
 	InvalidateVisualBoundsSubtree();
 	_renderTransform = transform;
-	InvalidatePresentationGeometrySubtree();
+	if (shapeChanged)
+		if (auto* window = GetPresentationWindow())
+			window->InvalidatePresentationStructure();
+	InvalidatePresentationTransformSubtree();
 	InvalidateVisualBoundsSubtree();
 }
 void Control::ClearRenderTransform()
@@ -2632,7 +2728,9 @@ void Control::ClearRenderTransform()
 	if (!_renderTransform) return;
 	InvalidateVisualBoundsSubtree();
 	_renderTransform.reset();
-	InvalidatePresentationGeometrySubtree();
+	if (auto* window = GetPresentationWindow())
+		window->InvalidatePresentationStructure();
+	InvalidatePresentationTransformSubtree();
 	InvalidateVisualBoundsSubtree();
 }
 void Control::SetRenderTransformOrigin(D2D1_POINT_2F origin)
@@ -2646,7 +2744,7 @@ void Control::SetRenderTransformOriginDip(cui::core::Point origin)
 		&& _renderTransformOrigin.y == origin.y) return;
 	InvalidateVisualBoundsSubtree();
 	_renderTransformOrigin = D2D1::Point2F(origin.x, origin.y);
-	InvalidatePresentationGeometrySubtree();
+	InvalidatePresentationTransformSubtree();
 	InvalidateVisualBoundsSubtree();
 }
 void Control::EndRender()
@@ -2785,6 +2883,7 @@ void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int select
 
 	if (shouldResetBlink || _caretBlinkResetTick == 0)
 		_caretBlinkResetTick = ::GetTickCount64();
+	SynchronizeNativeAnimationWindowRegistration();
 }
 
 bool Control::IsCaretBlinkVisible() const
@@ -2803,12 +2902,31 @@ bool Control::IsCaretBlinkVisible() const
 
 bool Control::IsCaretBlinkAnimating() const
 {
-	if (!_caretBlinkFocused) return false;
-	if (!_caretBlinkRectValid) return false;
-	if (_caretBlinkSelectionStart != _caretBlinkSelectionEnd) return false;
+	if (!HasRetainedCaretBlinkAnimation()) return false;
 
 	const UINT blinkTime = ::GetCaretBlinkTime();
 	return blinkTime != 0 && blinkTime != INFINITE;
+}
+
+UINT Control::GetAnimationIntervalMs()
+{
+	// A retained caret is a phase animation, not a 60 Hz animation.  Driving it
+	// at the generic 16 ms cadence forces the Window to synchronously repaint a
+	// focused editor every frame.  That is especially costly when a DataGrid
+	// replaces a display cell with a TextBox and can starve subsequent input.
+	if (HasRetainedCaretBlinkAnimation())
+	{
+		const UINT blinkTime = ::GetCaretBlinkTime();
+		if (blinkTime != 0 && blinkTime != INFINITE)
+			return blinkTime;
+	}
+	return 16;
+}
+
+bool Control::HasRetainedCaretBlinkAnimation() const noexcept
+{
+	return _caretBlinkFocused && _caretBlinkRectValid
+		&& _caretBlinkSelectionStart == _caretBlinkSelectionEnd;
 }
 
 bool Control::GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const
@@ -3451,17 +3569,43 @@ struct Control::DeclarativeVisualStateRuntime
 		float KeySplineY1 = 0.0f;
 		float KeySplineX2 = 1.0f;
 		float KeySplineY2 = 1.0f;
+		uint16_t KeyTimeSubMillisecondTicks = 0;
+		DeclarativeEasingParameters EasingParameters;
 	};
 
-	/** Resolver-independent animation payload shared by Design and flat AOT. */
-	struct RuntimeAnimationDefinition
+	/** WPF CAnimationSegment setup cached once per immutable runtime definition. */
+	struct RuntimePathSegment
 	{
+		DeclarativePathSegmentKind Kind = DeclarativePathSegmentKind::Line;
+		std::array<cui::core::Point, 4> Points{};
+		std::array<cui::core::Point, 3> D1{};
+		std::array<cui::core::Point, 2> D2{};
+		cui::core::Point D3;
+		cui::core::Point InitialTangent;
+		std::array<float, 5> Breaks{};
+		std::array<float, 5> Lengths{};
+		std::array<float, 4> Mids{};
+		uint32_t BreakCount = 2;
+		float BaseLength = 0.0f;
+		float Length = 0.0f;
+	};
+
+	/**
+	 * Target-independent, normalized timeline data shared by Design and flat
+	 * AOT.  This record owns no clock or target state; a definition may be
+	 * materialized into more than one clock instance.
+	 */
+	struct TimelineDefinition
+	{
+		/** Invalid identifies a direct child of the root Storyboard. */
+		uint32_t TimelineGroupIndex = CompiledInteractionInvalidIndex;
 		DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
-		std::optional<BindingValue> From;
-		std::optional<BindingValue> To;
-		std::optional<BindingValue> By;
 		bool IsAdditive = false;
 		bool IsCumulative = false;
+		DeclarativePathAnimationHeader Path;
+		std::vector<DeclarativePathAnimationSegment> PathSegments;
+		std::vector<RuntimePathSegment> PreparedPathSegments;
+		float PathTotalLength = 0.0f;
 		std::vector<RuntimeAnimationKeyFrame> KeyFrames;
 		unsigned long long BeginTimeMilliseconds = 0;
 		unsigned long long DurationMilliseconds = 0;
@@ -3477,35 +3621,44 @@ struct Control::DeclarativeVisualStateRuntime
 		double DecelerationRatio = 0.0;
 		DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
 		DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+		DeclarativeEasingParameters EasingParameters;
 	};
 
-	struct RuntimeAnimation
+	/** Endpoint expressions are definition data, but are animation-specific. */
+	struct RuntimeAnimationDefinition : TimelineDefinition
 	{
-		DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
+		std::optional<BindingValue> From;
+		std::optional<BindingValue> To;
+		std::optional<BindingValue> By;
+	};
+
+	/** A definition after its target/property path has been resolved. */
+	struct RuntimeAnimation : RuntimeAnimationDefinition
+	{
 		Control* Target = nullptr;
 		const DependencyPropertyMetadata* Metadata = nullptr;
 		std::optional<ObjectPathAccessor> ObjectPath;
-		std::optional<BindingValue> From;
-		std::optional<BindingValue> To;
-		std::optional<BindingValue> By;
-		bool IsAdditive = false;
-		bool IsCumulative = false;
-		std::vector<RuntimeAnimationKeyFrame> KeyFrames;
-		unsigned long long BeginTimeMilliseconds = 0;
-		unsigned long long DurationMilliseconds = 0;
-		DeclarativeRepeatBehaviorKind RepeatBehavior =
-			DeclarativeRepeatBehaviorKind::Count;
-		double RepeatCount = 1.0;
-		unsigned long long RepeatDurationMilliseconds = 0;
-		bool AutoReverse = false;
-		DeclarativeTimelineFillBehavior FillBehavior =
-			DeclarativeTimelineFillBehavior::HoldEnd;
-		double SpeedRatio = 1.0;
-		double AccelerationRatio = 0.0;
-		double DecelerationRatio = 0.0;
-		DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
-		DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
 	};
+
+	/** One resolved ParallelTimeline definition shared by every root instance. */
+	struct RuntimeTimelineGroup
+	{
+		uint32_t ParentIndex = CompiledInteractionInvalidIndex;
+		DeclarativeStoryboardTimingDefinition Timing;
+		unsigned long long ResolvedSimpleDurationMilliseconds = 0;
+		bool ResolvedSimpleDurationForever = false;
+	};
+
+	static bool TimelineGroupsContainForever(
+		const std::vector<RuntimeTimelineGroup>& groups) noexcept
+	{
+		return std::any_of(groups.begin(), groups.end(), [](const auto& group)
+		{
+			return group.ResolvedSimpleDurationForever
+				|| group.Timing.RepeatBehavior
+					== DeclarativeRepeatBehaviorKind::Forever;
+		});
+	}
 
 	struct RuntimeState
 	{
@@ -3517,6 +3670,8 @@ struct Control::DeclarativeVisualStateRuntime
 		std::vector<const DeclarativeEventDefinition*> Events;
 		std::vector<RuntimeSetter> Setters;
 		std::vector<RuntimeAnimation> Animations;
+		std::vector<RuntimeTimelineGroup> TimelineGroups;
+		DeclarativeStoryboardTimingDefinition StoryboardTiming;
 	};
 
 	/**
@@ -3533,6 +3688,7 @@ struct Control::DeclarativeVisualStateRuntime
 		uint64_t ObjectPathIdentity = 0;
 		const RuntimeAnimation* Resolved = nullptr;
 		uint32_t CompiledAnimationIndex = CompiledInteractionInvalidIndex;
+		std::optional<RuntimeAnimation> Materialized;
 	};
 
 	struct RuntimeStateFootprint
@@ -3553,7 +3709,10 @@ struct Control::DeclarativeVisualStateRuntime
 		DeclarativeEasingKind GeneratedEasing = DeclarativeEasingKind::Linear;
 		DeclarativeEasingMode GeneratedEasingMode =
 			DeclarativeEasingMode::EaseOut;
+		DeclarativeEasingParameters GeneratedEasingParameters;
 		std::vector<RuntimeAnimation> Animations;
+		std::vector<RuntimeTimelineGroup> TimelineGroups;
+		DeclarativeStoryboardTimingDefinition StoryboardTiming;
 	};
 
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -3561,7 +3720,11 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		std::wstring Name;
 		std::vector<RuntimeAnimation> Animations;
+		std::vector<RuntimeTimelineGroup> TimelineGroups;
+		DeclarativeStoryboardTimingDefinition Timing;
 		bool IsStyleStoryboard = false;
+		DeclarativeHandoffBehavior Handoff =
+			DeclarativeHandoffBehavior::SnapshotAndReplace;
 	};
 
 	struct RuntimeEventTriggerAction
@@ -3570,6 +3733,10 @@ struct Control::DeclarativeVisualStateRuntime
 			DeclarativeStoryboardActionKind::Begin;
 		size_t StoryboardIndex = 0;
 		std::wstring PendingStoryboardName;
+		DeclarativeHandoffBehavior Handoff =
+			DeclarativeHandoffBehavior::SnapshotAndReplace;
+		unsigned long long SeekOffsetMilliseconds = 0;
+		double SpeedRatio = 1.0;
 	};
 
 	struct RuntimeEventTrigger
@@ -3580,6 +3747,46 @@ struct Control::DeclarativeVisualStateRuntime
 		std::vector<RuntimeEventTriggerAction> Actions;
 	};
 #endif
+
+	struct ClockId
+	{
+		uint64_t Value = 0;
+		bool operator==(const ClockId&) const noexcept = default;
+	};
+
+	enum class ClockOwnerKind : unsigned char
+	{
+		VisualStateGroup,
+		ComponentStoryboard,
+		StyleTrigger,
+		CompiledInteractionStoryboard,
+	};
+
+	struct ClockOwnerScope
+	{
+		ClockOwnerKind Kind = ClockOwnerKind::VisualStateGroup;
+		uint64_t Value = 0;
+		bool operator==(const ClockOwnerScope&) const noexcept = default;
+	};
+
+	struct StoryboardDefinitionId
+	{
+		uint64_t Value = 0;
+		bool operator==(const StoryboardDefinitionId&) const noexcept = default;
+	};
+
+	struct StoryboardClockKey
+	{
+		ClockOwnerScope Owner;
+		StoryboardDefinitionId Definition;
+		bool operator==(const StoryboardClockKey&) const noexcept = default;
+	};
+
+	struct ClockIdentity
+	{
+		ClockId Instance;
+		StoryboardClockKey Storyboard;
+	};
 
 	struct RuntimeStyleTriggerScope
 	{
@@ -3592,7 +3799,8 @@ struct Control::DeclarativeVisualStateRuntime
 		std::span<const BindingValue> CompiledValues;
 		CompiledStyleRange CompiledEnterActions;
 		CompiledStyleRange CompiledExitActions;
-		uint64_t CompiledClockBase = 0;
+		ClockOwnerScope ClockOwner{
+			ClockOwnerKind::StyleTrigger, 0 };
 #if CUI_ENABLE_DYNAMIC_XAML
 		std::vector<size_t> StoryboardIndices;
 		std::vector<RuntimeEventTriggerAction> EnterActions;
@@ -3606,10 +3814,59 @@ struct Control::DeclarativeVisualStateRuntime
 		const DependencyProperty* Property = nullptr;
 	};
 
+	struct PropertyKeyHash
+	{
+		size_t operator()(const PropertyKey& value) const noexcept
+		{
+			const auto target = std::hash<Control*>{}(value.Target);
+			const auto property =
+				std::hash<const DependencyProperty*>{}(value.Property);
+			return target ^ (property + static_cast<size_t>(0x9e3779b9u)
+				+ (target << 6) + (target >> 2));
+		}
+	};
+
+	struct PropertyKeyEqual
+	{
+		bool operator()(const PropertyKey& left,
+			const PropertyKey& right) const noexcept
+		{
+			return left.Target == right.Target
+				&& left.Property == right.Property;
+		}
+	};
+
+	struct ExactAnimationKey
+	{
+		PropertyKey Root;
+		bool HasObjectPath = false;
+		uint64_t ObjectPath = 0;
+		bool operator==(const ExactAnimationKey& other) const noexcept
+		{
+			return PropertyKeyEqual{}(Root, other.Root)
+				&& HasObjectPath == other.HasObjectPath
+				&& ObjectPath == other.ObjectPath;
+		}
+	};
+
+	struct ExactAnimationKeyHash
+	{
+		size_t operator()(const ExactAnimationKey& value) const noexcept
+		{
+			auto hash = PropertyKeyHash{}(value.Root);
+			const auto path = std::hash<uint64_t>{}(value.ObjectPath);
+			hash ^= path + static_cast<size_t>(0x9e3779b9u)
+				+ (hash << 6) + (hash >> 2);
+			return hash ^ (value.HasObjectPath
+				? static_cast<size_t>(0x85ebca6bu) : 0u);
+		}
+	};
+
 	struct PendingTransition
 	{
 		size_t TargetState = 0;
 		unsigned long long EndTick = 0;
+		ClockId RootClockId;
 		std::vector<PropertyKey> Properties;
 	};
 
@@ -3653,38 +3910,461 @@ struct Control::DeclarativeVisualStateRuntime
 			DependencyPropertyValueSource::VisualState;
 	};
 
-	struct ActiveAnimation
+	/** Mutable parent-time/control state shared by every leaf in one root. */
+	struct ClockRootState
 	{
-		uint64_t GroupIndex = 0;
-		Control* Target = nullptr;
-		const DependencyPropertyMetadata* Metadata = nullptr;
-		DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
-		BindingValue Base;
-		BindingValue Foundation;
-		BindingValue From;
-		BindingValue To;
-		std::vector<RuntimeAnimationKeyFrame> KeyFrames;
-		bool IsCumulative = false;
-		std::optional<ObjectPathAccessor> ObjectPath;
 		unsigned long long StartTick = 0;
-		unsigned long long BeginTimeMilliseconds = 0;
-		unsigned long long DurationMilliseconds = 0;
-		DeclarativeRepeatBehaviorKind RepeatBehavior =
-			DeclarativeRepeatBehaviorKind::Count;
-		double RepeatCount = 1.0;
-		unsigned long long RepeatDurationMilliseconds = 0;
-		bool AutoReverse = false;
-		DeclarativeTimelineFillBehavior FillBehavior =
-			DeclarativeTimelineFillBehavior::HoldEnd;
-		double SpeedRatio = 1.0;
-		double AccelerationRatio = 0.0;
-		double DecelerationRatio = 0.0;
-		DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
-		DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
-		bool IsEventStoryboard = false;
+		unsigned long long LastTick = 0;
 		bool Paused = false;
 		unsigned long long PauseTick = 0;
+		bool Stopped = false;
+		// Parent-time origin introduced by an interactive seek. Keeping it
+		// separate from StartTick supports destinations beyond process uptime.
+		// Stored in the root's parent-time coordinate. Interactive Seek accepts
+		// root-local Clock time, so authored SpeedRatio can require a fractional
+		// parent-time anchor (WPF ultimately quantizes this to 100 ns ticks).
+		long double SeekOffsetMilliseconds = 0.0L;
+		double InteractiveSpeedRatio = 1.0;
+		std::optional<long double> PendingSeekOffsetMilliseconds;
+		std::optional<double> PendingSpeedRatio;
+		bool PendingPause = false;
+		bool PendingResume = false;
+		bool PendingStop = false;
+		bool PendingRemove = false;
+		// WPF Remove drops the controllable Storyboard lookup immediately,
+		// while its value/source mutation remains pending until the timing tick.
+		bool ControlLookupAvailable = true;
+		/** False until the first committed presentation tick for this Begin. */
+		bool HasEvaluated = false;
+	};
+
+	static bool HasPendingRootControl(
+		const ClockRootState& state) noexcept
+	{
+		return state.PendingSeekOffsetMilliseconds.has_value()
+			|| (state.PendingSpeedRatio.has_value()
+				&& (!state.Stopped
+					|| state.PendingSeekOffsetMilliseconds.has_value()))
+			|| state.PendingPause || state.PendingResume
+			|| state.PendingStop || state.PendingRemove;
+	}
+
+	/** Root-owned parent time, computed once for all children at one sample tick. */
+	struct ClockRootProjection
+	{
+		long double ElapsedMilliseconds = 0.0L;
+		bool BeforeBegin = false;
+		bool ActivePeriodComplete = false;
+		bool FillStopped = false;
+		bool ReentersChildren = false;
+		bool Reversed = false;
+	};
+
+	static long double ProjectInteractiveRootElapsed(
+		const ClockRootState& root,
+		unsigned long long nowMilliseconds) noexcept
+	{
+		const auto clockTick = root.Paused ? root.PauseTick : nowMilliseconds;
+		const auto elapsed = clockTick >= root.StartTick
+			? clockTick - root.StartTick : 0;
+		const auto maximum = static_cast<long double>(
+			(std::numeric_limits<unsigned long long>::max)());
+		const auto scaledExact = static_cast<long double>(elapsed)
+			* static_cast<long double>(root.InteractiveSpeedRatio);
+		const auto scaled = !std::isfinite(scaledExact)
+			|| scaledExact >= maximum ? maximum : scaledExact;
+		return scaled > maximum - root.SeekOffsetMilliseconds
+			? maximum : scaled + root.SeekOffsetMilliseconds;
+	}
+
+	/** Mutable state that belongs to one animation leaf clock. */
+	struct ClockLeafState
+	{
 		bool Completed = false;
+		/** Per-leaf WPF KeySpline solve cache; definition key frames stay immutable. */
+		mutable std::vector<double> KeySplineParameters;
+	};
+
+	struct ClockNodeId
+	{
+		uint32_t Index = (std::numeric_limits<uint32_t>::max)();
+		uint32_t Generation = 0;
+
+		bool IsValid() const noexcept
+		{
+			return Generation != 0
+				&& Index != (std::numeric_limits<uint32_t>::max)();
+		}
+
+		bool operator==(const ClockNodeId&) const noexcept = default;
+	};
+
+	enum class ClockNodeKind : unsigned char
+	{
+		Root,
+		Leaf,
+	};
+
+	struct ActiveClockRoot
+	{
+		ClockNodeId NodeId;
+		ClockIdentity Identity;
+		ClockRootState State;
+		DeclarativeStoryboardTimingDefinition Timing;
+		unsigned long long ResolvedSimpleDurationMilliseconds = 0;
+		bool ResolvedSimpleDurationForever = false;
+		std::vector<RuntimeTimelineGroup> TimelineGroups;
+	};
+
+	static long double ApplyRootAcceleration(
+		long double simpleElapsed,
+		long double simpleDuration,
+		double accelerationRatio,
+		double decelerationRatio) noexcept
+	{
+		if (simpleDuration <= 0.0L) return 0.0L;
+		const long double transition = static_cast<long double>(
+			accelerationRatio + decelerationRatio);
+		if (transition <= 0.0L) return simpleElapsed;
+		auto progress = (std::clamp)(
+			simpleElapsed / simpleDuration, 0.0L, 1.0L);
+		const auto acceleration = static_cast<long double>(accelerationRatio);
+		const auto deceleration = static_cast<long double>(decelerationRatio);
+		const auto maximumRate = 2.0L / (2.0L - transition);
+		if (progress < acceleration)
+			progress = maximumRate * progress * progress
+				/ (2.0L * acceleration);
+		else if (progress <= 1.0L - deceleration)
+			progress = maximumRate * (progress - acceleration / 2.0L);
+		else
+		{
+			const auto complement = 1.0L - progress;
+			progress = 1.0L - maximumRate * complement * complement
+				/ (2.0L * deceleration);
+		}
+		return (std::clamp)(progress, 0.0L, 1.0L) * simpleDuration;
+	}
+
+	static long double QuantizeWpfTimeSpanTicks(
+		long double milliseconds) noexcept
+	{
+		// WPF Clock parent time is a TimeSpan (100 ns ticks). Preserve fractional
+		// milliseconds between root and child, but do not claim more precision
+		// than the reference clock can represent.
+		constexpr long double ticksPerMillisecond = 10000.0L;
+		return std::round(milliseconds * ticksPerMillisecond)
+			/ ticksPerMillisecond;
+	}
+
+	static ClockRootProjection ProjectClockRoot(
+		const ActiveClockRoot& root,
+		unsigned long long nowMilliseconds) noexcept
+	{
+		ClockRootProjection result;
+		const auto parentElapsed = ProjectInteractiveRootElapsed(
+			root.State, nowMilliseconds);
+		if (parentElapsed < root.Timing.BeginTimeMilliseconds)
+		{
+			result.BeforeBegin = true;
+			return result;
+		}
+		const auto activeParentElapsed = parentElapsed
+			- root.Timing.BeginTimeMilliseconds;
+		if (root.ResolvedSimpleDurationForever)
+		{
+			const auto scaled = static_cast<long double>(activeParentElapsed)
+				* static_cast<long double>(root.Timing.SpeedRatio);
+			result.ElapsedMilliseconds = !std::isfinite(scaled)
+				? static_cast<long double>(
+					(std::numeric_limits<unsigned long long>::max)())
+				: QuantizeWpfTimeSpanTicks((std::min)(scaled,
+					static_cast<long double>(
+						(std::numeric_limits<unsigned long long>::max)())));
+			return result;
+		}
+		const auto simpleDuration = static_cast<long double>(
+			root.ResolvedSimpleDurationMilliseconds);
+		const auto repetitionDuration = simpleDuration
+			* (root.Timing.AutoReverse ? 2.0L : 1.0L);
+		long double activeDuration = 0.0L;
+		if (root.Timing.RepeatBehavior
+			== DeclarativeRepeatBehaviorKind::Forever)
+			activeDuration = std::numeric_limits<long double>::infinity();
+		else if (root.Timing.RepeatBehavior
+			== DeclarativeRepeatBehaviorKind::Duration)
+			activeDuration = static_cast<long double>(
+				root.Timing.RepeatDurationMilliseconds);
+		else
+			activeDuration = repetitionDuration
+				* static_cast<long double>(root.Timing.RepeatCount)
+				/ static_cast<long double>(root.Timing.SpeedRatio);
+		result.ActivePeriodComplete = std::isfinite(activeDuration)
+			&& static_cast<long double>(activeParentElapsed) >= activeDuration;
+		result.ReentersChildren = root.Timing.RepeatBehavior
+					!= DeclarativeRepeatBehaviorKind::Count
+				|| root.Timing.RepeatCount != 1.0
+				|| root.Timing.AutoReverse;
+		auto activeElapsed = static_cast<long double>(activeParentElapsed);
+		if (std::isfinite(activeDuration))
+			activeElapsed = (std::min)(activeElapsed, activeDuration);
+		auto simpleElapsed = activeElapsed
+			* static_cast<long double>(root.Timing.SpeedRatio);
+		if (simpleDuration > 0.0L && repetitionDuration > 0.0L)
+		{
+			auto local = std::fmod(simpleElapsed, repetitionDuration);
+			if (result.ActivePeriodComplete && simpleElapsed > 0.0L
+				&& std::fabs(local) < 0.0000001L)
+				local = repetitionDuration;
+			result.Reversed = root.Timing.AutoReverse
+				&& local >= simpleDuration;
+			if (result.Reversed)
+				local = repetitionDuration - local;
+			simpleElapsed = (std::clamp)(local, 0.0L, simpleDuration);
+		}
+		else simpleElapsed = 0.0L;
+		simpleElapsed = ApplyRootAcceleration(simpleElapsed, simpleDuration,
+			root.Timing.AccelerationRatio, root.Timing.DecelerationRatio);
+		result.ElapsedMilliseconds = QuantizeWpfTimeSpanTicks(simpleElapsed);
+		result.FillStopped = result.ActivePeriodComplete
+			&& root.Timing.FillBehavior
+				== DeclarativeTimelineFillBehavior::Stop;
+		return result;
+	}
+
+	static ClockRootProjection ProjectTimelineGroup(
+		const RuntimeTimelineGroup& group,
+		const ClockRootProjection& parent) noexcept
+	{
+		ClockRootProjection result;
+		result.ReentersChildren = parent.ReentersChildren;
+		if (parent.BeforeBegin)
+		{
+			result.BeforeBegin = true;
+			return result;
+		}
+		if (parent.FillStopped)
+		{
+			result.FillStopped = true;
+			return result;
+		}
+		const auto parentElapsed = parent.ElapsedMilliseconds;
+		if (parentElapsed < group.Timing.BeginTimeMilliseconds)
+		{
+			result.BeforeBegin = true;
+			return result;
+		}
+		const auto activeParentElapsed = parentElapsed
+			- group.Timing.BeginTimeMilliseconds;
+		if (group.ResolvedSimpleDurationForever)
+		{
+			const auto scaled = activeParentElapsed
+				* static_cast<long double>(group.Timing.SpeedRatio);
+			result.ElapsedMilliseconds = !std::isfinite(scaled)
+				? static_cast<long double>(
+					(std::numeric_limits<unsigned long long>::max)())
+				: QuantizeWpfTimeSpanTicks((std::min)(scaled,
+					static_cast<long double>(
+						(std::numeric_limits<unsigned long long>::max)())));
+			return result;
+		}
+		const auto simpleDuration = static_cast<long double>(
+			group.ResolvedSimpleDurationMilliseconds);
+		const auto repetitionDuration = simpleDuration
+			* (group.Timing.AutoReverse ? 2.0L : 1.0L);
+		long double activeDuration = 0.0L;
+		if (group.Timing.RepeatBehavior
+			== DeclarativeRepeatBehaviorKind::Forever)
+			activeDuration = std::numeric_limits<long double>::infinity();
+		else if (group.Timing.RepeatBehavior
+			== DeclarativeRepeatBehaviorKind::Duration)
+			activeDuration = static_cast<long double>(
+				group.Timing.RepeatDurationMilliseconds);
+		else
+			activeDuration = repetitionDuration
+				* static_cast<long double>(group.Timing.RepeatCount)
+				/ static_cast<long double>(group.Timing.SpeedRatio);
+		result.ActivePeriodComplete = std::isfinite(activeDuration)
+			&& activeParentElapsed >= activeDuration;
+		result.ReentersChildren = result.ReentersChildren
+			|| group.Timing.RepeatBehavior
+				!= DeclarativeRepeatBehaviorKind::Count
+			|| group.Timing.RepeatCount != 1.0
+			|| group.Timing.AutoReverse;
+		auto activeElapsed = activeParentElapsed;
+		if (std::isfinite(activeDuration))
+			activeElapsed = (std::min)(activeElapsed, activeDuration);
+		auto simpleElapsed = activeElapsed
+			* static_cast<long double>(group.Timing.SpeedRatio);
+		if (simpleDuration > 0.0L && repetitionDuration > 0.0L)
+		{
+			auto local = std::fmod(simpleElapsed, repetitionDuration);
+			if (result.ActivePeriodComplete && simpleElapsed > 0.0L
+				&& std::fabs(local) < 0.0000001L)
+				local = repetitionDuration;
+			result.Reversed = group.Timing.AutoReverse
+				&& local >= simpleDuration;
+			if (result.Reversed) local = repetitionDuration - local;
+			simpleElapsed = (std::clamp)(local, 0.0L, simpleDuration);
+		}
+		else simpleElapsed = 0.0L;
+		simpleElapsed = ApplyRootAcceleration(simpleElapsed, simpleDuration,
+			group.Timing.AccelerationRatio,
+			group.Timing.DecelerationRatio);
+		result.ElapsedMilliseconds = QuantizeWpfTimeSpanTicks(simpleElapsed);
+		result.FillStopped = result.ActivePeriodComplete
+			&& group.Timing.FillBehavior
+				== DeclarativeTimelineFillBehavior::Stop;
+		return result;
+	}
+
+	/** Target/interpolation payload shared by transaction candidates and clocks. */
+	struct AnimationPayload : TimelineDefinition, ClockLeafState
+	{
+		Control* Target = nullptr;
+		const DependencyPropertyMetadata* Metadata = nullptr;
+		BindingValue From;
+		BindingValue To;
+		std::optional<ObjectPathAccessor> ObjectPath;
+		DeclarativeHandoffBehavior Handoff =
+			DeclarativeHandoffBehavior::SnapshotAndReplace;
+	};
+
+	/** Snapshot/default-origin values owned by a property animation layer. */
+	struct AnimationLayerValueState
+	{
+		BindingValue Snapshot;
+		BindingValue Base;
+		BindingValue Foundation;
+		bool DynamicFrom = false;
+		bool DynamicFoundation = false;
+	};
+
+	/** Committed leaf: the generation-safe parent NodeId is its only root link. */
+	struct ActiveAnimation : AnimationPayload
+	{
+		ClockNodeId NodeId;
+		ClockNodeId Parent;
+	};
+
+	/** Transaction-local leaf before its committed parent node has been bound. */
+	struct CandidateAnimation : AnimationPayload
+	{
+		ClockId RootClockId;
+		AnimationLayerValueState LayerValues;
+	};
+
+	/** One committed property-layer owner with rollback-safe value state. */
+	struct AnimationLayerRecord
+	{
+		ClockNodeId Owner;
+		bool HasObjectPath = false;
+		uint64_t ObjectPath = 0;
+		DeclarativeHandoffBehavior Handoff =
+			DeclarativeHandoffBehavior::SnapshotAndReplace;
+		uint32_t ExactKeyIndex = 0;
+		AnimationLayerValueState Values;
+	};
+
+	/** Explicit ordered layers for one target root dependency property. */
+	struct AnimationLayerStack
+	{
+		PropertyKey Root;
+		uint32_t LayerOffset = 0;
+		uint32_t LayerCount = 0;
+	};
+
+	struct ClockNodeSlot
+	{
+		uint32_t Generation = 1;
+		bool Occupied = false;
+		ClockNodeKind Kind = ClockNodeKind::Root;
+		ClockNodeId Parent;
+		ClockId RootClockId;
+		uint32_t PayloadIndex = (std::numeric_limits<uint32_t>::max)();
+		uint32_t ChildOffset = 0;
+		uint32_t ChildCount = 0;
+	};
+
+	struct ClockNodeArena
+	{
+		std::vector<ClockNodeSlot> Slots;
+		std::vector<uint32_t> FreeIndices;
+		std::vector<ActiveClockRoot> Roots;
+		std::vector<ActiveAnimation> Leaves;
+		std::vector<ClockNodeId> ChildOrder;
+
+		static uint32_t NextGeneration(uint32_t value) noexcept
+		{
+			++value;
+			if (value == 0) ++value;
+			return value;
+		}
+
+		const ClockNodeSlot* Resolve(
+			ClockNodeId id, ClockNodeKind kind) const noexcept
+		{
+			if (!id.IsValid() || id.Index >= Slots.size()) return nullptr;
+			const auto& slot = Slots[id.Index];
+			return slot.Occupied && slot.Generation == id.Generation
+				&& slot.Kind == kind ? &slot : nullptr;
+		}
+
+		bool Allocate(
+			ClockNodeKind kind,
+			ClockNodeId parent,
+			ClockId rootClockId,
+			uint32_t payloadIndex,
+			ClockNodeId& result)
+		{
+			uint32_t index = 0;
+			if (!FreeIndices.empty())
+			{
+				index = FreeIndices.back();
+				FreeIndices.pop_back();
+			}
+			else
+			{
+				if (Slots.size()
+					>= (std::numeric_limits<uint32_t>::max)()) return false;
+				index = static_cast<uint32_t>(Slots.size());
+				Slots.emplace_back();
+			}
+			auto& slot = Slots[index];
+			if (slot.Occupied || slot.Generation == 0) return false;
+			slot.Occupied = true;
+			slot.Kind = kind;
+			slot.Parent = parent;
+			slot.RootClockId = rootClockId;
+			slot.PayloadIndex = payloadIndex;
+			slot.ChildOffset = 0;
+			slot.ChildCount = 0;
+			result = { index, slot.Generation };
+			return true;
+		}
+
+		void Release(uint32_t index)
+		{
+			if (index >= Slots.size() || !Slots[index].Occupied) return;
+			// Reserve the reusable index before invalidating the slot so an
+			// allocation failure cannot leave an unoccupied, unreachable slot.
+			FreeIndices.push_back(index);
+			auto& slot = Slots[index];
+			slot.Occupied = false;
+			slot.Generation = NextGeneration(slot.Generation);
+			slot.Kind = ClockNodeKind::Root;
+			slot.Parent = {};
+			slot.RootClockId = {};
+			slot.PayloadIndex = (std::numeric_limits<uint32_t>::max)();
+			slot.ChildOffset = 0;
+			slot.ChildCount = 0;
+		}
+
+		size_t OccupiedCount() const noexcept
+		{
+			return static_cast<size_t>(std::count_if(
+				Slots.begin(), Slots.end(),
+				[](const auto& slot) { return slot.Occupied; }));
+		}
 	};
 
 	static const TransformAccessor* AsTransformPath(
@@ -3770,9 +4450,17 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 
 	Control* Owner = nullptr;
+	std::optional<unsigned long long> AnimationClockOverride;
+	bool LastAdvanceFailed = false;
+	bool FailNextFrameCommitForTesting = false;
 	std::vector<RuntimeGroup> Groups;
 	std::vector<EventConnection> Connections;
-	std::vector<ActiveAnimation> ActiveAnimations;
+	ClockNodeArena ClockNodes;
+	std::vector<AnimationLayerStack> AnimationLayerStacks;
+	std::vector<AnimationLayerRecord> AnimationLayers;
+	std::vector<uint32_t> AnimationLayerByLeafPayload;
+	size_t AnimationExactKeyCount = 0;
+	bool ClockNodesDirty = true;
 #if CUI_ENABLE_DYNAMIC_XAML
 	std::vector<RuntimeEventStoryboard> EventStoryboards;
 	std::vector<RuntimeEventTrigger> EventTriggers;
@@ -3782,24 +4470,794 @@ struct Control::DeclarativeVisualStateRuntime
 #if CUI_ENABLE_DYNAMIC_XAML
 	std::vector<size_t> FreeStyleStoryboardIndices;
 #endif
-	uint64_t NextCompiledStyleClockPayload = 0;
-	static constexpr uint64_t CompiledStyleClockDomain = uint64_t{ 1 } << 63;
-	static constexpr uint64_t CompiledStyleClockPayloadMask =
-		CompiledStyleClockDomain - 1;
-	static constexpr uint64_t CompiledInteractionClockDomain = uint64_t{ 1 } << 62;
-	static constexpr uint64_t CompiledInteractionClockPayloadMask =
-		CompiledInteractionClockDomain - 1;
+	uint64_t NextClockId = 1;
+	uint64_t NextStyleOwnerScopeId = 1;
 	bool DeclarativeInteractionsDefined = false;
 	bool InstallingInteractions = false;
 	bool SuppressStateChangedEvents = false;
 	std::vector<PropertySnapshot> FailedCompiledSnapshots;
 	bool Applying = false;
 
+	unsigned long long NowMilliseconds() const noexcept
+	{
+		return AnimationClockOverride.value_or(::GetTickCount64());
+	}
+
+	static ClockOwnerScope VisualStateOwner(size_t groupIndex) noexcept
+	{
+		return { ClockOwnerKind::VisualStateGroup,
+			static_cast<uint64_t>(groupIndex) };
+	}
+
+	static StoryboardClockKey VisualStateClockKey(
+		size_t groupIndex,
+		size_t stateIndex) noexcept
+	{
+		return { VisualStateOwner(groupIndex),
+			{ static_cast<uint64_t>(stateIndex) } };
+	}
+
+	static StoryboardClockKey ComponentStoryboardClockKey(
+		size_t storyboardIndex) noexcept
+	{
+		return { { ClockOwnerKind::ComponentStoryboard, 0 },
+			{ static_cast<uint64_t>(storyboardIndex) } };
+	}
+
+	static StoryboardClockKey CompiledInteractionStoryboardClockKey(
+		uint32_t storyboardIndex) noexcept
+	{
+		return { { ClockOwnerKind::CompiledInteractionStoryboard, 0 },
+			{ static_cast<uint64_t>(storyboardIndex) } };
+	}
+
+	static StoryboardClockKey StyleStoryboardClockKey(
+		const RuntimeStyleTriggerScope& scope,
+		uint64_t storyboardIndex) noexcept
+	{
+		return { scope.ClockOwner, { storyboardIndex } };
+	}
+
+	bool TryAllocateClockIdentity(
+		const StoryboardClockKey& storyboard,
+		ClockIdentity& identity) noexcept
+	{
+		if (NextClockId == 0) return false;
+		identity = { { NextClockId }, storyboard };
+		++NextClockId;
+		return true;
+	}
+
+	bool TryAllocateStyleOwnerScope(ClockOwnerScope& owner) noexcept
+	{
+		if (NextStyleOwnerScopeId == 0) return false;
+		owner = { ClockOwnerKind::StyleTrigger, NextStyleOwnerScopeId };
+		++NextStyleOwnerScopeId;
+		return true;
+	}
+
+	static const ActiveClockRoot* FindClockRoot(
+		const std::vector<ActiveClockRoot>& roots,
+		ClockId id) noexcept
+	{
+		const auto found = std::find_if(roots.begin(), roots.end(),
+			[&](const auto& root) { return root.Identity.Instance == id; });
+		return found == roots.end() ? nullptr : &*found;
+	}
+
+	static ActiveClockRoot* FindClockRoot(
+		std::vector<ActiveClockRoot>& roots,
+		ClockId id) noexcept
+	{
+		const auto found = std::find_if(roots.begin(), roots.end(),
+			[&](const auto& root) { return root.Identity.Instance == id; });
+		return found == roots.end() ? nullptr : &*found;
+	}
+
+	static const ActiveClockRoot* FindClockRootByNode(
+		const std::vector<ActiveClockRoot>& roots,
+		ClockNodeId nodeId) noexcept
+	{
+		const auto found = std::find_if(roots.begin(), roots.end(),
+			[&](const auto& root) { return root.NodeId == nodeId; });
+		return found == roots.end() ? nullptr : &*found;
+	}
+
+	ActiveClockRoot* FindClockRoot(ClockId id) noexcept
+	{
+		return FindClockRoot(ClockNodes.Roots, id);
+	}
+
+	const ActiveClockRoot* FindClockRoot(ClockId id) const noexcept
+	{
+		return FindClockRoot(ClockNodes.Roots, id);
+	}
+
+	bool AnimationLayerStacksValid() const noexcept
+	{
+		if (AnimationLayerStacks.empty())
+			return ClockNodes.Leaves.empty() && AnimationLayers.empty()
+				&& AnimationLayerByLeafPayload.empty()
+				&& AnimationExactKeyCount == 0;
+		if (ClockNodes.Leaves.empty()
+			|| AnimationLayers.size() != ClockNodes.Leaves.size()
+			|| AnimationLayerByLeafPayload.size()
+				!= ClockNodes.Leaves.size()
+			|| AnimationExactKeyCount == 0
+			|| AnimationExactKeyCount > AnimationLayers.size()) return false;
+		try
+		{
+			std::vector<bool> owned(ClockNodes.Slots.size(), false);
+			std::vector<bool> exactKeyOwned(AnimationExactKeyCount, false);
+			std::unordered_set<PropertyKey,
+				PropertyKeyHash, PropertyKeyEqual> roots;
+			roots.reserve(AnimationLayerStacks.size());
+			std::unordered_map<ExactAnimationKey, uint32_t,
+				ExactAnimationKeyHash> exactKeys;
+			exactKeys.reserve(AnimationExactKeyCount);
+			size_t expectedOffset = 0;
+			for (const auto& stack : AnimationLayerStacks)
+			{
+				if (!stack.Root.Target || !stack.Root.Property
+					|| stack.LayerCount == 0
+					|| stack.LayerOffset != expectedOffset
+					|| stack.LayerCount > AnimationLayers.size() - expectedOffset
+					|| !roots.insert(stack.Root).second
+					|| !stack.Root.Target->HasPropertyValue(
+						*stack.Root.Property,
+						DependencyPropertyValueSource::Animation)) return false;
+				for (size_t layerIndex = 0;
+					layerIndex < stack.LayerCount; ++layerIndex)
+				{
+					const auto absoluteLayerIndex =
+						stack.LayerOffset + layerIndex;
+					const auto& layer = AnimationLayers[absoluteLayerIndex];
+					if (layer.ExactKeyIndex >= AnimationExactKeyCount) return false;
+					const ExactAnimationKey exactKey{
+						stack.Root, layer.HasObjectPath, layer.ObjectPath };
+					const auto [exactPosition, exactInserted] =
+						exactKeys.try_emplace(exactKey, layer.ExactKeyIndex);
+					if ((!exactInserted
+							&& exactPosition->second != layer.ExactKeyIndex)
+						|| (exactInserted
+							&& exactKeyOwned[layer.ExactKeyIndex])) return false;
+					if (exactInserted) exactKeyOwned[layer.ExactKeyIndex] = true;
+					const auto* slot = ClockNodes.Resolve(
+						layer.Owner, ClockNodeKind::Leaf);
+					if (!slot || slot->PayloadIndex >= ClockNodes.Leaves.size()
+						|| owned[layer.Owner.Index]
+						|| layer.Values.Snapshot.Kind() == BindingValueKind::Empty
+						|| layer.Values.Base.Kind() == BindingValueKind::Empty
+						|| AnimationLayerByLeafPayload[slot->PayloadIndex]
+							!= absoluteLayerIndex
+						|| (layer.Handoff
+							!= DeclarativeHandoffBehavior::SnapshotAndReplace
+							&& layer.Handoff != DeclarativeHandoffBehavior::Compose))
+						return false;
+					const auto& animation = ClockNodes.Leaves[slot->PayloadIndex];
+					if (animation.NodeId != layer.Owner
+						|| layer.Handoff != animation.Handoff
+						|| animation.Target != stack.Root.Target
+						|| !animation.Metadata
+						|| &animation.Metadata->Property() != stack.Root.Property
+						|| layer.HasObjectPath != animation.ObjectPath.has_value()
+						|| layer.ObjectPath
+							!= ObjectPathIdentity(animation.ObjectPath)) return false;
+					owned[layer.Owner.Index] = true;
+				}
+				expectedOffset += stack.LayerCount;
+			}
+			if (expectedOffset != AnimationLayers.size()) return false;
+			if (exactKeys.size() != AnimationExactKeyCount
+				|| std::find(exactKeyOwned.begin(), exactKeyOwned.end(), false)
+					!= exactKeyOwned.end()) return false;
+			for (const auto& animation : ClockNodes.Leaves)
+				if (!animation.NodeId.IsValid()
+					|| animation.NodeId.Index >= owned.size()
+					|| !owned[animation.NodeId.Index]) return false;
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	bool RebuildAnimationLayerStacks(
+		std::vector<AnimationLayerValueState>* replacementValues = nullptr) noexcept
+	{
+		try
+		{
+			if (ClockNodes.Leaves.size()
+				> (std::numeric_limits<uint32_t>::max)()
+				|| (replacementValues
+					&& replacementValues->size()
+						!= ClockNodes.Leaves.size())) return false;
+			const auto invalidIndex =
+				(std::numeric_limits<uint32_t>::max)();
+			std::vector<uint32_t> oldLayerBySlot;
+			if (!replacementValues)
+			{
+				oldLayerBySlot.assign(ClockNodes.Slots.size(), invalidIndex);
+				for (size_t index = 0; index < AnimationLayers.size(); ++index)
+				{
+					const auto owner = AnimationLayers[index].Owner;
+					if (!owner.IsValid() || owner.Index >= oldLayerBySlot.size()
+						|| oldLayerBySlot[owner.Index] != invalidIndex) return false;
+					oldLayerBySlot[owner.Index] = static_cast<uint32_t>(index);
+				}
+			}
+			std::vector<AnimationLayerStack> rebuilt;
+			rebuilt.reserve(ClockNodes.Leaves.size());
+			std::unordered_map<PropertyKey, size_t,
+				PropertyKeyHash, PropertyKeyEqual> stackIndices;
+			stackIndices.reserve(ClockNodes.Leaves.size());
+			for (const auto& animation : ClockNodes.Leaves)
+			{
+				if (!animation.Target || !animation.Metadata
+					|| !animation.NodeId.IsValid()) return false;
+				PropertyKey root{
+					animation.Target, &animation.Metadata->Property() };
+				const auto [position, inserted] = stackIndices.try_emplace(
+					root, rebuilt.size());
+				if (inserted)
+					rebuilt.push_back({ root, 0, 0 });
+				auto& count = rebuilt[position->second].LayerCount;
+				if (count == (std::numeric_limits<uint32_t>::max)()) return false;
+				++count;
+			}
+			std::vector<uint32_t> cursors(rebuilt.size());
+			uint32_t offset = 0;
+			for (size_t index = 0; index < rebuilt.size(); ++index)
+			{
+				rebuilt[index].LayerOffset = offset;
+				cursors[index] = offset;
+				offset += rebuilt[index].LayerCount;
+			}
+			if (offset != ClockNodes.Leaves.size()) return false;
+			std::vector<AnimationLayerRecord> layers(
+				ClockNodes.Leaves.size());
+			std::vector<uint32_t> layerByPayload(
+				ClockNodes.Leaves.size(), invalidIndex);
+			std::unordered_map<ExactAnimationKey, uint32_t,
+				ExactAnimationKeyHash> exactKeyIndices;
+			exactKeyIndices.reserve(ClockNodes.Leaves.size());
+			for (size_t animationIndex = 0;
+				animationIndex < ClockNodes.Leaves.size(); ++animationIndex)
+			{
+				const auto& animation = ClockNodes.Leaves[animationIndex];
+				const PropertyKey root{
+					animation.Target, &animation.Metadata->Property() };
+				const auto position = stackIndices.find(root);
+				if (position == stackIndices.end()
+					|| position->second >= cursors.size()) return false;
+				const auto layerIndex = cursors[position->second]++;
+				if (layerIndex >= layers.size()) return false;
+				AnimationLayerValueState values;
+				if (replacementValues)
+					values = std::move((*replacementValues)[animationIndex]);
+				else
+				{
+					if (animation.NodeId.Index >= oldLayerBySlot.size()) return false;
+					const auto oldIndex = oldLayerBySlot[animation.NodeId.Index];
+					if (oldIndex == invalidIndex || oldIndex >= AnimationLayers.size()
+						|| AnimationLayers[oldIndex].Owner
+							!= animation.NodeId) return false;
+					values = AnimationLayers[oldIndex].Values;
+				}
+				if (values.Snapshot.Kind() == BindingValueKind::Empty
+					|| values.Base.Kind() == BindingValueKind::Empty) return false;
+				const auto hasObjectPath = animation.ObjectPath.has_value();
+				const auto objectPath = ObjectPathIdentity(animation.ObjectPath);
+				const ExactAnimationKey exactKey{
+					root, hasObjectPath, objectPath };
+				const auto exactPosition = exactKeyIndices.try_emplace(exactKey,
+					static_cast<uint32_t>(exactKeyIndices.size())).first;
+				layers[layerIndex] = {
+					animation.NodeId,
+					hasObjectPath,
+					objectPath,
+					animation.Handoff,
+					exactPosition->second,
+					std::move(values) };
+				layerByPayload[animationIndex] = layerIndex;
+			}
+			AnimationLayerStacks = std::move(rebuilt);
+			AnimationLayers = std::move(layers);
+			AnimationLayerByLeafPayload = std::move(layerByPayload);
+			AnimationExactKeyCount = exactKeyIndices.size();
+			// ClockNodeArenaValid has already proved unique live owner tokens and
+			// exact payload coverage. This single construction pass adds every leaf
+			// once and uses a unique property-key index; the more expensive
+			// independent audit remains available through the testing invariant.
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	bool ClockNodeArenaValid() const noexcept
+	{
+		if (ClockNodes.OccupiedCount()
+			!= ClockNodes.Roots.size() + ClockNodes.Leaves.size()) return false;
+		if (ClockNodes.ChildOrder.size() != ClockNodes.Leaves.size()
+			|| ClockNodes.Roots.size()
+				> (std::numeric_limits<uint32_t>::max)()
+			|| ClockNodes.Leaves.size()
+				> (std::numeric_limits<uint32_t>::max)()) return false;
+		std::vector<bool> referenced;
+		std::vector<bool> free;
+		std::vector<bool> childReferenced;
+		try
+		{
+			referenced.assign(ClockNodes.Slots.size(), false);
+			free.assign(ClockNodes.Slots.size(), false);
+			childReferenced.assign(ClockNodes.Slots.size(), false);
+		}
+		catch (...)
+		{
+			return false;
+		}
+		for (const auto index : ClockNodes.FreeIndices)
+		{
+			if (index >= ClockNodes.Slots.size() || free[index]
+				|| ClockNodes.Slots[index].Occupied) return false;
+			free[index] = true;
+		}
+		size_t expectedChildOffset = 0;
+		for (size_t rootIndex = 0; rootIndex < ClockNodes.Roots.size(); ++rootIndex)
+		{
+			const auto& root = ClockNodes.Roots[rootIndex];
+			const auto* slot = ClockNodes.Resolve(
+				root.NodeId, ClockNodeKind::Root);
+			if (!slot || slot->Parent.IsValid()
+				|| slot->RootClockId != root.Identity.Instance
+				|| slot->PayloadIndex != rootIndex
+				|| slot->ChildOffset != expectedChildOffset
+				|| slot->ChildCount > ClockNodes.ChildOrder.size()
+					- expectedChildOffset
+				|| referenced[root.NodeId.Index]) return false;
+			referenced[root.NodeId.Index] = true;
+			for (size_t childIndex = 0; childIndex < slot->ChildCount;
+				++childIndex)
+			{
+				const auto childId = ClockNodes.ChildOrder[
+					expectedChildOffset + childIndex];
+				const auto* child = ClockNodes.Resolve(
+					childId, ClockNodeKind::Leaf);
+				if (!child || child->Parent != root.NodeId
+					|| child->RootClockId != root.Identity.Instance
+					|| childReferenced[childId.Index]) return false;
+				childReferenced[childId.Index] = true;
+			}
+			expectedChildOffset += slot->ChildCount;
+		}
+		if (expectedChildOffset != ClockNodes.ChildOrder.size()) return false;
+		for (size_t animationIndex = 0;
+			animationIndex < ClockNodes.Leaves.size(); ++animationIndex)
+		{
+			const auto& animation = ClockNodes.Leaves[animationIndex];
+			const auto* slot = ClockNodes.Resolve(
+				animation.NodeId, ClockNodeKind::Leaf);
+			if (!slot || slot->Parent != animation.Parent
+				|| slot->PayloadIndex != animationIndex
+				|| slot->ChildOffset != 0 || slot->ChildCount != 0
+				|| !childReferenced[animation.NodeId.Index]
+				|| referenced[animation.NodeId.Index]) return false;
+			const auto* parent = ClockNodes.Resolve(
+				slot->Parent, ClockNodeKind::Root);
+			if (!parent) return false;
+			const auto* root = FindClockRootByNode(
+				ClockNodes.Roots, animation.Parent);
+			if (!root || root->NodeId != slot->Parent) return false;
+			if (parent->RootClockId != root->Identity.Instance) return false;
+			referenced[animation.NodeId.Index] = true;
+		}
+		for (size_t index = 0; index < ClockNodes.Slots.size(); ++index)
+			if (ClockNodes.Slots[index].Occupied != referenced[index]
+				|| (!ClockNodes.Slots[index].Occupied && !free[index]))
+				return false;
+		return true;
+	}
+
+	bool SynchronizeClockNodeArena(
+		std::vector<AnimationLayerValueState>* replacementValues = nullptr) noexcept
+	{
+		if (!ClockNodesDirty) return replacementValues == nullptr;
+		try
+		{
+			if (ClockNodes.Roots.size()
+					> (std::numeric_limits<uint32_t>::max)()
+				|| ClockNodes.Leaves.size()
+					> (std::numeric_limits<uint32_t>::max)()) return false;
+			std::vector<bool> referenced(ClockNodes.Slots.size(), false);
+			auto markExisting = [&](ClockNodeId id, ClockNodeKind kind,
+				ClockId rootClockId)
+				{
+					if (!id.IsValid()) return id == ClockNodeId{};
+					const auto* slot = ClockNodes.Resolve(id, kind);
+					if (!slot || slot->RootClockId != rootClockId
+						|| referenced[id.Index]) return false;
+					referenced[id.Index] = true;
+					return true;
+				};
+			for (const auto& root : ClockNodes.Roots)
+				if (!markExisting(root.NodeId, ClockNodeKind::Root,
+					root.Identity.Instance)) return false;
+			for (const auto& animation : ClockNodes.Leaves)
+			{
+				const auto* root = FindClockRootByNode(
+					ClockNodes.Roots, animation.Parent);
+				if (!root || !markExisting(animation.NodeId,
+					ClockNodeKind::Leaf, root->Identity.Instance)) return false;
+			}
+			for (uint32_t index = 0; index < ClockNodes.Slots.size(); ++index)
+				if (ClockNodes.Slots[index].Occupied && !referenced[index])
+					ClockNodes.Release(index);
+			for (size_t rootIndex = 0;
+				rootIndex < ClockNodes.Roots.size(); ++rootIndex)
+			{
+				auto& root = ClockNodes.Roots[rootIndex];
+				if (!root.NodeId.IsValid()
+					&& !ClockNodes.Allocate(ClockNodeKind::Root, {},
+						root.Identity.Instance, static_cast<uint32_t>(rootIndex),
+						root.NodeId)) return false;
+				auto& slot = ClockNodes.Slots[root.NodeId.Index];
+				slot.PayloadIndex = static_cast<uint32_t>(rootIndex);
+				slot.ChildOffset = 0;
+				slot.ChildCount = 0;
+			}
+			for (size_t animationIndex = 0;
+				animationIndex < ClockNodes.Leaves.size(); ++animationIndex)
+			{
+				auto& animation = ClockNodes.Leaves[animationIndex];
+				const auto* root = FindClockRootByNode(
+					ClockNodes.Roots, animation.Parent);
+				if (!root || !root->NodeId.IsValid()) return false;
+				if (!animation.NodeId.IsValid())
+				{
+					if (!ClockNodes.Allocate(ClockNodeKind::Leaf,
+						root->NodeId, root->Identity.Instance,
+						static_cast<uint32_t>(animationIndex),
+						animation.NodeId)) return false;
+				}
+				else
+				{
+					const auto* slot = ClockNodes.Resolve(
+						animation.NodeId, ClockNodeKind::Leaf);
+					if (!slot || slot->Parent != animation.Parent
+						|| animation.Parent != root->NodeId) return false;
+				}
+				auto& slot = ClockNodes.Slots[animation.NodeId.Index];
+				slot.PayloadIndex = static_cast<uint32_t>(animationIndex);
+				slot.ChildOffset = 0;
+				slot.ChildCount = 0;
+			}
+			ClockNodes.ChildOrder.clear();
+			ClockNodes.ChildOrder.reserve(ClockNodes.Leaves.size());
+			for (auto& root : ClockNodes.Roots)
+			{
+				auto& slot = ClockNodes.Slots[root.NodeId.Index];
+				slot.ChildOffset = static_cast<uint32_t>(
+					ClockNodes.ChildOrder.size());
+				for (const auto& animation : ClockNodes.Leaves)
+					if (animation.Parent == root.NodeId)
+						ClockNodes.ChildOrder.push_back(animation.NodeId);
+				slot.ChildCount = static_cast<uint32_t>(
+					ClockNodes.ChildOrder.size() - slot.ChildOffset);
+			}
+			if (!ClockNodeArenaValid()
+				|| !RebuildAnimationLayerStacks(replacementValues)) return false;
+			ClockNodesDirty = false;
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	const ActiveClockRoot* ResolveClockRoot(
+		const ActiveAnimation& animation) const noexcept
+	{
+		const auto* leaf = ClockNodes.Resolve(
+			animation.NodeId, ClockNodeKind::Leaf);
+		if (!leaf || leaf->Parent != animation.Parent) return nullptr;
+		const auto* rootNode = ClockNodes.Resolve(
+			leaf->Parent, ClockNodeKind::Root);
+		if (!rootNode) return nullptr;
+		if (rootNode->PayloadIndex >= ClockNodes.Roots.size()) return nullptr;
+		const auto& root = ClockNodes.Roots[rootNode->PayloadIndex];
+		return root.NodeId == leaf->Parent
+			&& root.Identity.Instance == rootNode->RootClockId ? &root : nullptr;
+	}
+
+	ActiveAnimation* ResolveClockLeaf(ClockNodeId id) noexcept
+	{
+		const auto* slot = ClockNodes.Resolve(id, ClockNodeKind::Leaf);
+		if (!slot || slot->PayloadIndex >= ClockNodes.Leaves.size()) return nullptr;
+		auto& animation = ClockNodes.Leaves[slot->PayloadIndex];
+		return animation.NodeId == id && animation.Parent == slot->Parent
+			? &animation : nullptr;
+	}
+
+	const AnimationLayerRecord* ResolveAnimationLayer(
+		const ActiveAnimation& animation) const noexcept
+	{
+		const auto* slot = ClockNodes.Resolve(
+			animation.NodeId, ClockNodeKind::Leaf);
+		if (!slot || slot->PayloadIndex >= AnimationLayerByLeafPayload.size())
+			return nullptr;
+		const auto layerIndex =
+			AnimationLayerByLeafPayload[slot->PayloadIndex];
+		if (layerIndex >= AnimationLayers.size()) return nullptr;
+		const auto& layer = AnimationLayers[layerIndex];
+		return layer.Owner == animation.NodeId ? &layer : nullptr;
+	}
+
+	static CandidateAnimation MakeCandidateAnimation(
+		const ActiveAnimation& animation,
+		ClockId rootClockId,
+		const AnimationLayerValueState& values)
+	{
+		CandidateAnimation result;
+		static_cast<AnimationPayload&>(result) =
+			static_cast<const AnimationPayload&>(animation);
+		result.RootClockId = rootClockId;
+		result.LayerValues = values;
+		return result;
+	}
+
+	bool SnapshotClockCandidates(
+		std::vector<CandidateAnimation>& output) const noexcept
+	{
+		try
+		{
+			output.clear();
+			output.reserve(ClockNodes.Leaves.size());
+			for (const auto& animation : ClockNodes.Leaves)
+			{
+				const auto* root = ResolveClockRoot(animation);
+				const auto* layer = ResolveAnimationLayer(animation);
+				if (!root || !layer) return false;
+				output.push_back(MakeCandidateAnimation(
+					animation, root->Identity.Instance, layer->Values));
+			}
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	bool CommitClockCandidates(
+		std::vector<CandidateAnimation>&& candidates,
+		std::vector<ActiveClockRoot>&& roots) noexcept
+	{
+		try
+		{
+			ClockNodes.Roots = std::move(roots);
+			ClockNodes.Leaves.clear();
+			ClockNodesDirty = true;
+			if (!SynchronizeClockNodeArena()) return false;
+			ClockNodes.Leaves.reserve(candidates.size());
+			std::vector<AnimationLayerValueState> layerValues;
+			layerValues.reserve(candidates.size());
+			for (auto& candidate : candidates)
+			{
+				const auto* root = FindClockRoot(candidate.RootClockId);
+				if (!root || !root->NodeId.IsValid()) return false;
+				ActiveAnimation active;
+				layerValues.push_back(std::move(candidate.LayerValues));
+				static_cast<AnimationPayload&>(active) = std::move(
+					static_cast<AnimationPayload&>(candidate));
+				active.Parent = root->NodeId;
+				ClockNodes.Leaves.push_back(std::move(active));
+			}
+			ClockNodesDirty = true;
+			return SynchronizeClockNodeArena(&layerValues);
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	template<typename TVisitor>
+	bool VisitClockLeavesByRoot(
+		std::span<const ClockRootProjection> rootProjections,
+		TVisitor&& visitor)
+	{
+		for (auto& root : ClockNodes.Roots)
+		{
+			const auto* rootNode = ClockNodes.Resolve(
+				root.NodeId, ClockNodeKind::Root);
+			if (!rootNode || rootNode->PayloadIndex >= ClockNodes.Roots.size()
+				|| rootNode->PayloadIndex >= rootProjections.size()
+				|| rootNode->ChildOffset > ClockNodes.ChildOrder.size()
+				|| rootNode->ChildCount > ClockNodes.ChildOrder.size()
+					- rootNode->ChildOffset) return false;
+			for (size_t offset = 0; offset < rootNode->ChildCount; ++offset)
+			{
+				const auto childId = ClockNodes.ChildOrder[
+					rootNode->ChildOffset + offset];
+				const auto* childNode = ClockNodes.Resolve(
+					childId, ClockNodeKind::Leaf);
+				auto* animation = ResolveClockLeaf(childId);
+				if (!animation || animation->Parent != root.NodeId || !childNode
+					|| !visitor(root, rootProjections[rootNode->PayloadIndex],
+						*animation, childNode->PayloadIndex))
+					return false;
+			}
+		}
+		return true;
+	}
+
+	static bool IsVisualStateClock(const ActiveClockRoot& root) noexcept
+	{
+		return root.Identity.Storyboard.Owner.Kind
+			== ClockOwnerKind::VisualStateGroup;
+	}
+
+	bool IsVisualStateClock(const ActiveAnimation& animation) const noexcept
+	{
+		const auto* root = ResolveClockRoot(animation);
+		return root && IsVisualStateClock(*root);
+	}
+
+	bool IsEventStoryboardClock(
+		const ActiveAnimation& animation) const noexcept
+	{
+		const auto* root = ResolveClockRoot(animation);
+		return root && !IsVisualStateClock(*root);
+	}
+
+	bool IsOwnedByVisualStateGroup(
+		const ActiveAnimation& animation,
+		size_t groupIndex) const noexcept
+	{
+		const auto* root = ResolveClockRoot(animation);
+		return root && root->Identity.Storyboard.Owner
+			== VisualStateOwner(groupIndex);
+	}
+
+	bool IsStoryboardClock(
+		const ActiveAnimation& animation,
+		const StoryboardClockKey& storyboard) const noexcept
+	{
+		const auto* root = ResolveClockRoot(animation);
+		return root && root->Identity.Storyboard == storyboard;
+	}
+
+	static void EraseClockRootsByOwner(
+		std::vector<ActiveClockRoot>& roots,
+		const ClockOwnerScope& owner)
+	{
+		roots.erase(std::remove_if(roots.begin(), roots.end(),
+			[&](const auto& root)
+			{ return root.Identity.Storyboard.Owner == owner; }), roots.end());
+	}
+
+	static void EraseClockRootsByStoryboard(
+		std::vector<ActiveClockRoot>& roots,
+		const StoryboardClockKey& storyboard)
+	{
+		roots.erase(std::remove_if(roots.begin(), roots.end(),
+			[&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; }), roots.end());
+	}
+
+	static void EraseClockRoot(
+		std::vector<ActiveClockRoot>& roots,
+		ClockId id)
+	{
+		roots.erase(std::remove_if(roots.begin(), roots.end(),
+			[&](const auto& root)
+			{ return root.Identity.Instance == id; }), roots.end());
+	}
+
+	void PruneCandidateRoots(
+		std::vector<ActiveClockRoot>& roots,
+		const std::vector<CandidateAnimation>& animations) const
+	{
+		roots.erase(std::remove_if(roots.begin(), roots.end(),
+			[&](const auto& root)
+			{
+				const bool hasLeaf = std::any_of(
+					animations.begin(), animations.end(),
+					[&](const auto& animation)
+					{ return animation.RootClockId == root.Identity.Instance; });
+				const bool hasPending = std::any_of(
+					Groups.begin(), Groups.end(), [&](const auto& group)
+					{ return group.Pending
+						&& group.Pending->RootClockId
+							== root.Identity.Instance; });
+				return !hasLeaf && !hasPending;
+			}), roots.end());
+	}
+
+	static bool AppendClockRoot(
+		std::vector<ActiveClockRoot>& roots,
+		const ClockIdentity& identity,
+		unsigned long long startTick,
+		const DeclarativeStoryboardTimingDefinition& timing,
+		unsigned long long resolvedSimpleDurationMilliseconds,
+		bool resolvedSimpleDurationForever,
+		const std::vector<RuntimeTimelineGroup>& timelineGroups = {})
+	{
+		try
+		{
+			ClockRootState state;
+			state.StartTick = startTick;
+			state.LastTick = startTick;
+			roots.push_back({ {}, identity, std::move(state), timing,
+				resolvedSimpleDurationMilliseconds,
+				resolvedSimpleDurationForever, timelineGroups });
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	static bool InstallClockRoot(
+		std::vector<ActiveClockRoot>& roots,
+		const ClockIdentity& identity,
+		unsigned long long startTick,
+		const DeclarativeStoryboardTimingDefinition& timing,
+		unsigned long long resolvedSimpleDurationMilliseconds,
+		bool resolvedSimpleDurationForever,
+		const std::vector<RuntimeTimelineGroup>& timelineGroups = {})
+	{
+		EraseClockRootsByStoryboard(roots, identity.Storyboard);
+		return AppendClockRoot(roots, identity, startTick, timing,
+			resolvedSimpleDurationMilliseconds, resolvedSimpleDurationForever,
+			timelineGroups);
+	}
+
+	void PruneClockRoots() noexcept
+	{
+		const auto previousSize = ClockNodes.Roots.size();
+		ClockNodes.Roots.erase(std::remove_if(
+			ClockNodes.Roots.begin(), ClockNodes.Roots.end(),
+			[&](const auto& root)
+			{
+				const bool hasLeaf = std::any_of(
+					ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
+					[&](const auto& animation)
+					{ return animation.Parent == root.NodeId; });
+				const bool hasPending = std::any_of(
+					Groups.begin(), Groups.end(), [&](const auto& group)
+					{ return group.Pending
+						&& group.Pending->RootClockId
+							== root.Identity.Instance; });
+				return !hasLeaf && !hasPending;
+			}), ClockNodes.Roots.end());
+		if (ClockNodes.Roots.size() != previousSize) ClockNodesDirty = true;
+	}
+
+	void PublishClockRootRegistry() noexcept
+	{
+		if (!SynchronizeClockNodeArena())
+			LastAdvanceFailed = true;
+		if (Owner)
+			Owner->SynchronizeDeclarativeAnimationWindowRegistration();
+	}
+
 	~DeclarativeVisualStateRuntime()
 	{
 		Connections.clear();
 		ClearAppliedValues();
-		ActiveAnimations.clear();
+		AnimationLayerStacks.clear();
+		AnimationLayers.clear();
+		AnimationLayerByLeafPayload.clear();
+		AnimationExactKeyCount = 0;
+		ClockNodes.Leaves.clear();
+		ClockNodes.Roots.clear();
 	}
 
 	static bool EqualName(
@@ -3820,6 +5278,8 @@ struct Control::DeclarativeVisualStateRuntime
 			property = &Control::ForegroundProperty();
 		else if (EqualName(propertyName, L"BorderBrush"))
 			property = &Control::BorderBrushProperty();
+		else if (EqualName(propertyName, L"Opacity"))
+			property = &Control::OpacityProperty();
 		else if (EqualName(propertyName, L"RenderTransform"))
 			property = &Control::RenderTransformProperty();
 		else if (EqualName(propertyName, L"Clip"))
@@ -3884,6 +5344,12 @@ struct Control::DeclarativeVisualStateRuntime
 		const DependencyPropertyMetadata& metadata) noexcept
 	{
 		if (kind == DeclarativeAnimationKind::Object) return true;
+		if (kind == DeclarativeAnimationKind::Int32)
+			return metadata.ValueKind() == BindingValueKind::Int;
+		if (kind == DeclarativeAnimationKind::Int64)
+			return metadata.ValueKind() == BindingValueKind::Int64;
+		if (kind == DeclarativeAnimationKind::Single)
+			return metadata.ValueKind() == BindingValueKind::Float;
 		if (kind == DeclarativeAnimationKind::Double)
 			return IsNumericKind(metadata.ValueKind());
 		if (kind == DeclarativeAnimationKind::Thickness)
@@ -3939,6 +5405,20 @@ struct Control::DeclarativeVisualStateRuntime
 		const auto separator = value.rfind(L':');
 		return separator == std::wstring_view::npos
 			? value : value.substr(separator + 1);
+	}
+
+	static bool IsKnownStoryboardBrushRootOwner(
+		std::wstring_view owner,
+		std::wstring_view property) noexcept
+	{
+		owner = LocalTypeName(owner);
+		return EqualName(owner, L"Control")
+			|| EqualName(owner, L"UIElement")
+			|| (EqualName(property, L"Background")
+				&& (EqualName(owner, L"Panel")
+					|| EqualName(owner, L"Border")))
+			|| (EqualName(property, L"BorderBrush")
+				&& EqualName(owner, L"Border"));
 	}
 
 	static bool TryResolveTransformOperationAccessor(
@@ -4528,25 +6008,31 @@ struct Control::DeclarativeVisualStateRuntime
 			return false;
 		const auto geometryOwner = LocalTypeName(
 			path.Segments[leafStart].OwnerType);
-		if (path.Segments.size() != leafStart + 4
+		const bool direct = path.Segments.size() == leafStart + 2
+			&& path.Segments[leafStart + 1].Kind
+				== cui::xaml::PropertyPathSegmentKind::Property;
+		const bool grouped = path.Segments.size() == leafStart + 4
+			&& path.Segments[leafStart + 1].Kind
+				== cui::xaml::PropertyPathSegmentKind::Property
+			&& path.Segments[leafStart + 2].Kind
+				== cui::xaml::PropertyPathSegmentKind::Index
+			&& path.Segments[leafStart + 3].Kind
+				== cui::xaml::PropertyPathSegmentKind::Property
+			&& EqualName(
+				LocalTypeName(path.Segments[leafStart + 1].OwnerType),
+				L"TransformGroup")
+			&& EqualName(path.Segments[leafStart + 1].Name, L"Children");
+		if ((!direct && !grouped)
 			|| path.Segments[leafStart].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-			|| path.Segments[leafStart + 1].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-			|| path.Segments[leafStart + 2].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Index
-			|| path.Segments[leafStart + 3].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
+				!= cui::xaml::PropertyPathSegmentKind::Property
 			|| (!EqualName(geometryOwner, L"Geometry")
 				&& !EqualName(geometryOwner, L"RectangleGeometry")
 				&& !EqualName(geometryOwner, L"EllipseGeometry")
 				&& !EqualName(geometryOwner, L"PathGeometry")
 				&& !EqualName(geometryOwner, L"GeometryGroup"))
-			|| !EqualName(path.Segments[leafStart].Name, L"Transform")
-			|| !EqualName(
-				LocalTypeName(path.Segments[leafStart + 1].OwnerType), L"TransformGroup")
-			|| !EqualName(path.Segments[leafStart + 1].Name, L"Children"))
+			|| !EqualName(path.Segments[leafStart].Name, L"Transform"))
 			return fail(L"Geometry Transform 动画路径必须是 "
+				L"(Control.Clip)...(Geometry.Transform).(TransformType.Property) 或 "
 				L"(Control.Clip)...(Geometry.Transform)."
 				L"(TransformGroup.Children)[n].(TransformType.Property)。");
 		auto ownerMatches = [&]()
@@ -4570,15 +6056,20 @@ struct Control::DeclarativeVisualStateRuntime
 			return fail(L"Geometry.Transform 路径所有者与实际 Geometry 类型不匹配。");
 		if (!resolvedGeometry->LocalTransform)
 			return fail(L"动画目标没有路径所需的 Geometry.Transform。");
+		if (direct && resolvedGeometry->LocalTransform->Operations.size() != 1)
+			return fail(L"直接 Geometry.Transform 动画路径要求单一 Transform 操作。");
 
 		TransformAccessor transformAccessor;
 		if (!TryResolveTransformOperationAccessor(
-			*resolvedGeometry->LocalTransform, path.Segments[leafStart + 2].Index,
-			LocalTypeName(path.Segments[leafStart + 3].OwnerType),
-			path.Segments[leafStart + 3].Name,
-			canonicalPrefix
-			+ L".(Geometry.Transform).(TransformGroup.Children)",
-			transformAccessor, outError)) return false;
+			*resolvedGeometry->LocalTransform,
+			direct ? 0 : path.Segments[leafStart + 2].Index,
+			LocalTypeName(path.Segments[direct
+				? leafStart + 1 : leafStart + 3].OwnerType),
+			path.Segments[direct ? leafStart + 1 : leafStart + 3].Name,
+			canonicalPrefix + L".(Geometry.Transform)"
+				+ (direct ? std::wstring{}
+					: L".(TransformGroup.Children)"),
+			transformAccessor, outError, direct)) return false;
 		output.ChildIndices = std::move(childIndices);
 		output.GeometryKind = resolvedGeometry->Kind;
 		output.Transform = std::move(transformAccessor);
@@ -4609,8 +6100,8 @@ struct Control::DeclarativeVisualStateRuntime
 		if (path.Segments.size() < 2
 			|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
 			|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
-			|| (!EqualName(LocalTypeName(path.Segments[0].OwnerType), L"Control")
-				&& !EqualName(LocalTypeName(path.Segments[0].OwnerType), L"UIElement")))
+			|| !IsKnownStoryboardBrushRootOwner(
+				path.Segments[0].OwnerType, path.Segments[0].Name))
 			return fail(L"Brush 复合动画路径必须以 "
 				L"(Control.BrushProperty).(BrushProperty) 开始。");
 		const auto& rootProperty = path.Segments[0].Name;
@@ -4799,14 +6290,23 @@ struct Control::DeclarativeVisualStateRuntime
 			return fail(L"Storyboard.TargetProperty 路径无效：" + parseError);
 		const auto brushOwner = path.Segments.size() > 1
 			? LocalTypeName(path.Segments[1].OwnerType) : std::wstring_view{};
-		if (path.Segments.size() != 5
+		const bool direct = path.Segments.size() == 3
+			&& path.Segments[2].Kind
+				== cui::xaml::PropertyPathSegmentKind::Property;
+		const bool grouped = path.Segments.size() == 5
+			&& path.Segments[2].Kind
+				== cui::xaml::PropertyPathSegmentKind::Property
+			&& path.Segments[3].Kind
+				== cui::xaml::PropertyPathSegmentKind::Index
+			&& path.Segments[4].Kind
+				== cui::xaml::PropertyPathSegmentKind::Property
+			&& EqualName(LocalTypeName(path.Segments[2].OwnerType), L"TransformGroup")
+			&& EqualName(path.Segments[2].Name, L"Children");
+		if ((!direct && !grouped)
 			|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
 			|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
-			|| path.Segments[2].Kind != cui::xaml::PropertyPathSegmentKind::Property
-			|| path.Segments[3].Kind != cui::xaml::PropertyPathSegmentKind::Index
-			|| path.Segments[4].Kind != cui::xaml::PropertyPathSegmentKind::Property
-			|| (!EqualName(LocalTypeName(path.Segments[0].OwnerType), L"Control")
-				&& !EqualName(LocalTypeName(path.Segments[0].OwnerType), L"UIElement"))
+			|| !IsKnownStoryboardBrushRootOwner(
+				path.Segments[0].OwnerType, path.Segments[0].Name)
 			|| (!EqualName(brushOwner, L"Brush")
 				&& !EqualName(brushOwner, L"SolidColorBrush")
 				&& !EqualName(brushOwner, L"GradientBrush")
@@ -4814,11 +6314,10 @@ struct Control::DeclarativeVisualStateRuntime
 				&& !EqualName(brushOwner, L"RadialGradientBrush")
 				&& !EqualName(brushOwner, L"ImageBrush"))
 			|| (!EqualName(path.Segments[1].Name, L"Transform")
-				&& !EqualName(path.Segments[1].Name, L"RelativeTransform"))
-			|| !EqualName(LocalTypeName(path.Segments[2].OwnerType), L"TransformGroup")
-			|| !EqualName(path.Segments[2].Name, L"Children"))
+				&& !EqualName(path.Segments[1].Name, L"RelativeTransform")))
 			return fail(L"Brush Transform 动画路径必须是 "
 				L"(Control.BrushProperty).(Brush.Transform|RelativeTransform)."
+				L"(TransformType.Property) 或 ..."
 				L"(TransformGroup.Children)[n].(TransformType.Property)。");
 
 		const auto& rootProperty = path.Segments[0].Name;
@@ -4860,15 +6359,19 @@ struct Control::DeclarativeVisualStateRuntime
 			? currentBrush->RelativeTransform : currentBrush->Transform;
 		if (!transform)
 			return fail(L"动画目标没有路径所需的 Brush Transform。");
+		if (direct && transform->Operations.size() != 1)
+			return fail(L"直接 Brush Transform 动画路径要求单一 Transform 操作。");
 
 		TransformAccessor transformAccessor;
 		const auto canonicalPrefix = L"(Control." + rootProperty + L").(Brush."
 			+ std::wstring(relative ? L"RelativeTransform" : L"Transform")
-			+ L").(TransformGroup.Children)";
+			+ L")" + (direct ? std::wstring{}
+				: L".(TransformGroup.Children)");
 		if (!TryResolveTransformOperationAccessor(
-			*transform, path.Segments[3].Index,
-			LocalTypeName(path.Segments[4].OwnerType), path.Segments[4].Name,
-			canonicalPrefix, transformAccessor, outError)) return false;
+			*transform, direct ? 0 : path.Segments[3].Index,
+			LocalTypeName(path.Segments[direct ? 2 : 4].OwnerType),
+			path.Segments[direct ? 2 : 4].Name,
+			canonicalPrefix, transformAccessor, outError, direct)) return false;
 		output.BrushKind = currentBrush->Kind;
 		output.Relative = relative;
 		output.Transform = std::move(transformAccessor);
@@ -5058,7 +6561,9 @@ struct Control::DeclarativeVisualStateRuntime
 		constexpr auto knownFlags =
 			static_cast<uint8_t>(CompiledStoryboardObjectPathFlags::RelativeTransform)
 			| static_cast<uint8_t>(
-				CompiledStoryboardObjectPathFlags::HasPathSegment);
+				CompiledStoryboardObjectPathFlags::HasPathSegment)
+			| static_cast<uint8_t>(
+				CompiledStoryboardObjectPathFlags::DirectTransform);
 		if ((static_cast<uint8_t>(source.Flags) & ~knownFlags) != 0)
 			return fail(L"编译 Storyboard 对象路径包含未知标志。");
 		const auto childOffset = static_cast<size_t>(source.ChildIndices.Offset);
@@ -5188,6 +6693,8 @@ struct Control::DeclarativeVisualStateRuntime
 			source.Flags, CompiledStoryboardObjectPathFlags::HasPathSegment);
 		const bool relativeTransform = HasCompiledStoryboardObjectPathFlag(
 			source.Flags, CompiledStoryboardObjectPathFlags::RelativeTransform);
+		const bool directTransform = HasCompiledStoryboardObjectPathFlag(
+			source.Flags, CompiledStoryboardObjectPathFlags::DirectTransform);
 		if (&rootMetadata.Property() == &Control::ClipProperty()
 			&& !target.GetClip())
 			return fail(L"编译 Storyboard Geometry 对象路径要求目标显式持有 Clip。");
@@ -5287,6 +6794,8 @@ struct Control::DeclarativeVisualStateRuntime
 			const auto operationIndex = static_cast<size_t>(source.Index0);
 			cui::drawing::TransformKind operationKind{};
 			if (!root.TryGet(transform)
+				|| (directTransform
+					&& (operationIndex != 0 || transform.Operations.size() != 1))
 				|| operationIndex >= transform.Operations.size()
 				|| !resolveTransformKind(source.ExpectedObjectKind,
 					transform.Operations[operationIndex].Kind, operationKind))
@@ -5301,7 +6810,7 @@ struct Control::DeclarativeVisualStateRuntime
 		}
 		case CompiledStoryboardObjectPathKind::Geometry:
 		{
-			if (hasPathSegment || relativeTransform
+			if (hasPathSegment || relativeTransform || directTransform
 				|| source.ExpectedAuxiliaryKind != 0
 				|| rootMetadata.ValueType()
 				!= std::type_index(typeid(cui::drawing::Geometry)))
@@ -5334,7 +6843,8 @@ struct Control::DeclarativeVisualStateRuntime
 		}
 		case CompiledStoryboardObjectPathKind::PathGeometry:
 		{
-			if (relativeTransform || source.ExpectedAuxiliaryKind != 0
+			if (relativeTransform || directTransform
+				|| source.ExpectedAuxiliaryKind != 0
 				|| rootMetadata.ValueType()
 				!= std::type_index(typeid(cui::drawing::Geometry)))
 				return fail(L"编译 PathGeometry 对象路径描述符无效。");
@@ -5414,6 +6924,8 @@ struct Control::DeclarativeVisualStateRuntime
 				|| !resolveGeometryKind(source.ExpectedObjectKind,
 					leafGeometry->Kind, geometryKind)
 				|| !leafGeometry->LocalTransform
+				|| (directTransform && (operationIndex != 0
+					|| leafGeometry->LocalTransform->Operations.size() != 1))
 				|| operationIndex >= leafGeometry->LocalTransform->Operations.size()
 				|| !resolveTransformKind(source.ExpectedAuxiliaryKind,
 					leafGeometry->LocalTransform->Operations[operationIndex].Kind,
@@ -5433,6 +6945,7 @@ struct Control::DeclarativeVisualStateRuntime
 		case CompiledStoryboardObjectPathKind::Brush:
 		{
 			if (childCount != 0 || hasPathSegment || relativeTransform
+				|| directTransform
 				|| source.ExpectedAuxiliaryKind != 0
 				|| rootMetadata.ValueType()
 				!= std::type_index(typeid(cui::drawing::Brush)))
@@ -5486,7 +6999,10 @@ struct Control::DeclarativeVisualStateRuntime
 			const auto& transform = relativeTransform
 				? brush.RelativeTransform : brush.Transform;
 			cui::drawing::TransformKind operationKind{};
-			if (!transform || operationIndex >= transform->Operations.size()
+			if (!transform
+				|| (directTransform
+					&& (operationIndex != 0 || transform->Operations.size() != 1))
+				|| operationIndex >= transform->Operations.size()
 				|| !resolveTransformKind(source.ExpectedAuxiliaryKind,
 					transform->Operations[operationIndex].Kind, operationKind))
 				return fail(L"编译 Brush.Transform kind 与目标实例不匹配。");
@@ -6211,18 +7727,83 @@ struct Control::DeclarativeVisualStateRuntime
 	static double Ease(
 		double progress,
 		DeclarativeEasingKind kind,
-		DeclarativeEasingMode mode) noexcept
+		DeclarativeEasingMode mode,
+		DeclarativeEasingParameters parameters) noexcept
 	{
 		progress = (std::clamp)(progress, 0.0, 1.0);
 		if (kind == DeclarativeEasingKind::Linear) return progress;
-		auto easeIn = [kind](double value)
+		auto easeIn = [kind, parameters](double value)
 			{
+				constexpr double Pi = 3.14159265358979323846;
+				constexpr double TwoPi = Pi * 2.0;
+				constexpr double CloseEpsilon =
+					10.0 * std::numeric_limits<double>::epsilon();
 				switch (kind)
 				{
 				case DeclarativeEasingKind::Quadratic: return value * value;
 				case DeclarativeEasingKind::Cubic: return value * value * value;
 				case DeclarativeEasingKind::Sine:
 					return 1.0 - std::cos(value * 1.57079632679489661923);
+				case DeclarativeEasingKind::Back:
+					return std::pow(value, 3.0) - value
+						* (std::max)(0.0, parameters.Primary)
+						* std::sin(Pi * value);
+				case DeclarativeEasingKind::Bounce:
+				{
+					const auto bounces = (std::max)(0.0, parameters.Secondary);
+					auto bounciness = parameters.Primary;
+					if (bounciness < 1.0
+						|| std::abs(bounciness - 1.0) < CloseEpsilon)
+						bounciness = 1.001;
+					const auto power = std::pow(bounciness, bounces);
+					const auto oneMinusBounciness = 1.0 - bounciness;
+					const auto sumOfUnits = (1.0 - power) / oneMinusBounciness
+						+ power * 0.5;
+					const auto unitAtTime = value * sumOfUnits;
+					const auto bounceAtTime = std::log(
+						-unitAtTime * oneMinusBounciness + 1.0)
+						/ std::log(bounciness);
+					const auto start = std::floor(bounceAtTime);
+					const auto end = start + 1.0;
+					const auto startTime = (1.0 - std::pow(bounciness, start))
+						/ (oneMinusBounciness * sumOfUnits);
+					const auto endTime = (1.0 - std::pow(bounciness, end))
+						/ (oneMinusBounciness * sumOfUnits);
+					const auto middleTime = (startTime + endTime) * 0.5;
+					const auto timeFromPeak = value - middleTime;
+					const auto radius = middleTime - startTime;
+					const auto amplitude = std::pow(
+						1.0 / bounciness, bounces - start);
+					return (-amplitude / (radius * radius))
+						* (timeFromPeak - radius) * (timeFromPeak + radius);
+				}
+				case DeclarativeEasingKind::Circle:
+					return 1.0 - std::sqrt(1.0 - value * value);
+				case DeclarativeEasingKind::Elastic:
+				{
+					const auto oscillations =
+						(std::max)(0.0, parameters.Secondary);
+					const auto springiness =
+						(std::max)(0.0, parameters.Primary);
+					const auto exponential = std::abs(springiness) < CloseEpsilon
+						? value
+						: (std::exp(springiness * value) - 1.0)
+							/ (std::exp(springiness) - 1.0);
+					return exponential * std::sin(
+						(TwoPi * oscillations + Pi * 0.5) * value);
+				}
+				case DeclarativeEasingKind::Exponential:
+					return std::abs(parameters.Primary) < CloseEpsilon
+						? value
+						: (std::exp(parameters.Primary * value) - 1.0)
+							/ (std::exp(parameters.Primary) - 1.0);
+				case DeclarativeEasingKind::Power:
+					return std::pow(value,
+						(std::max)(0.0, parameters.Primary));
+				case DeclarativeEasingKind::Quartic:
+					return value * value * value * value;
+				case DeclarativeEasingKind::Quintic:
+					return value * value * value * value * value;
 				case DeclarativeEasingKind::Linear:
 				default: return value;
 				}
@@ -6258,35 +7839,67 @@ struct Control::DeclarativeVisualStateRuntime
 
 	static double KeySplineProgress(
 		double progress,
-		const RuntimeAnimationKeyFrame& keyFrame) noexcept
+		const RuntimeAnimationKeyFrame& keyFrame,
+		double& parameter) noexcept
 	{
 		progress = (std::clamp)(progress, 0.0, 1.0);
-		double parameter = progress;
-		for (int iteration = 0; iteration < 8; ++iteration)
+		if (keyFrame.KeySplineX1 == 0.0f
+			&& keyFrame.KeySplineY1 == 0.0f
+			&& keyFrame.KeySplineX2 == 1.0f
+			&& keyFrame.KeySplineY2 == 1.0f)
+			return progress;
+
+		if (progress == 0.0)
+			parameter = 0.0;
+		else if (progress == 1.0)
+			parameter = 1.0;
+		else
 		{
-			const auto error = CubicBezier(
-				parameter, keyFrame.KeySplineX1, keyFrame.KeySplineX2) - progress;
-			if (std::fabs(error) <= 1e-7) break;
-			const auto derivative = CubicBezierDerivative(
-				parameter, keyFrame.KeySplineX1, keyFrame.KeySplineX2);
-			if (std::fabs(derivative) <= 1e-7) break;
-			const auto candidate = parameter - error / derivative;
-			if (candidate < 0.0 || candidate > 1.0) break;
-			parameter = candidate;
-		}
-		double low = 0.0;
-		double high = 1.0;
-		for (int iteration = 0; iteration < 18; ++iteration)
-		{
-			const auto x = CubicBezier(
-				parameter, keyFrame.KeySplineX1, keyFrame.KeySplineX2);
-			if (std::fabs(x - progress) <= 1e-7) break;
-			if (x < progress) low = parameter;
-			else high = parameter;
-			parameter = (low + high) * 0.5;
+			// Match WPF KeySpline.SetParameterFromX: its stopping rule is
+			// expressed in eventual Y accuracy and its previous parameter is a
+			// deliberate part of the clock's runtime state.
+			constexpr double accuracy = 0.001;
+			constexpr double fuzz = 0.000001;
+			double bottom = 0.0;
+			double top = 1.0;
+			while (top - bottom > fuzz)
+			{
+				const auto x = CubicBezier(
+					parameter, keyFrame.KeySplineX1, keyFrame.KeySplineX2);
+				const auto derivative = CubicBezierDerivative(
+					parameter, keyFrame.KeySplineX1, keyFrame.KeySplineX2);
+				const auto absoluteDerivative = std::fabs(derivative);
+				if (x > progress) top = parameter;
+				else bottom = parameter;
+				if (std::fabs(x - progress) < accuracy * absoluteDerivative)
+					break;
+				if (absoluteDerivative > fuzz)
+				{
+					const auto next = parameter - (x - progress) / derivative;
+					if (next >= top) parameter = (parameter + top) * 0.5;
+					else if (next <= bottom)
+						parameter = (parameter + bottom) * 0.5;
+					else parameter = next;
+				}
+				else parameter = (bottom + top) * 0.5;
+			}
 		}
 		return CubicBezier(
 			parameter, keyFrame.KeySplineY1, keyFrame.KeySplineY2);
+	}
+
+	static float StoredSrgbToScRgbChannel(float value)
+	{
+		if (value <= 0.04045f) return value / 12.92f;
+		return static_cast<float>(std::pow(
+			(static_cast<double>(value) + 0.055) / 1.055, 2.4));
+	}
+
+	static float ScRgbToStoredSrgbChannel(float value)
+	{
+		if (value <= 0.0031308f) return value * 12.92f;
+		return static_cast<float>(1.055 * std::pow(
+			static_cast<double>(value), 1.0 / 2.4) - 0.055);
 	}
 
 	static bool InterpolateValues(
@@ -6298,7 +7911,77 @@ struct Control::DeclarativeVisualStateRuntime
 		double progress,
 		BindingValue& output)
 	{
-		progress = (std::clamp)(progress, 0.0, 1.0);
+		if (!std::isfinite(progress)) return false;
+		if (kind == DeclarativeAnimationKind::Int32)
+		{
+			int from = 0, to = 0;
+			if (!fromValue.TryGet(from) || !toValue.TryGet(to)) return false;
+			if (progress == 0.0) { output = BindingValue(from); return true; }
+			if (progress == 1.0) { output = BindingValue(to); return true; }
+			const auto differenceBits = static_cast<std::uint32_t>(to)
+				- static_cast<std::uint32_t>(from);
+			const auto difference = differenceBits
+				<= static_cast<std::uint32_t>((std::numeric_limits<int>::max)())
+				? static_cast<double>(differenceBits)
+				: -static_cast<double>((~differenceBits) + 1u);
+			double addend = difference * progress;
+			addend += addend > 0.0 ? 0.5 : -0.5;
+			if (!std::isfinite(addend)
+				|| addend < static_cast<double>((std::numeric_limits<int>::min)())
+				|| addend > static_cast<double>((std::numeric_limits<int>::max)()))
+				return false;
+			const auto rounded = static_cast<int>(addend);
+			const auto resultBits = static_cast<std::uint32_t>(from)
+				+ static_cast<std::uint32_t>(rounded);
+			const auto result = resultBits
+				<= static_cast<std::uint32_t>((std::numeric_limits<int>::max)())
+				? static_cast<int>(resultBits)
+				: -1 - static_cast<int>(~resultBits);
+			output = BindingValue(result);
+			return true;
+		}
+		if (kind == DeclarativeAnimationKind::Int64)
+		{
+			long long from = 0, to = 0;
+			if (!fromValue.TryGet(from) || !toValue.TryGet(to)) return false;
+			if (progress == 0.0) { output = BindingValue(from); return true; }
+			if (progress == 1.0) { output = BindingValue(to); return true; }
+			const auto differenceBits = static_cast<std::uint64_t>(to)
+				- static_cast<std::uint64_t>(from);
+			const auto difference = differenceBits
+				<= static_cast<std::uint64_t>((std::numeric_limits<long long>::max)())
+				? static_cast<double>(differenceBits)
+				: -static_cast<double>((~differenceBits) + 1ull);
+			double addend = difference * progress;
+			addend += addend > 0.0 ? 0.5 : -0.5;
+			if (!std::isfinite(addend)
+				|| static_cast<long double>(addend)
+					< static_cast<long double>((std::numeric_limits<long long>::min)())
+				|| static_cast<long double>(addend)
+					> static_cast<long double>((std::numeric_limits<long long>::max)()))
+				return false;
+			const auto rounded = static_cast<long long>(addend);
+			const auto resultBits = static_cast<std::uint64_t>(from)
+				+ static_cast<std::uint64_t>(rounded);
+			const auto result = resultBits
+				<= static_cast<std::uint64_t>((std::numeric_limits<long long>::max)())
+				? static_cast<long long>(resultBits)
+				: -1 - static_cast<long long>(~resultBits);
+			output = BindingValue(result);
+			return true;
+		}
+		if (kind == DeclarativeAnimationKind::Single)
+		{
+			float from = 0.0f, to = 0.0f;
+			if (!fromValue.TryGet(from) || !toValue.TryGet(to)) return false;
+			const float difference = to - from;
+			const float increment = static_cast<float>(
+				static_cast<double>(difference) * progress);
+			const float result = from + increment;
+			if (!std::isfinite(result)) return false;
+			output = BindingValue(result);
+			return true;
+		}
 		if (kind == DeclarativeAnimationKind::Thickness)
 		{
 			Thickness from{}, to{};
@@ -6438,13 +8121,24 @@ struct Control::DeclarativeVisualStateRuntime
 		{
 			D2D1_COLOR_F from{}, to{};
 			if (!fromValue.TryGet(from) || !toValue.TryGet(to)) return false;
-			auto lerp = [progress](float left, float right)
+			auto lerpLinear = [progress](
+				float left, float right)
+				{
+					return ScRgbToStoredSrgbChannel(static_cast<float>(
+						StoredSrgbToScRgbChannel(left)
+						+ (StoredSrgbToScRgbChannel(right)
+							- StoredSrgbToScRgbChannel(left)) * progress));
+				};
+			auto lerpAlpha = [progress](float left, float right)
 				{
 					return static_cast<float>(left + (right - left) * progress);
 				};
-			output = BindingValue(D2D1_COLOR_F{
-				lerp(from.r, to.r), lerp(from.g, to.g),
-				lerp(from.b, to.b), lerp(from.a, to.a) });
+			const D2D1_COLOR_F result{
+				lerpLinear(from.r, to.r), lerpLinear(from.g, to.g),
+				lerpLinear(from.b, to.b), lerpAlpha(from.a, to.a) };
+			if (!std::isfinite(result.r) || !std::isfinite(result.g)
+				|| !std::isfinite(result.b) || !std::isfinite(result.a)) return false;
+			output = BindingValue(result);
 			return true;
 		}
 
@@ -6502,6 +8196,55 @@ struct Control::DeclarativeVisualStateRuntime
 		long double rightScale,
 		BindingValue& output)
 	{
+		if (animation.Kind == DeclarativeAnimationKind::Int32)
+		{
+			int base = 0, increment = 0;
+			if (!left.TryGet(base) || !right.TryGet(increment)) return false;
+			const double scaled = static_cast<double>(increment)
+				* static_cast<double>(rightScale);
+			if (!std::isfinite(scaled)
+				|| scaled < static_cast<double>((std::numeric_limits<int>::min)())
+				|| scaled > static_cast<double>((std::numeric_limits<int>::max)()))
+				return false;
+			const auto resultBits = static_cast<std::uint32_t>(base)
+				+ static_cast<std::uint32_t>(static_cast<int>(scaled));
+			output = BindingValue(resultBits
+				<= static_cast<std::uint32_t>((std::numeric_limits<int>::max)())
+				? static_cast<int>(resultBits)
+				: -1 - static_cast<int>(~resultBits));
+			return true;
+		}
+		if (animation.Kind == DeclarativeAnimationKind::Int64)
+		{
+			long long base = 0, increment = 0;
+			if (!left.TryGet(base) || !right.TryGet(increment)) return false;
+			const double scaled = static_cast<double>(increment)
+				* static_cast<double>(rightScale);
+			if (!std::isfinite(scaled)
+				|| static_cast<long double>(scaled)
+					< static_cast<long double>((std::numeric_limits<long long>::min)())
+				|| static_cast<long double>(scaled)
+					> static_cast<long double>((std::numeric_limits<long long>::max)()))
+				return false;
+			const auto resultBits = static_cast<std::uint64_t>(base)
+				+ static_cast<std::uint64_t>(static_cast<long long>(scaled));
+			output = BindingValue(resultBits
+				<= static_cast<std::uint64_t>((std::numeric_limits<long long>::max)())
+				? static_cast<long long>(resultBits)
+				: -1 - static_cast<long long>(~resultBits));
+			return true;
+		}
+		if (animation.Kind == DeclarativeAnimationKind::Single)
+		{
+			float base = 0.0f, increment = 0.0f;
+			if (!left.TryGet(base) || !right.TryGet(increment)) return false;
+			const float scaled = static_cast<float>(static_cast<double>(increment)
+				* static_cast<double>(rightScale));
+			const float result = base + scaled;
+			if (!std::isfinite(result)) return false;
+			output = BindingValue(result);
+			return true;
+		}
 		if (animation.Kind == DeclarativeAnimationKind::Thickness)
 		{
 			Thickness base{}, increment{};
@@ -6641,10 +8384,17 @@ struct Control::DeclarativeVisualStateRuntime
 		{
 			D2D1_COLOR_F base{}, increment{};
 			if (!left.TryGet(base) || !right.TryGet(increment)) return false;
+			auto combine = [rightScale](
+				float leftValue, float rightValue)
+				{
+					return ScRgbToStoredSrgbChannel(static_cast<float>(
+						StoredSrgbToScRgbChannel(leftValue)
+						+ StoredSrgbToScRgbChannel(rightValue) * rightScale));
+				};
 			const D2D1_COLOR_F result{
-				static_cast<float>(base.r + increment.r * rightScale),
-				static_cast<float>(base.g + increment.g * rightScale),
-				static_cast<float>(base.b + increment.b * rightScale),
+				combine(base.r, increment.r),
+				combine(base.g, increment.g),
+				combine(base.b, increment.b),
 				static_cast<float>(base.a + increment.a * rightScale) };
 			if (!std::isfinite(result.r) || !std::isfinite(result.g)
 				|| !std::isfinite(result.b) || !std::isfinite(result.a)) return false;
@@ -6684,6 +8434,12 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		if (animation.Kind == DeclarativeAnimationKind::Object)
 			return BindingValue{};
+		if (animation.Kind == DeclarativeAnimationKind::Int32)
+			return BindingValue(0);
+		if (animation.Kind == DeclarativeAnimationKind::Int64)
+			return BindingValue(0ll);
+		if (animation.Kind == DeclarativeAnimationKind::Single)
+			return BindingValue(0.0f);
 		if (animation.Kind == DeclarativeAnimationKind::Thickness)
 			return BindingValue(Thickness{});
 		if (animation.Kind == DeclarativeAnimationKind::Point)
@@ -6710,6 +8466,16 @@ struct Control::DeclarativeVisualStateRuntime
 		return CombineAnimationValues(animation, left, delta, 1.0L, output);
 	}
 
+	template<typename TAnimation>
+	static bool MatrixKeyFramesUseDirectValues(const TAnimation& animation) noexcept
+	{
+		// WPF's MatrixAnimationUsingKeyFrames returns the resolved key-frame
+		// value directly. The inherited additive/cumulative flags are accepted
+		// by XAML but its generated GetCurrentValueCore does not apply them.
+		return animation.Kind == DeclarativeAnimationKind::Matrix
+			&& !animation.KeyFrames.empty();
+	}
+
 	static bool ResolveAnimationEndpoints(
 		const RuntimeAnimation& animation,
 		const BindingValue& defaultOrigin,
@@ -6721,6 +8487,13 @@ struct Control::DeclarativeVisualStateRuntime
 		if (defaultOrigin.Kind() == BindingValueKind::Empty
 			|| defaultDestination.Kind() == BindingValueKind::Empty) return false;
 		const auto zero = ZeroAnimationValue(animation);
+		if (animation.Path.Enabled)
+		{
+			from = defaultOrigin;
+			to = defaultDestination;
+			foundation = defaultOrigin;
+			return true;
+		}
 		if (!animation.KeyFrames.empty())
 		{
 			if (animation.Kind == DeclarativeAnimationKind::Object)
@@ -6728,6 +8501,13 @@ struct Control::DeclarativeVisualStateRuntime
 				from = defaultOrigin;
 				to = defaultDestination;
 				foundation = BindingValue{};
+				return true;
+			}
+			if (MatrixKeyFramesUseDirectValues(animation))
+			{
+				from = defaultOrigin;
+				to = defaultDestination;
+				foundation = zero;
 				return true;
 			}
 			from = animation.IsAdditive ? zero : defaultOrigin;
@@ -6777,41 +8557,264 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 
 	static long double TimelineActiveDurationExact(
-		const RuntimeAnimation& animation) noexcept
+		const TimelineDefinition& timeline) noexcept
 	{
-		return TimelineActiveDurationExact(animation.DurationMilliseconds,
-			animation.RepeatBehavior, animation.RepeatCount,
-			animation.RepeatDurationMilliseconds, animation.AutoReverse,
-			animation.SpeedRatio);
-	}
-
-	static long double TimelineActiveDurationExact(
-		const ActiveAnimation& animation) noexcept
-	{
-		return TimelineActiveDurationExact(animation.DurationMilliseconds,
-			animation.RepeatBehavior, animation.RepeatCount,
-			animation.RepeatDurationMilliseconds, animation.AutoReverse,
-			animation.SpeedRatio);
+		return TimelineActiveDurationExact(timeline.DurationMilliseconds,
+			timeline.RepeatBehavior, timeline.RepeatCount,
+			timeline.RepeatDurationMilliseconds, timeline.AutoReverse,
+			timeline.SpeedRatio);
 	}
 
 	static unsigned long long TimelineActiveDurationMilliseconds(
-		const RuntimeAnimation& animation) noexcept
+		const TimelineDefinition& timeline) noexcept
 	{
-		const auto duration = TimelineActiveDurationExact(animation);
+		const auto duration = TimelineActiveDurationExact(timeline);
 		const auto maximum = (std::numeric_limits<unsigned long long>::max)();
 		if (!std::isfinite(duration)
 			|| duration >= static_cast<long double>(maximum)) return maximum;
 		return static_cast<unsigned long long>(std::ceil(duration));
 	}
 
-	static unsigned long long TimelineActiveDurationMilliseconds(
-		const ActiveAnimation& animation) noexcept
+	template<typename TAnimations>
+	static bool ResolveStoryboardTiming(
+		const DeclarativeStoryboardTimingDefinition& authored,
+		const TAnimations& animations,
+		unsigned long long& simpleDurationMilliseconds,
+		bool& simpleDurationForever) noexcept
 	{
-		const auto duration = TimelineActiveDurationExact(animation);
+		if (!std::isfinite(authored.SpeedRatio) || authored.SpeedRatio <= 0.0
+			|| !std::isfinite(authored.AccelerationRatio)
+			|| !std::isfinite(authored.DecelerationRatio)
+			|| authored.AccelerationRatio < 0.0
+			|| authored.DecelerationRatio < 0.0
+			|| authored.AccelerationRatio + authored.DecelerationRatio > 1.0)
+			return false;
+		if (static_cast<unsigned char>(authored.RepeatBehavior)
+			> static_cast<unsigned char>(
+				DeclarativeRepeatBehaviorKind::Forever)
+			|| (authored.RepeatBehavior
+					== DeclarativeRepeatBehaviorKind::Count
+				&& (!std::isfinite(authored.RepeatCount)
+					|| authored.RepeatCount <= 0.0))
+			|| (authored.RepeatBehavior
+					== DeclarativeRepeatBehaviorKind::Duration
+				&& authored.RepeatDurationMilliseconds == 0))
+			return false;
+		simpleDurationForever = false;
+		if (!authored.DurationAutomatic)
+		{
+			simpleDurationMilliseconds = authored.DurationMilliseconds;
+			return true;
+		}
+		simpleDurationMilliseconds = 0;
+		for (const auto& animation : animations)
+		{
+			const auto duration = TimelineActiveDurationMilliseconds(animation);
+			if (duration == (std::numeric_limits<unsigned long long>::max)())
+			{
+				simpleDurationForever = true;
+				simpleDurationMilliseconds = 0;
+				return true;
+			}
+			const auto maximum = (std::numeric_limits<unsigned long long>::max)();
+			const auto end = animation.BeginTimeMilliseconds > maximum - duration
+				? maximum : animation.BeginTimeMilliseconds + duration;
+			if (end == maximum)
+			{
+				simpleDurationForever = true;
+				simpleDurationMilliseconds = 0;
+				return true;
+			}
+			simpleDurationMilliseconds = (std::max)(
+				simpleDurationMilliseconds, end);
+		}
+		return true;
+	}
+
+	static bool ExtendParallelNaturalDuration(
+		const RuntimeTimelineGroup& child,
+		unsigned long long& simpleDurationMilliseconds,
+		bool& simpleDurationForever) noexcept
+	{
+		if (simpleDurationForever) return true;
+		long double activeDuration = 0.0L;
+		if (child.ResolvedSimpleDurationForever
+			|| child.Timing.RepeatBehavior
+				== DeclarativeRepeatBehaviorKind::Forever)
+		{
+			simpleDurationForever = true;
+			simpleDurationMilliseconds = 0;
+			return true;
+		}
+		if (child.Timing.RepeatBehavior
+			== DeclarativeRepeatBehaviorKind::Duration)
+			activeDuration = child.Timing.RepeatDurationMilliseconds;
+		else
+			activeDuration = static_cast<long double>(
+				child.ResolvedSimpleDurationMilliseconds)
+				* (child.Timing.AutoReverse ? 2.0L : 1.0L)
+				* static_cast<long double>(child.Timing.RepeatCount)
+				/ static_cast<long double>(child.Timing.SpeedRatio);
 		const auto maximum = (std::numeric_limits<unsigned long long>::max)();
-		if (!std::isfinite(duration)
-			|| duration >= static_cast<long double>(maximum)) return maximum;
-		return static_cast<unsigned long long>(std::ceil(duration));
+		if (!std::isfinite(activeDuration)
+			|| activeDuration >= static_cast<long double>(maximum))
+		{
+			simpleDurationForever = true;
+			simpleDurationMilliseconds = 0;
+			return true;
+		}
+		const auto rounded = static_cast<unsigned long long>(
+			std::ceil(activeDuration));
+		const auto end = child.Timing.BeginTimeMilliseconds > maximum - rounded
+			? maximum : child.Timing.BeginTimeMilliseconds + rounded;
+		if (end == maximum)
+		{
+			simpleDurationForever = true;
+			simpleDurationMilliseconds = 0;
+			return true;
+		}
+		simpleDurationMilliseconds = (std::max)(
+			simpleDurationMilliseconds, end);
+		return true;
+	}
+
+	template<typename TAnimations>
+	static bool ResolveStoryboardTiming(
+		const DeclarativeStoryboardTimingDefinition& authored,
+		const TAnimations& animations,
+		const std::vector<RuntimeTimelineGroup>& timelineGroups,
+		unsigned long long& simpleDurationMilliseconds,
+		bool& simpleDurationForever) noexcept
+	{
+		std::vector<TimelineDefinition> directAnimations;
+		try
+		{
+			directAnimations.reserve(animations.size());
+			for (const auto& animation : animations)
+				if (animation.TimelineGroupIndex
+					== CompiledInteractionInvalidIndex)
+					directAnimations.push_back(
+						static_cast<const TimelineDefinition&>(animation));
+		}
+		catch (...)
+		{
+			return false;
+		}
+		if (!ResolveStoryboardTiming(authored, directAnimations,
+			simpleDurationMilliseconds, simpleDurationForever)) return false;
+		if (!authored.DurationAutomatic || simpleDurationForever) return true;
+		for (const auto& group : timelineGroups)
+			if (group.ParentIndex == CompiledInteractionInvalidIndex
+				&& !ExtendParallelNaturalDuration(group,
+					simpleDurationMilliseconds, simpleDurationForever)) return false;
+		return true;
+	}
+
+	/** Pure parent-time projection for one leaf clock at a sampling tick. */
+	struct ClockProjection
+	{
+		unsigned long long ActiveDurationMilliseconds = 0;
+		long double ActiveElapsedMilliseconds = 0.0L;
+		bool BeforeBegin = true;
+		bool ActivePeriodComplete = false;
+		bool RootFillStopped = false;
+	};
+
+	static ClockProjection ProjectClock(
+		const TimelineDefinition& timeline,
+		const ClockRootProjection& root,
+		const ClockLeafState& leaf) noexcept
+	{
+		ClockProjection projection;
+		if (root.BeforeBegin)
+		{
+			projection.BeforeBegin = true;
+			return projection;
+		}
+		projection.RootFillStopped = root.FillStopped;
+		projection.ActiveDurationMilliseconds =
+			TimelineActiveDurationMilliseconds(timeline);
+		const auto elapsed = root.ElapsedMilliseconds;
+		projection.BeforeBegin = elapsed < timeline.BeginTimeMilliseconds;
+		if (projection.BeforeBegin) return projection;
+		const auto activeElapsed = elapsed - timeline.BeginTimeMilliseconds;
+		const bool completed = leaf.Completed
+			&& !(root.ReentersChildren
+				&& activeElapsed < static_cast<long double>(
+					projection.ActiveDurationMilliseconds));
+		projection.ActivePeriodComplete = completed
+			|| activeElapsed >= projection.ActiveDurationMilliseconds;
+		projection.ActiveElapsedMilliseconds = completed
+			? static_cast<long double>(projection.ActiveDurationMilliseconds)
+			: (std::min)(activeElapsed, static_cast<long double>(
+				projection.ActiveDurationMilliseconds));
+		return projection;
+	}
+
+	static ClockProjection ProjectAnimationClock(
+		const TimelineDefinition& timeline,
+		std::span<const RuntimeTimelineGroup> timelineGroups,
+		const ClockRootProjection& rootProjection,
+		const ClockLeafState& leaf) noexcept
+	{
+		auto parent = rootProjection;
+		std::array<uint32_t, 64> chain{};
+		size_t depth = 0;
+		auto index = timeline.TimelineGroupIndex;
+		while (index != CompiledInteractionInvalidIndex)
+		{
+			if (index >= timelineGroups.size() || depth >= chain.size())
+			{
+				ClockProjection invalid;
+				invalid.BeforeBegin = true;
+				invalid.RootFillStopped = true;
+				return invalid;
+			}
+			chain[depth++] = index;
+			index = timelineGroups[index].ParentIndex;
+		}
+		while (depth > 0)
+			parent = ProjectTimelineGroup(
+				timelineGroups[chain[--depth]], parent);
+		return ProjectClock(timeline, parent, leaf);
+	}
+
+	static ClockProjection ProjectAnimationClock(
+		const TimelineDefinition& timeline,
+		const ActiveClockRoot& root,
+		const ClockRootProjection& rootProjection,
+		const ClockLeafState& leaf) noexcept
+	{
+		return ProjectAnimationClock(timeline, root.TimelineGroups,
+			rootProjection, leaf);
+	}
+
+	static ClockProjection ProjectAnimationAtRootBegin(
+		const TimelineDefinition& timeline,
+		const ClockLeafState& leaf,
+		const DeclarativeStoryboardTimingDefinition& timing,
+		unsigned long long resolvedSimpleDurationMilliseconds,
+		bool resolvedSimpleDurationForever,
+		const std::vector<RuntimeTimelineGroup>& timelineGroups) noexcept
+	{
+		ActiveClockRoot root;
+		root.Timing = timing;
+		root.ResolvedSimpleDurationMilliseconds =
+			resolvedSimpleDurationMilliseconds;
+		root.ResolvedSimpleDurationForever = resolvedSimpleDurationForever;
+		return ProjectAnimationClock(timeline, timelineGroups,
+			ProjectClockRoot(root, 0), leaf);
+	}
+
+	static std::vector<ClockRootProjection> ProjectClockRoots(
+		const std::vector<ActiveClockRoot>& roots,
+		unsigned long long nowMilliseconds)
+	{
+		std::vector<ClockRootProjection> result;
+		result.reserve(roots.size());
+		for (const auto& root : roots)
+			result.push_back(ProjectClockRoot(root, nowMilliseconds));
+		return result;
 	}
 
 	static long double ApplyTimelineAcceleration(
@@ -6844,12 +8847,19 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 
 	static bool ComposeAnimationValue(
-		const ActiveAnimation& animation,
+		const AnimationPayload& animation,
+		const BindingValue& from,
+		const BindingValue& foundation,
 		const BindingValue& localValue,
 		long double completedIterations,
 		BindingValue& output)
 	{
 		if (animation.Kind == DeclarativeAnimationKind::Object)
+		{
+			output = localValue;
+			return true;
+		}
+		if (MatrixKeyFramesUseDirectValues(animation))
 		{
 			output = localValue;
 			return true;
@@ -6861,7 +8871,7 @@ struct Control::DeclarativeVisualStateRuntime
 			if (!animation.KeyFrames.empty())
 				delta = animation.KeyFrames.back().Value;
 			else if (!CombineAnimationValues(
-				animation, animation.To, animation.From, -1.0L, delta))
+				animation, animation.To, from, -1.0L, delta))
 				return false;
 			BindingValue accumulated;
 			if (!CombineAnimationValues(animation, value, delta,
@@ -6869,17 +8879,551 @@ struct Control::DeclarativeVisualStateRuntime
 			value = std::move(accumulated);
 		}
 		return AddAnimationValues(
-			animation, value, animation.Foundation, output);
+			animation, value, foundation, output);
+	}
+
+	static cui::core::Point PathSubtract(
+		cui::core::Point left, cui::core::Point right) noexcept
+	{
+		return { left.x - right.x, left.y - right.y };
+	}
+
+	static cui::core::Point PathAdd(
+		cui::core::Point left, cui::core::Point right) noexcept
+	{
+		return { left.x + right.x, left.y + right.y };
+	}
+
+	static cui::core::Point PathScale(
+		cui::core::Point value, float scale) noexcept
+	{
+		return { value.x * scale, value.y * scale };
+	}
+
+	static float PathDot(
+		cui::core::Point left, cui::core::Point right) noexcept
+	{
+		return left.x * right.x + left.y * right.y;
+	}
+
+	static float PathNorm(cui::core::Point value) noexcept
+	{
+		return std::sqrt(value.x * value.x + value.y * value.y);
+	}
+
+	static bool PathUnitize(cui::core::Point& value) noexcept
+	{
+		float length = PathNorm(value);
+		if (!(length >= 0.000001f)) return false;
+		length = 1.0f / length;
+		value.x *= length;
+		value.y *= length;
+		return true;
+	}
+
+	static cui::core::Point PathVelocity(
+		const RuntimePathSegment& segment, float t) noexcept
+	{
+		const float s = 1.0f - t;
+		auto value = PathScale(segment.D1[0], s * s);
+		value = PathAdd(value, PathScale(segment.D1[1], s * t));
+		return PathAdd(value, PathScale(segment.D1[2], t * t));
+	}
+
+	static void PathDerivatives(
+		const RuntimePathSegment& segment,
+		float t,
+		cui::core::Point& velocity,
+		cui::core::Point& acceleration) noexcept
+	{
+		const float s = 1.0f - t;
+		velocity = PathVelocity(segment, t);
+		acceleration = PathAdd(
+			PathScale(segment.D2[0], s), PathScale(segment.D2[1], t));
+	}
+
+	static float PathSpeed(
+		const RuntimePathSegment& segment, float t) noexcept
+	{
+		return PathNorm(PathVelocity(segment, t));
+	}
+
+	static void PathSpeedAndDerivative(
+		const RuntimePathSegment& segment,
+		float t,
+		float& speed,
+		float& derivative) noexcept
+	{
+		cui::core::Point velocity;
+		cui::core::Point acceleration;
+		PathDerivatives(segment, t, velocity, acceleration);
+		speed = PathNorm(velocity);
+		derivative = PathDot(velocity, acceleration);
+		if (speed > std::fabs(derivative) * 0.000001)
+			derivative /= speed;
+		else derivative = 0.0f;
+	}
+
+	static float PathCubicLength(
+		const RuntimePathSegment& segment, float from, float to) noexcept
+	{
+		constexpr float samples[] = {
+			0.2113248654051875f, 0.7886751345948125f };
+		const float first = (1.0f - samples[0]) * from + samples[0] * to;
+		const float second = (1.0f - samples[1]) * from + samples[1] * to;
+		const float integral = PathSpeed(segment, first)
+			+ PathSpeed(segment, second);
+		return integral * (to - from) * 0.5f;
+	}
+
+	static bool PrepareWpfPath(TimelineDefinition& animation) noexcept
+	{
+		try
+		{
+			animation.PreparedPathSegments.clear();
+			animation.PathTotalLength = 0.0f;
+			if (!animation.Path.Enabled) return animation.PathSegments.empty();
+			auto current = animation.Path.Start;
+			bool movePending = false;
+			for (const auto& source : animation.PathSegments)
+			{
+				if (source.Kind == DeclarativePathSegmentKind::Move)
+				{
+					if (animation.PreparedPathSegments.empty() || movePending)
+						return false;
+					current = source.Point3;
+					movePending = true;
+					continue;
+				}
+				RuntimePathSegment segment;
+				segment.Kind = source.Kind;
+				segment.Points[0] = current;
+				segment.Points[1] = source.Point1;
+				segment.Points[2] = source.Point2;
+				segment.Points[3] = source.Point3;
+				segment.BaseLength = animation.PathTotalLength;
+				if (source.Kind == DeclarativePathSegmentKind::Line)
+				{
+					segment.InitialTangent = PathSubtract(source.Point3, current);
+					segment.Length = PathNorm(segment.InitialTangent);
+					if (segment.Length < 0.000001f) continue;
+					segment.InitialTangent = PathScale(
+						segment.InitialTangent, 1.0f / segment.Length);
+					segment.Lengths[1] = segment.Length;
+				}
+				else if (source.Kind == DeclarativePathSegmentKind::CubicBezier)
+				{
+					segment.D1[0] = PathScale(
+						PathSubtract(segment.Points[1], segment.Points[0]), 3.0f);
+					segment.D1[1] = PathScale(
+						PathSubtract(segment.Points[2], segment.Points[1]), 3.0f);
+					segment.D1[2] = PathScale(
+						PathSubtract(segment.Points[3], segment.Points[2]), 3.0f);
+					segment.D2[0] = PathScale(
+						PathSubtract(segment.D1[1], segment.D1[0]), 2.0f);
+					segment.D2[1] = PathScale(
+						PathSubtract(segment.D1[2], segment.D1[1]), 2.0f);
+					segment.D3 = PathSubtract(segment.D2[1], segment.D2[0]);
+					segment.D1[1] = PathScale(segment.D1[1], 2.0f);
+					segment.InitialTangent = segment.D1[0];
+					if (!PathUnitize(segment.InitialTangent))
+					{
+						segment.InitialTangent = PathSubtract(
+							segment.Points[2], segment.Points[1]);
+						if (!PathUnitize(segment.InitialTangent))
+						{
+							segment.InitialTangent = PathSubtract(
+								segment.Points[3], segment.Points[1]);
+							if (!PathUnitize(segment.InitialTangent)) continue;
+						}
+					}
+
+					segment.Breaks[0] = 0.0f;
+					segment.Breaks[1] = 1.0f;
+					segment.BreakCount = 2;
+					auto acceptBreak = [&](double value)
+					{
+						if (!(value > 0.01f && value < 1.0f - 0.01f)
+							|| segment.BreakCount >= 5) return;
+						uint32_t index = 0;
+						do ++index; while (index < segment.BreakCount
+							&& value > segment.Breaks[index]);
+						if ((index != 0
+								&& !(value > segment.Breaks[index - 1] + 0.01f))
+							|| (index != segment.BreakCount
+								&& !(value < segment.Breaks[index] - 0.01f))) return;
+						for (uint32_t move = segment.BreakCount; move > index; --move)
+							segment.Breaks[move] = segment.Breaks[move - 1];
+						segment.Breaks[index] = static_cast<float>(value);
+						++segment.BreakCount;
+					};
+					auto solveSpeedExtremum = [&](double seed, double& root)
+					{
+						const double from = 0.0;
+						const double to = 1.0;
+						const double delta = static_cast<float>(0.000001 * 10.0);
+						float xMin = segment.Points[0].x;
+						float xMax = xMin;
+						float yMin = segment.Points[0].y;
+						float yMax = yMin;
+						for (uint32_t point = 1; point < 4; ++point)
+						{
+							xMin = (std::min)(xMin, segment.Points[point].x);
+							xMax = (std::max)(xMax, segment.Points[point].x);
+							yMin = (std::min)(yMin, segment.Points[point].y);
+							yMax = (std::max)(yMax, segment.Points[point].y);
+						}
+						float extent = (std::max)(xMax - xMin, yMax - yMin);
+						const float epsilon = extent * extent
+							* static_cast<float>(delta);
+						bool topClamped = false;
+						bool bottomClamped = false;
+						double absolute = 0.0;
+						root = seed;
+						for (int iteration = 1; iteration < 100; ++iteration)
+						{
+							const auto t = static_cast<float>(root);
+							cui::core::Point velocity;
+							cui::core::Point acceleration;
+							PathDerivatives(segment, t, velocity, acceleration);
+							const double value = PathDot(acceleration, velocity);
+							const double derivative = PathDot(segment.D3, velocity)
+								+ PathDot(acceleration, acceleration);
+							absolute = std::fabs(value);
+							if (absolute < epsilon) break;
+							if (std::fabs(derivative) <= absolute * 0.000001) break;
+							const double correction = -value / derivative;
+							if (std::fabs(correction) < delta) break;
+							root += correction;
+							if (root < from)
+							{
+								root = from;
+								if (bottomClamped) break;
+								bottomClamped = true;
+							}
+							else if (root > to)
+							{
+								root = to;
+								if (topClamped) break;
+								topClamped = true;
+							}
+						}
+						return absolute < epsilon;
+					};
+					for (const double seed : { 0.0, 0.5, 1.0 })
+					{
+						double root = seed;
+						if (solveSpeedExtremum(seed, root)) acceptBreak(root);
+					}
+					if (segment.BreakCount == 2)
+					{
+						segment.Breaks[4] = segment.Breaks[1];
+						segment.Breaks[2] = (segment.Breaks[0]
+							+ segment.Breaks[4]) / 2.0f;
+						segment.Breaks[1] = (segment.Breaks[0]
+							+ segment.Breaks[2]) / 2.0f;
+						segment.Breaks[3] = (segment.Breaks[2]
+							+ segment.Breaks[4]) / 2.0f;
+						segment.BreakCount = 5;
+					}
+					else if (segment.BreakCount == 3)
+					{
+						segment.Breaks[4] = segment.Breaks[2];
+						segment.Breaks[2] = segment.Breaks[1];
+						segment.Breaks[1] = (segment.Breaks[0]
+							+ segment.Breaks[2]) / 2.0f;
+						segment.Breaks[3] = (segment.Breaks[2]
+							+ segment.Breaks[4]) / 2.0f;
+						segment.BreakCount = 5;
+					}
+					for (uint32_t index = 1; index < segment.BreakCount; ++index)
+					{
+						segment.Mids[index - 1] = (segment.Breaks[index - 1]
+							+ segment.Breaks[index]) / 2.0f;
+						segment.Lengths[index] = segment.Lengths[index - 1]
+							+ PathCubicLength(segment, segment.Breaks[index - 1],
+								segment.Mids[index - 1])
+							+ PathCubicLength(segment, segment.Mids[index - 1],
+								segment.Breaks[index]);
+					}
+					segment.Length = segment.Lengths[segment.BreakCount - 1];
+					if (!(segment.Length > 0.0f) || !std::isfinite(segment.Length))
+						continue;
+				}
+				else return false;
+				animation.PathTotalLength += segment.Length;
+				animation.PreparedPathSegments.push_back(segment);
+				current = source.Point3;
+				movePending = false;
+			}
+			return !movePending && !animation.PreparedPathSegments.empty()
+				&& std::isfinite(animation.PathTotalLength)
+				&& animation.PathTotalLength > 0.0f;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	struct PathSample final
+	{
+		cui::core::Point Point;
+		cui::core::Point Tangent;
+	};
+
+	static float PathParameterFromLength(
+		const RuntimePathSegment& segment, float targetLength) noexcept
+	{
+		if (targetLength <= 0.0f) return 0.0f;
+		if (targetLength >= segment.Length) return 1.0f;
+		uint32_t span = 0;
+		while (targetLength < segment.Lengths[span]) --span;
+		while (span < 3 && targetLength > segment.Lengths[span + 1]) ++span;
+		double root = segment.Breaks[span];
+		double top = segment.Breaks[span + 1];
+		double bottom = segment.Breaks[span];
+		double absolute = (std::numeric_limits<double>::max)();
+		for (int iteration = 1;
+			top - bottom > 0.000001 && iteration < 100; ++iteration)
+		{
+			const uint32_t reference = root > segment.Mids[span]
+				? span + 1 : span;
+			double value = 0.0;
+			double derivative = 0.0;
+			for (const float sample : {
+				0.2113248654051875f, 0.7886751345948125f })
+			{
+				const float t = static_cast<float>(root);
+				const float at = (1.0f - sample) * segment.Breaks[reference]
+					+ sample * t;
+				float speed = 0.0f;
+				float speedDerivative = 0.0f;
+				PathSpeedAndDerivative(
+					segment, at, speed, speedDerivative);
+				speedDerivative *= sample;
+				value += speed;
+				derivative += speedDerivative;
+			}
+			value *= 0.5;
+			derivative *= 0.5;
+			const double relative = root - segment.Breaks[reference];
+			derivative = relative * derivative + value;
+			value = segment.Lengths[reference] + relative * value - targetLength;
+			absolute = std::fabs(value);
+			if (absolute < 0.000001 * segment.Length) break;
+			if (value > 0.0) top = root;
+			else bottom = root;
+			if (std::fabs(derivative) <= absolute * 0.000001)
+				root = (bottom + top) / 2.0;
+			else
+			{
+				root -= value / derivative;
+				if (root < segment.Breaks[span]
+					|| root > segment.Breaks[span + 1])
+					root = (bottom + top) / 2.0;
+			}
+		}
+		return static_cast<float>(root);
+	}
+
+	static bool SampleWpfPath(
+		const AnimationPayload& animation, float fraction, PathSample& output) noexcept
+	{
+		if (animation.PreparedPathSegments.empty()
+			|| !(animation.PathTotalLength > 0.0f)) return false;
+		float requested = 0.0f;
+		size_t segmentIndex = 0;
+		if (fraction <= 0.0f) requested = 0.0f;
+		else if (fraction >= 1.0f)
+		{
+			requested = animation.PathTotalLength;
+			segmentIndex = animation.PreparedPathSegments.size() - 1;
+		}
+		else
+		{
+			requested = fraction * animation.PathTotalLength;
+			while (segmentIndex + 1 < animation.PreparedPathSegments.size()
+				&& requested > animation.PreparedPathSegments[segmentIndex].BaseLength
+					+ animation.PreparedPathSegments[segmentIndex].Length)
+				++segmentIndex;
+		}
+		const auto& segment = animation.PreparedPathSegments[segmentIndex];
+		float localLength = requested - segment.BaseLength;
+		if (localLength > segment.Length) localLength = segment.Length;
+		if (segment.Kind == DeclarativePathSegmentKind::Line)
+		{
+			output.Point = localLength == 0.0f
+				? segment.Points[0]
+				: PathAdd(segment.Points[0],
+					PathScale(segment.InitialTangent, localLength));
+			output.Tangent = segment.InitialTangent;
+			return true;
+		}
+		const float t = PathParameterFromLength(segment, localLength);
+		if (t <= 0.0f)
+		{
+			output.Point = segment.Points[0];
+			output.Tangent = segment.D1[0];
+		}
+		else if (t >= 1.0f)
+		{
+			output.Point = segment.Points[3];
+			output.Tangent = segment.D1[2];
+		}
+		else
+		{
+			const float s = 1.0f - t;
+			const float s2 = s * s;
+			const float t2 = t * t;
+			output.Point = PathScale(segment.Points[0], s2 * s);
+			output.Point = PathAdd(output.Point,
+				PathScale(segment.Points[1], 3.0f * s2 * t));
+			output.Point = PathAdd(output.Point,
+				PathScale(segment.Points[2], 3.0f * s * t2));
+			output.Point = PathAdd(output.Point,
+				PathScale(segment.Points[3], t * t2));
+			output.Tangent = PathScale(segment.D1[0], s2);
+			output.Tangent = PathAdd(output.Tangent,
+				PathScale(segment.D1[1], s * t));
+			output.Tangent = PathAdd(output.Tangent,
+				PathScale(segment.D1[2], t2));
+		}
+		if (!PathUnitize(output.Tangent))
+			output.Tangent = segment.InitialTangent;
+		return true;
+	}
+
+	static double PathTangentAngle(cui::core::Point tangent) noexcept
+	{
+		double angle = std::acos(static_cast<double>(tangent.x))
+			* (180.0 / std::numbers::pi_v<double>);
+		if (tangent.y < 0.0f) angle = 360.0 - angle;
+		return angle;
+	}
+
+	static bool EvaluatePathAnimation(
+		const AnimationPayload& animation,
+		const BindingValue& defaultOrigin,
+		double progress,
+		long double completedIterations,
+		BindingValue& output)
+	{
+		const auto& path = animation.Path;
+		if (!path.Enabled || !std::isfinite(progress)) return false;
+		PathSample sample;
+		PathSample start;
+		PathSample end;
+		if (!SampleWpfPath(animation, static_cast<float>(progress), sample)
+			|| !SampleWpfPath(animation, 0.0f, start)
+			|| !SampleWpfPath(animation, 1.0f, end)) return false;
+		const double iteration = static_cast<double>(completedIterations);
+		if (animation.Kind == DeclarativeAnimationKind::Double)
+		{
+			auto valueAt = [&](const PathSample& value)
+			{
+				switch (path.Source)
+				{
+				case DeclarativePathAnimationSource::Y:
+					return static_cast<double>(value.Point.y);
+				case DeclarativePathAnimationSource::Angle:
+					return PathTangentAngle(value.Tangent);
+				case DeclarativePathAnimationSource::X:
+				default: return static_cast<double>(value.Point.x);
+				}
+			};
+			double value = valueAt(sample);
+			if (animation.IsCumulative && completedIterations > 0.0L)
+				value += (valueAt(end) - valueAt(start)) * iteration;
+			if (animation.IsAdditive)
+			{
+				double origin = 0.0;
+				if (!defaultOrigin.TryGetDouble(origin)) return false;
+				value += origin;
+			}
+			if (!std::isfinite(value)) return false;
+			if (animation.Metadata
+				&& animation.Metadata->ValueKind() == BindingValueKind::Double)
+				output = BindingValue(value);
+			else
+				output = BindingValue(static_cast<float>(value));
+			return true;
+		}
+		if (animation.Kind == DeclarativeAnimationKind::Point)
+		{
+			double x = sample.Point.x;
+			double y = sample.Point.y;
+			if (animation.IsCumulative && completedIterations > 0.0L)
+			{
+				x += static_cast<double>(end.Point.x - start.Point.x) * iteration;
+				y += static_cast<double>(end.Point.y - start.Point.y) * iteration;
+			}
+			if (animation.IsAdditive)
+			{
+				cui::core::Point origin;
+				if (!defaultOrigin.TryGet(origin)) return false;
+				x += origin.x;
+				y += origin.y;
+			}
+			if (!std::isfinite(x) || !std::isfinite(y)) return false;
+			output = BindingValue(cui::core::Point{
+				static_cast<float>(x), static_cast<float>(y) });
+			return true;
+		}
+		if (animation.Kind != DeclarativeAnimationKind::Matrix) return false;
+		double angle = path.DoesRotateWithTangent
+			? PathTangentAngle(sample.Tangent) : 0.0;
+		double x = sample.Point.x;
+		double y = sample.Point.y;
+		if (completedIterations > 0.0L)
+		{
+			if (path.IsOffsetCumulative)
+			{
+				x += static_cast<double>(end.Point.x - start.Point.x) * iteration;
+				y += static_cast<double>(end.Point.y - start.Point.y) * iteration;
+			}
+			if (path.DoesRotateWithTangent && path.IsAngleCumulative)
+				angle += (PathTangentAngle(end.Tangent)
+					- PathTangentAngle(start.Tangent)) * iteration;
+		}
+		const double radians = angle * std::numbers::pi_v<double> / 180.0;
+		const auto cosine = static_cast<float>(std::cos(radians));
+		const auto sine = static_cast<float>(std::sin(radians));
+		D2D1_MATRIX_3X2_F value{
+			cosine, sine, -sine, cosine,
+			static_cast<float>(x), static_cast<float>(y) };
+		if (animation.IsAdditive)
+		{
+			D2D1_MATRIX_3X2_F origin{};
+			if (!defaultOrigin.TryGet(origin)) return false;
+			const auto left = value;
+			value = {
+				left._11 * origin._11 + left._12 * origin._21,
+				left._11 * origin._12 + left._12 * origin._22,
+				left._21 * origin._11 + left._22 * origin._21,
+				left._21 * origin._12 + left._22 * origin._22,
+				left._31 * origin._11 + left._32 * origin._21 + origin._31,
+				left._31 * origin._12 + left._32 * origin._22 + origin._32 };
+		}
+		if (!IsFiniteMatrix(value)) return false;
+		output = BindingValue(value);
+		return true;
 	}
 
 	static bool Interpolate(
-		const ActiveAnimation& animation,
-		unsigned long long activeElapsedMilliseconds,
-		BindingValue& output)
+		const AnimationPayload& animation,
+		const AnimationLayerValueState& layerValues,
+		long double activeElapsedMilliseconds,
+		BindingValue& output,
+		const BindingValue* composedOrigin = nullptr)
 	{
+		const BindingValue& from = composedOrigin && layerValues.DynamicFrom
+			? *composedOrigin : animation.From;
+		const BindingValue& foundation = composedOrigin
+			&& layerValues.DynamicFoundation
+			? *composedOrigin : layerValues.Foundation;
 		const auto activeDurationExact = TimelineActiveDurationExact(animation);
-		long double parentElapsed = static_cast<long double>(
-			activeElapsedMilliseconds);
+		long double parentElapsed = activeElapsedMilliseconds;
 		const bool atActiveBoundary = std::isfinite(activeDurationExact)
 			&& parentElapsed >= activeDurationExact;
 		if (std::isfinite(activeDurationExact))
@@ -6922,61 +9466,231 @@ struct Control::DeclarativeVisualStateRuntime
 				: (std::min)(1.0,
 					static_cast<double>(simpleElapsed)
 					/ static_cast<double>(animation.DurationMilliseconds));
+			if (animation.Path.Enabled)
+				return EvaluatePathAnimation(animation, from,
+					progress, completedIterations, output);
 			BindingValue localValue;
 			if (!InterpolateValues(animation.Kind, animation.Metadata,
 				ObjectPathUsesFloat(animation.ObjectPath),
-				animation.From, animation.To,
-				Ease(progress, animation.Easing, animation.EasingMode), localValue))
+				from, animation.To,
+				Ease(progress, animation.Easing, animation.EasingMode,
+					animation.EasingParameters), localValue))
 				return false;
 			return ComposeAnimationValue(
-				animation, localValue, completedIterations, output);
+				animation, from, foundation, localValue,
+				completedIterations, output);
 		}
 
-		BindingValue previousValue = animation.From;
-		unsigned long long previousTime = 0;
-		for (const auto& keyFrame : animation.KeyFrames)
+		if (animation.KeySplineParameters.size()
+			!= animation.KeyFrames.size()) return false;
+		auto keyTimeMilliseconds = [](const RuntimeAnimationKeyFrame& keyFrame)
+			{
+				return static_cast<long double>(keyFrame.KeyTimeMilliseconds)
+					+ static_cast<long double>(
+						keyFrame.KeyTimeSubMillisecondTicks) / 10000.0L;
+			};
+		BindingValue previousValue = from;
+		long double previousTime = 0.0L;
+		for (size_t keyFrameIndex = 0;
+			keyFrameIndex < animation.KeyFrames.size(); ++keyFrameIndex)
 		{
-			if (simpleElapsed
-				< static_cast<long double>(keyFrame.KeyTimeMilliseconds))
+			const auto& keyFrame = animation.KeyFrames[keyFrameIndex];
+			const auto keyTime = keyTimeMilliseconds(keyFrame);
+			if (simpleElapsed < keyTime)
 			{
 				if (keyFrame.Kind == DeclarativeKeyFrameKind::Discrete)
 				{
-					return ComposeAnimationValue(animation, previousValue,
+					return ComposeAnimationValue(animation, from, foundation, previousValue,
 						completedIterations, output);
 				}
-				const auto span = keyFrame.KeyTimeMilliseconds - previousTime;
+				const auto span = keyTime - previousTime;
 				const double segmentProgress = span == 0 ? 1.0
-					: static_cast<double>(simpleElapsed
-						- static_cast<long double>(previousTime))
+					: static_cast<double>(simpleElapsed - previousTime)
 					/ static_cast<double>(span);
 				double eased = segmentProgress;
 				if (keyFrame.Kind == DeclarativeKeyFrameKind::Easing)
 					eased = Ease(segmentProgress,
-						keyFrame.Easing, keyFrame.EasingMode);
+						keyFrame.Easing, keyFrame.EasingMode,
+						keyFrame.EasingParameters);
 				else if (keyFrame.Kind == DeclarativeKeyFrameKind::Spline)
-					eased = KeySplineProgress(segmentProgress, keyFrame);
+					eased = KeySplineProgress(segmentProgress, keyFrame,
+						animation.KeySplineParameters[keyFrameIndex]);
 				BindingValue localValue;
 				if (!InterpolateValues(animation.Kind, animation.Metadata,
 					ObjectPathUsesFloat(animation.ObjectPath), previousValue,
 					keyFrame.Value, eased, localValue)) return false;
-				return ComposeAnimationValue(animation, localValue,
+				return ComposeAnimationValue(animation, from, foundation, localValue,
 					completedIterations, output);
 			}
-			previousTime = keyFrame.KeyTimeMilliseconds;
+			previousTime = keyTime;
 			previousValue = keyFrame.Value;
 		}
-		return ComposeAnimationValue(animation, previousValue,
+		return ComposeAnimationValue(animation, from, foundation, previousValue,
 			completedIterations, output);
+	}
+
+	static bool Interpolate(
+		const CandidateAnimation& animation,
+		long double activeElapsedMilliseconds,
+		BindingValue& output)
+	{
+		return Interpolate(animation, animation.LayerValues,
+			activeElapsedMilliseconds, output);
 	}
 
 	struct AnimationFrameValue
 	{
-		const ActiveAnimation* Animation = nullptr;
+		const AnimationPayload* Animation = nullptr;
 		BindingValue Value;
 	};
 
+	struct AnimationClockView
+	{
+		const AnimationPayload* Animation = nullptr;
+		const AnimationLayerValueState* Values = nullptr;
+		ClockId RootClockId;
+	};
+
+	struct AnimationClockLayerStack
+	{
+		PropertyKey Root;
+		uint32_t LayerOffset = 0;
+		uint32_t LayerCount = 0;
+	};
+
+	static bool BuildAnimationClockLayerStacks(
+		const std::vector<AnimationClockView>& animations,
+		std::vector<AnimationClockLayerStack>& output,
+		std::vector<AnimationClockView>& outputLayers) noexcept
+	{
+		try
+		{
+			if (animations.size()
+				> (std::numeric_limits<uint32_t>::max)()) return false;
+			output.clear();
+			output.reserve(animations.size());
+			outputLayers.clear();
+			std::unordered_map<PropertyKey, size_t,
+				PropertyKeyHash, PropertyKeyEqual> stackIndices;
+			stackIndices.reserve(animations.size());
+			for (const auto& view : animations)
+			{
+				const auto* animation = view.Animation;
+				if (!animation || !animation->Target || !animation->Metadata)
+					return false;
+				PropertyKey root{ animation->Target,
+					PropertyIdentity(animation->Metadata) };
+				const auto [position, inserted] = stackIndices.try_emplace(
+					root, output.size());
+				if (inserted)
+					output.push_back({ root, 0, 0 });
+				auto& count = output[position->second].LayerCount;
+				if (count == (std::numeric_limits<uint32_t>::max)()) return false;
+				++count;
+			}
+			std::vector<uint32_t> cursors(output.size());
+			uint32_t offset = 0;
+			for (size_t index = 0; index < output.size(); ++index)
+			{
+				output[index].LayerOffset = offset;
+				cursors[index] = offset;
+				offset += output[index].LayerCount;
+			}
+			if (offset != animations.size()) return false;
+			outputLayers.resize(animations.size());
+			for (const auto& view : animations)
+			{
+				const auto* animation = view.Animation;
+				const PropertyKey root{ animation->Target,
+					PropertyIdentity(animation->Metadata) };
+				const auto position = stackIndices.find(root);
+				if (position == stackIndices.end()
+					|| position->second >= cursors.size()) return false;
+				const auto layerIndex = cursors[position->second]++;
+				if (layerIndex >= outputLayers.size()) return false;
+				outputLayers[layerIndex] = view;
+			}
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	static AnimationClockView CandidateClockView(
+		const CandidateAnimation& animation) noexcept
+	{
+		return { &animation, &animation.LayerValues, animation.RootClockId };
+	}
+
+	bool ActiveClockView(
+		const ActiveAnimation& animation,
+		AnimationClockView& output) const noexcept
+	{
+		const auto* root = ResolveClockRoot(animation);
+		const auto* layer = ResolveAnimationLayer(animation);
+		if (!root || !layer) return false;
+		output = { &animation, &layer->Values, root->Identity.Instance };
+		return true;
+	}
+
+	static void ConfigureComposeDynamicValues(
+		const RuntimeAnimation& animation,
+		AnimationLayerValueState& values) noexcept
+	{
+		if (animation.Path.Enabled)
+		{
+			values.DynamicFrom = animation.IsAdditive;
+			values.DynamicFoundation = false;
+			return;
+		}
+		if (!animation.KeyFrames.empty())
+		{
+			if (MatrixKeyFramesUseDirectValues(animation))
+			{
+				values.DynamicFrom = true;
+				values.DynamicFoundation = false;
+				return;
+			}
+			values.DynamicFrom = !animation.IsAdditive;
+			values.DynamicFoundation = animation.IsAdditive;
+			return;
+		}
+		const bool hasFrom = animation.From.has_value();
+		const bool hasTo = animation.To.has_value();
+		const bool hasBy = animation.By.has_value() && !hasTo;
+		values.DynamicFrom = !hasFrom && !hasBy;
+		values.DynamicFoundation = (!hasFrom && hasBy)
+			|| (hasFrom && (hasTo || hasBy) && animation.IsAdditive);
+	}
+
+	template<typename TAnimations>
+	static std::vector<AnimationClockView> CandidateClockViews(
+		const TAnimations& animations)
+	{
+		std::vector<AnimationClockView> result;
+		result.reserve(animations.size());
+		for (const auto& animation : animations)
+			result.push_back(CandidateClockView(animation));
+		return result;
+	}
+
+	bool ActiveClockViews(std::vector<AnimationClockView>& output) const
+	{
+		output.clear();
+		output.reserve(ClockNodes.Leaves.size());
+		for (const auto& animation : ClockNodes.Leaves)
+		{
+			AnimationClockView view;
+			if (!ActiveClockView(animation, view)) return false;
+			output.push_back(view);
+		}
+		return true;
+	}
+
 	static DependencyPropertyValueSource AnimationValueSource(
-		const ActiveAnimation&) noexcept
+		const AnimationPayload&) noexcept
 	{
 		return DependencyPropertyValueSource::Animation;
 	}
@@ -6993,70 +9707,70 @@ struct Control::DeclarativeVisualStateRuntime
 			|| metadata->TryGet(*target, output);
 	}
 
-	bool ApplyAnimationFrame(
-		const std::vector<AnimationFrameValue>& values)
+	struct AnimationPropertyFrame
 	{
-		struct ObjectFrame
+		Control* Target = nullptr;
+		const DependencyPropertyMetadata* Metadata = nullptr;
+		DependencyPropertyValueSource Source =
+			DependencyPropertyValueSource::Animation;
+		BindingValue Value;
+		bool Initialized = false;
+		bool ObjectPathReady = false;
+	};
+
+	bool AppendAnimationLayerFrame(
+		AnimationPropertyFrame& object,
+		const AnimationPayload& animation,
+		const BindingValue& value)
+	{
+		if (!animation.Target || !animation.Metadata) return false;
+		const auto source = AnimationValueSource(animation);
+		if (!object.Target)
 		{
-			Control* Target = nullptr;
-			const DependencyPropertyMetadata* Metadata = nullptr;
-			DependencyPropertyValueSource Source =
-				DependencyPropertyValueSource::Animation;
-			BindingValue Value;
-			bool ObjectPathReady = false;
-		};
-		std::vector<ObjectFrame> objects;
-		for (const auto& frame : values)
-		{
-			const auto* animation = frame.Animation;
-			if (!animation || !animation->Target || !animation->Metadata)
-				return false;
-			const auto source = AnimationValueSource(*animation);
-			auto found = std::find_if(objects.begin(), objects.end(),
-				[&](const auto& candidate)
-				{
-					return candidate.Target == animation->Target
-						&& candidate.Metadata == animation->Metadata
-						&& candidate.Source == source;
-				});
-			if (!animation->ObjectPath)
-			{
-				if (found == objects.end())
-				{
-					objects.push_back({ animation->Target,
-						animation->Metadata, source, frame.Value, false });
-				}
-				else
-				{
-					found->Value = frame.Value;
-					found->ObjectPathReady = false;
-				}
-				continue;
-			}
-			if (found == objects.end())
-			{
-				BindingValue current;
-				if (!TryReadAnimationFrameRoot(animation->Target,
-					animation->Metadata, source, current)
-					|| !NormalizeObjectPathRoot(*animation, current))
-					return false;
-				objects.push_back({ animation->Target, animation->Metadata,
-					source, std::move(current), true });
-				found = std::prev(objects.end());
-			}
-			else if (!found->ObjectPathReady)
-			{
-				if (!NormalizeObjectPathRoot(*animation, found->Value)) return false;
-				found->ObjectPathReady = true;
-			}
-			if (!TryWriteObjectPathMember(
-				found->Value, *animation->ObjectPath, frame.Value)) return false;
+			object.Target = animation.Target;
+			object.Metadata = animation.Metadata;
+			object.Source = source;
 		}
+		else if (object.Target != animation.Target
+			|| !object.Metadata
+			|| &object.Metadata->Property()
+				!= &animation.Metadata->Property()
+			|| object.Source != source) return false;
+		if (!animation.ObjectPath)
+		{
+			object.Value = value;
+			object.Initialized = true;
+			object.ObjectPathReady = false;
+			return true;
+		}
+		if (!object.Initialized)
+		{
+			if (!TryReadAnimationFrameRoot(animation.Target,
+				animation.Metadata, source, object.Value)
+				|| !NormalizeObjectPathRoot(animation, object.Value)) return false;
+			object.Initialized = true;
+			object.ObjectPathReady = true;
+		}
+		else if (!object.ObjectPathReady)
+		{
+			if (!NormalizeObjectPathRoot(animation, object.Value)) return false;
+			object.ObjectPathReady = true;
+		}
+		return TryWriteObjectPathMember(
+			object.Value, *animation.ObjectPath, value);
+	}
+
+	bool CommitAnimationPropertyFrames(
+		std::vector<AnimationPropertyFrame>& objects)
+	{
 		std::vector<PropertySnapshot> snapshots;
 		snapshots.reserve(objects.size());
 		for (const auto& object : objects)
+		{
+			if (!object.Initialized || !object.Metadata) return false;
 			CapturePropertySnapshot({ object.Target,
 				PropertyIdentity(object.Metadata) }, object.Source, snapshots);
+		}
 		bool committed = false;
 		ControlScopeExit rollback{ [&]
 			{
@@ -7070,38 +9784,142 @@ struct Control::DeclarativeVisualStateRuntime
 		return true;
 	}
 
-	bool ReleaseStoppedAnimationValues(
-		const std::vector<const ActiveAnimation*>& stoppingAnimations,
-		const std::vector<ActiveAnimation>& animations,
-		unsigned long long nowMilliseconds)
+	bool ApplyAnimationFrame(
+		const std::vector<AnimationFrameValue>& values)
 	{
-		for (const auto* stopping : stoppingAnimations)
+		std::vector<AnimationPropertyFrame> objects;
+		objects.reserve(values.size());
+		std::unordered_map<PropertyKey, size_t,
+			PropertyKeyHash, PropertyKeyEqual> objectIndices;
+		objectIndices.reserve(values.size());
+		for (const auto& frame : values)
 		{
-			if (!stopping || !stopping->Target || !stopping->Metadata) continue;
+			const auto* animation = frame.Animation;
+			if (!animation || !animation->Target || !animation->Metadata)
+				return false;
+			const auto source = AnimationValueSource(*animation);
+			const PropertyKey root{
+				animation->Target, PropertyIdentity(animation->Metadata) };
+			const auto [position, inserted] = objectIndices.try_emplace(
+				root, objects.size());
+			if (inserted)
+			{
+				objects.push_back({ animation->Target,
+					animation->Metadata, source });
+			}
+			if (!AppendAnimationLayerFrame(
+				objects[position->second], *animation, frame.Value)) return false;
+		}
+		return CommitAnimationPropertyFrames(objects);
+	}
+
+	bool ApplyCommittedAnimationFrame(
+		const std::vector<AnimationFrameValue>& values)
+	{
+		// Full one-to-one validation runs when a dirty arena rebuilds and through
+		// the testing invariant. A clean frame only follows stable owner tokens.
+		if (ClockNodesDirty || values.size() != ClockNodes.Leaves.size()
+			|| (AnimationLayerStacks.empty()
+				!= ClockNodes.Leaves.empty())) return false;
+		std::vector<AnimationPropertyFrame> objects;
+		objects.reserve(AnimationLayerStacks.size());
+		for (const auto& stack : AnimationLayerStacks)
+		{
+			AnimationPropertyFrame object;
+			if (stack.LayerOffset > AnimationLayers.size()
+				|| stack.LayerCount
+					> AnimationLayers.size() - stack.LayerOffset) return false;
+			for (size_t layerIndex = 0;
+				layerIndex < stack.LayerCount; ++layerIndex)
+			{
+				const auto& layer = AnimationLayers[
+					stack.LayerOffset + layerIndex];
+				const auto* slot = ClockNodes.Resolve(
+					layer.Owner, ClockNodeKind::Leaf);
+				if (!slot || slot->PayloadIndex >= values.size()) return false;
+				const auto& animation = ClockNodes.Leaves[slot->PayloadIndex];
+				const auto& frame = values[slot->PayloadIndex];
+				if (!frame.Animation) continue;
+				if (frame.Animation != &animation
+					|| !AppendAnimationLayerFrame(
+						object, animation, frame.Value)) return false;
+			}
+			if (object.Initialized) objects.push_back(std::move(object));
+		}
+		return CommitAnimationPropertyFrames(objects);
+	}
+
+	bool ReleaseStoppedAnimationValues(
+		const std::vector<AnimationClockView>& stoppingAnimations,
+		const std::vector<AnimationClockView>& animations,
+		const std::vector<ActiveClockRoot>& roots,
+		unsigned long long nowMilliseconds,
+		std::span<const ClockRootProjection> suppliedRootProjections = {})
+	{
+		std::vector<AnimationClockLayerStack> layerStacks;
+		std::vector<AnimationClockView> layers;
+		if (!BuildAnimationClockLayerStacks(
+			animations, layerStacks, layers)) return false;
+		std::unordered_map<PropertyKey, size_t,
+			PropertyKeyHash, PropertyKeyEqual> layerStackIndices;
+		layerStackIndices.reserve(layerStacks.size());
+		for (size_t index = 0; index < layerStacks.size(); ++index)
+			if (!layerStackIndices.emplace(
+				layerStacks[index].Root, index).second) return false;
+		std::vector<ClockRootProjection> ownedRootProjections;
+		if (suppliedRootProjections.size() != roots.size())
+		{
+			ownedRootProjections = ProjectClockRoots(roots, nowMilliseconds);
+			suppliedRootProjections = ownedRootProjections;
+		}
+		for (const auto& stoppingView : stoppingAnimations)
+		{
+			const auto* stopping = stoppingView.Animation;
+			const auto* stoppingValues = stoppingView.Values;
+			if (!stopping || !stoppingValues
+				|| !stopping->Target || !stopping->Metadata) continue;
+			const auto* stoppingRoot = FindClockRoot(
+				roots, stoppingView.RootClockId);
+			if (!stoppingRoot) return false;
 			const auto source = AnimationValueSource(*stopping);
-			const auto siblingAffectsRoot = std::any_of(
-				animations.begin(), animations.end(), [&](const auto& candidate)
+			const PropertyKey stoppingKey{
+				stopping->Target, PropertyIdentity(stopping->Metadata) };
+			const auto stack = layerStackIndices.find(stoppingKey);
+			const auto siblingAffectsRoot = stack != layerStackIndices.end()
+				&& std::any_of(
+				layers.begin()
+					+ layerStacks[stack->second].LayerOffset,
+				layers.begin() + layerStacks[stack->second].LayerOffset
+					+ layerStacks[stack->second].LayerCount,
+				[&](const auto& candidateView)
 				{
-					if (&candidate == stopping
-						|| candidate.IsEventStoryboard
-						!= stopping->IsEventStoryboard
-						|| candidate.Target != stopping->Target
-						|| PropertyIdentity(candidate.Metadata)
+					const auto* candidate = candidateView.Animation;
+					if (!candidate) return false;
+					const auto* candidateRoot = FindClockRoot(
+						roots, candidateView.RootClockId);
+					if (candidate == stopping
+						|| !candidateRoot
+						|| IsVisualStateClock(*candidateRoot)
+						!= IsVisualStateClock(*stoppingRoot)
+						|| candidate->Target != stopping->Target
+						|| PropertyIdentity(candidate->Metadata)
 							!= PropertyIdentity(stopping->Metadata)) return false;
-					const auto clockTick = candidate.Paused
-						? candidate.PauseTick : nowMilliseconds;
-					const auto elapsed = clockTick >= candidate.StartTick
-						? clockTick - candidate.StartTick : 0;
+					const auto rootIndex = static_cast<size_t>(
+						candidateRoot - roots.data());
+					if (rootIndex >= suppliedRootProjections.size()) return false;
+					const auto projection = ProjectAnimationClock(
+						*candidate, *candidateRoot,
+						suppliedRootProjections[rootIndex], *candidate);
 					// A live delayed clock owns its Base frame from Begin until its
 					// active period starts. Treat it as a sibling so replacing or
 					// stopping another clock cannot clear that staged value.
-					if (elapsed < candidate.BeginTimeMilliseconds) return true;
-					if (candidate.Completed)
-						return candidate.FillBehavior
-						== DeclarativeTimelineFillBehavior::HoldEnd;
-					const auto completed = elapsed - candidate.BeginTimeMilliseconds
-						>= TimelineActiveDurationMilliseconds(candidate);
-					return !completed || candidate.FillBehavior
+					if (projection.BeforeBegin) return true;
+					if (candidate->Completed)
+						return candidate->FillBehavior
+							== DeclarativeTimelineFillBehavior::HoldEnd
+							|| candidate->Handoff
+								== DeclarativeHandoffBehavior::SnapshotAndReplace;
+					return !projection.ActivePeriodComplete || candidate->FillBehavior
 						== DeclarativeTimelineFillBehavior::HoldEnd;
 				});
 			if (!stopping->ObjectPath)
@@ -7126,7 +9944,7 @@ struct Control::DeclarativeVisualStateRuntime
 				|| stopping->Metadata->TryGet(*stopping->Target, root))) return false;
 			if (!NormalizeObjectPathRoot(*stopping, root)
 				|| !TryWriteObjectPathMember(
-					root, *stopping->ObjectPath, stopping->Base)
+					root, *stopping->ObjectPath, stoppingValues->Base)
 				|| !stopping->Target->TrySetPropertyValue(
 					stopping->Metadata->Property(), root, source)) return false;
 		}
@@ -7135,91 +9953,852 @@ struct Control::DeclarativeVisualStateRuntime
 
 	bool HasActiveAnimations() const noexcept
 	{
-		return std::any_of(ActiveAnimations.begin(), ActiveAnimations.end(),
-			[](const auto& animation)
-			{ return !animation.Completed && !animation.Paused; })
+		return std::any_of(ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
+			[&](const auto& animation)
+			{
+				const auto* root = ResolveClockRoot(animation);
+				return root
+					&& !ProjectClockRoot(
+						*root, root->State.LastTick).ActivePeriodComplete
+					&& !root->State.Paused && !root->State.Stopped
+					&& root->State.InteractiveSpeedRatio > 0.0;
+			})
+			|| std::any_of(ClockNodes.Roots.begin(), ClockNodes.Roots.end(),
+				[](const auto& root)
+				{ return HasPendingRootControl(root.State); })
 			|| std::any_of(Groups.begin(), Groups.end(),
 				[](const auto& group) { return group.Pending.has_value(); });
 	}
 
+	void CollectCompositionAnimationTargets(
+		std::vector<Control*>& transformTargets,
+		std::vector<Control*>& opacityTargets) const
+	{
+		const auto* renderTransform = &Control::RenderTransformProperty();
+		const auto* opacity = &Control::OpacityProperty();
+		for (const auto& stack : AnimationLayerStacks)
+		{
+			if (!stack.Root.Target) continue;
+			if (stack.Root.Property == renderTransform)
+				transformTargets.push_back(stack.Root.Target);
+			else if (stack.Root.Property == opacity)
+				opacityTargets.push_back(stack.Root.Target);
+		}
+	}
+
+	size_t AnimationLeafCountForTesting() const noexcept
+	{
+		return ClockNodes.Leaves.size();
+	}
+
+	size_t AnimationRootClockCountForTesting() const noexcept
+	{
+		return ClockNodes.Roots.size();
+	}
+
+	std::optional<unsigned long long> RootActiveDuration(
+		const ActiveClockRoot& root) const noexcept
+	{
+		if (root.ResolvedSimpleDurationForever
+			|| root.Timing.RepeatBehavior
+				== DeclarativeRepeatBehaviorKind::Forever)
+			return std::nullopt;
+		const auto exact = root.Timing.RepeatBehavior
+			== DeclarativeRepeatBehaviorKind::Duration
+			? static_cast<long double>(
+				root.Timing.RepeatDurationMilliseconds)
+			: static_cast<long double>(
+				root.ResolvedSimpleDurationMilliseconds)
+				* (root.Timing.AutoReverse ? 2.0L : 1.0L)
+				* static_cast<long double>(root.Timing.RepeatCount)
+				/ static_cast<long double>(root.Timing.SpeedRatio);
+		if (!std::isfinite(exact)
+			|| exact >= static_cast<long double>(
+				(std::numeric_limits<unsigned long long>::max)()))
+			return std::nullopt;
+		return static_cast<unsigned long long>(std::ceil(exact));
+	}
+
+	static long double RootParentOffsetForSeek(
+		const ActiveClockRoot& root,
+		unsigned long long rootLocalOffsetMilliseconds) noexcept
+	{
+		// WPF SeekOrigin.BeginTime measures the offset in the target Clock's
+		// local-time coordinate. BeginTime remains parent time; authored
+		// SpeedRatio only maps the requested local offset back to that parent.
+		return static_cast<long double>(root.Timing.BeginTimeMilliseconds)
+			+ static_cast<long double>(rootLocalOffsetMilliseconds)
+				/ static_cast<long double>(root.Timing.SpeedRatio);
+	}
+
+	enum class RootTimingPhase : unsigned char
+	{
+		Active,
+		Filling,
+		Stopped,
+	};
+
+	struct RootTimingSnapshot final
+	{
+		ClockIdentity Identity;
+		RootTimingPhase Phase = RootTimingPhase::Stopped;
+		double GlobalSpeed = 0.0;
+		bool Evaluated = false;
+		bool PendingSeek = false;
+		bool PendingSpeed = false;
+		bool PendingPause = false;
+		bool PendingResume = false;
+		bool PendingStop = false;
+		bool PendingRemove = false;
+	};
+
+	RootTimingPhase TimingPhaseAt(
+		const ActiveClockRoot& root,
+		unsigned long long tick) const noexcept
+	{
+		if (root.State.Stopped) return RootTimingPhase::Stopped;
+		const auto duration = RootActiveDuration(root);
+		if (duration && ProjectClockRoot(
+			root, tick).ActivePeriodComplete)
+			return RootTimingPhase::Filling;
+		return RootTimingPhase::Active;
+	}
+
+	double TimingGlobalSpeedAt(
+		const ActiveClockRoot& root,
+		RootTimingPhase phase) const noexcept
+	{
+		return phase != RootTimingPhase::Active || root.State.Paused
+			? 0.0 : root.State.InteractiveSpeedRatio;
+	}
+
+	std::vector<RootTimingSnapshot> CaptureRootTimingSnapshots() const
+	{
+		std::vector<RootTimingSnapshot> result;
+		result.reserve(ClockNodes.Roots.size());
+		for (const auto& root : ClockNodes.Roots)
+		{
+			RootTimingSnapshot snapshot;
+			snapshot.Identity = root.Identity;
+			snapshot.Evaluated = root.State.HasEvaluated;
+			snapshot.Phase = snapshot.Evaluated
+				? TimingPhaseAt(root, root.State.LastTick)
+				: RootTimingPhase::Stopped;
+			snapshot.GlobalSpeed = snapshot.Evaluated
+				? TimingGlobalSpeedAt(root, snapshot.Phase) : 0.0;
+			snapshot.PendingSeek =
+				root.State.PendingSeekOffsetMilliseconds.has_value();
+			snapshot.PendingSpeed = root.State.PendingSpeedRatio.has_value();
+			snapshot.PendingPause = root.State.PendingPause;
+			snapshot.PendingResume = root.State.PendingResume;
+			snapshot.PendingStop = root.State.PendingStop;
+			snapshot.PendingRemove = root.State.PendingRemove;
+			result.push_back(std::move(snapshot));
+		}
+		return result;
+	}
+
+	static DeclarativeClockOwnerKind PublicClockOwnerKind(
+		ClockOwnerKind kind) noexcept
+	{
+		switch (kind)
+		{
+		case ClockOwnerKind::ComponentStoryboard:
+			return DeclarativeClockOwnerKind::ComponentStoryboard;
+		case ClockOwnerKind::StyleTrigger:
+			return DeclarativeClockOwnerKind::StyleTrigger;
+		case ClockOwnerKind::CompiledInteractionStoryboard:
+			return DeclarativeClockOwnerKind::CompiledInteractionStoryboard;
+		case ClockOwnerKind::VisualStateGroup:
+		default:
+			return DeclarativeClockOwnerKind::VisualStateGroup;
+		}
+	}
+
+	static void AppendTimingEvent(
+		std::vector<DeclarativeClockTimingEventArgs>& events,
+		const ClockIdentity& identity,
+		DeclarativeClockTimingEventKind kind)
+	{
+		events.push_back({
+			kind,
+			identity.Instance.Value,
+			PublicClockOwnerKind(identity.Storyboard.Owner.Kind),
+			identity.Storyboard.Owner.Value,
+			identity.Storyboard.Definition.Value });
+	}
+
+	void FinalizeRootTimingEvents(
+		const std::vector<RootTimingSnapshot>& before,
+		unsigned long long nowMilliseconds,
+		std::vector<DeclarativeClockTimingEventArgs>& events)
+	{
+		events.clear();
+		for (const auto& snapshot : before)
+		{
+			const auto found = std::find_if(
+				ClockNodes.Roots.begin(), ClockNodes.Roots.end(),
+				[&](const auto& root)
+				{ return root.Identity.Instance == snapshot.Identity.Instance; });
+			const bool anyPending = snapshot.PendingSeek
+				|| snapshot.PendingSpeed || snapshot.PendingPause
+				|| snapshot.PendingResume || snapshot.PendingStop
+				|| snapshot.PendingRemove;
+			bool timeInvalidated = false;
+			bool speedInvalidated = false;
+			bool stateInvalidated = false;
+			bool completed = false;
+			bool removeRequested = snapshot.PendingRemove;
+
+			if (snapshot.PendingRemove)
+			{
+				timeInvalidated = speedInvalidated = stateInvalidated = true;
+				completed = true;
+			}
+			else if (found != ClockNodes.Roots.end())
+			{
+				const auto nextPhase = TimingPhaseAt(*found, nowMilliseconds);
+				const auto nextSpeed = TimingGlobalSpeedAt(*found, nextPhase);
+				const bool participates = !snapshot.Evaluated || anyPending
+					|| snapshot.Phase == RootTimingPhase::Active
+					|| nextPhase == RootTimingPhase::Active;
+				timeInvalidated = participates;
+				speedInvalidated = !snapshot.Evaluated
+					|| snapshot.GlobalSpeed != nextSpeed
+					|| snapshot.PendingSeek || snapshot.PendingSpeed
+					|| snapshot.PendingPause || snapshot.PendingResume
+					|| snapshot.PendingStop;
+				stateInvalidated = !snapshot.Evaluated
+					|| snapshot.Phase != nextPhase
+					|| snapshot.PendingSeek || snapshot.PendingStop;
+				completed = nextPhase == RootTimingPhase::Filling
+					&& snapshot.Phase != RootTimingPhase::Filling;
+			}
+
+			if (timeInvalidated) AppendTimingEvent(events, snapshot.Identity,
+				DeclarativeClockTimingEventKind::CurrentTimeInvalidated);
+			if (speedInvalidated) AppendTimingEvent(events, snapshot.Identity,
+				DeclarativeClockTimingEventKind::CurrentGlobalSpeedInvalidated);
+			if (stateInvalidated) AppendTimingEvent(events, snapshot.Identity,
+				DeclarativeClockTimingEventKind::CurrentStateInvalidated);
+			if (completed) AppendTimingEvent(events, snapshot.Identity,
+				DeclarativeClockTimingEventKind::Completed);
+			if (removeRequested) AppendTimingEvent(events, snapshot.Identity,
+				DeclarativeClockTimingEventKind::RemoveRequested);
+		}
+		for (auto& root : ClockNodes.Roots)
+		{
+			root.State.LastTick = nowMilliseconds;
+			root.State.HasEvaluated = true;
+		}
+	}
+
+	void PublishRootTimingEvents(
+		std::vector<DeclarativeClockTimingEventArgs> events)
+	{
+		if (!Owner || events.empty()) return;
+		const ControlWeakReference ownerLifetime(Owner);
+		for (const auto& event : events)
+		{
+			auto* owner = ownerLifetime.Get();
+			if (!owner) return;
+			cui::framework::EventAccess::Raise(
+				owner->OnStoryboardTimingEvent, owner, event);
+		}
+	}
+
+	ActiveClockRoot* SingleControllableRootForTesting() noexcept
+	{
+		if (ClockNodes.Roots.size() != 1u || ClockNodes.Leaves.empty())
+			return nullptr;
+		auto& root = ClockNodes.Roots.front();
+		return root.State.ControlLookupAvailable ? &root : nullptr;
+	}
+
+	bool SeekSingleRootForTesting(unsigned long long offsetMilliseconds)
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root) return false;
+		root->State.PendingSeekOffsetMilliseconds =
+			RootParentOffsetForSeek(*root, offsetMilliseconds);
+		// WPF ordinary Seek re-enables a stopped root and cancels a Stop that
+		// has not reached the timing tick yet. The cached observation remains
+		// unchanged until that tick.
+		root->State.PendingStop = false;
+		return true;
+	}
+
+	bool PauseSingleRootForTesting()
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root) return false;
+		if (root->State.PendingResume)
+			root->State.PendingResume = false;
+		else if (!root->State.Paused)
+			root->State.PendingPause = true;
+		return true;
+	}
+
+	bool ResumeSingleRootForTesting()
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root) return false;
+		if (root->State.PendingPause)
+			root->State.PendingPause = false;
+		else if (root->State.Paused)
+			root->State.PendingResume = true;
+		return true;
+	}
+
+	bool SetSpeedRatioSingleRootForTesting(double ratio)
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root || !std::isfinite(ratio) || ratio < 0.0) return false;
+		root->State.PendingSpeedRatio = ratio;
+		return true;
+	}
+
+	bool SkipSingleRootToFillForTesting()
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root) return false;
+		const auto duration = RootActiveDuration(*root);
+		if (!duration) return false;
+		root->State.PendingSeekOffsetMilliseconds =
+			static_cast<long double>(root->Timing.BeginTimeMilliseconds)
+				+ static_cast<long double>(*duration);
+		root->State.PendingStop = false;
+		return true;
+	}
+
+	bool StopSingleRootForTesting()
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root) return false;
+		root->State.PendingStop = true;
+		root->State.PendingSeekOffsetMilliseconds.reset();
+		return true;
+	}
+
+	bool RemoveSingleRootForTesting()
+	{
+		auto* root = SingleControllableRootForTesting();
+		if (!root) return false;
+		root->State.PendingRemove = true;
+		root->State.PendingStop = true;
+		root->State.PendingSeekOffsetMilliseconds.reset();
+		root->State.ControlLookupAvailable = false;
+		return true;
+	}
+
+	bool SeekSingleRootAlignedForTesting(unsigned long long offsetMilliseconds)
+	{
+		auto* controllableRoot = SingleControllableRootForTesting();
+		if (!controllableRoot) return false;
+		const auto now = NowMilliseconds();
+		std::vector<PropertySnapshot> snapshots;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations)) return false;
+		auto previousRoots = ClockNodes.Roots;
+		const bool previousApplying = Applying;
+		Applying = true;
+		bool committed = false;
+		ControlScopeExit rollback{ [&]
+			{
+				if (!committed)
+					RestoreActiveAnimationTransaction(
+						previousAnimations, previousRoots,
+						snapshots, previousApplying);
+				else
+					Applying = previousApplying;
+			} };
+		auto& root = *controllableRoot;
+		root.State.StartTick = now;
+		root.State.SeekOffsetMilliseconds =
+			RootParentOffsetForSeek(root, offsetMilliseconds);
+		root.State.PauseTick = root.State.Paused ? now : 0;
+		root.State.Stopped = false;
+		root.State.LastTick = now;
+		root.State.HasEvaluated = true;
+		root.State.PendingStop = false;
+		for (auto& animation : ClockNodes.Leaves)
+			if (animation.Parent == root.NodeId)
+			{
+				animation.Completed = false;
+				std::fill(animation.KeySplineParameters.begin(),
+					animation.KeySplineParameters.end(), 0.0);
+			}
+		if (!ApplyRetainedAnimationFrame(now)) return false;
+		committed = true;
+		Applying = previousApplying;
+		PublishClockRootRegistry();
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	std::optional<DeclarativeClockObservation>
+	QuerySingleRootForTesting() const noexcept
+	{
+		if (ClockNodes.Roots.size() != 1u || ClockNodes.Leaves.empty())
+			return std::nullopt;
+		const auto& root = ClockNodes.Roots.front();
+		if (!root.State.ControlLookupAvailable) return std::nullopt;
+		if (root.State.Stopped)
+			return DeclarativeClockObservation{
+				DeclarativeClockState::Stopped,
+				std::nullopt, std::nullopt, std::nullopt };
+		const auto duration = root.ResolvedSimpleDurationForever
+			? (std::numeric_limits<unsigned long long>::max)()
+			: root.ResolvedSimpleDurationMilliseconds;
+		const auto projection = ProjectClockRoot(root, root.State.LastTick);
+		if (projection.BeforeBegin || projection.FillStopped)
+			return DeclarativeClockObservation{
+				DeclarativeClockState::Stopped,
+				std::nullopt, std::nullopt, std::nullopt };
+		const auto finiteDuration = RootActiveDuration(root);
+		const auto outerDuration = finiteDuration.value_or(
+			(std::numeric_limits<unsigned long long>::max)());
+		if (outerDuration == 0) return DeclarativeClockObservation{
+			DeclarativeClockState::Filling, 0ull, 1.0, 0.0 };
+		const auto elapsed = projection.ElapsedMilliseconds;
+		const bool filling = projection.ActivePeriodComplete;
+		const auto current = elapsed;
+		std::optional<double> progress;
+		if (duration != (std::numeric_limits<unsigned long long>::max)())
+			progress = static_cast<double>(current)
+				/ static_cast<double>(duration);
+		return DeclarativeClockObservation{
+			filling ? DeclarativeClockState::Filling
+				: DeclarativeClockState::Active,
+			current,
+			progress,
+			filling || root.State.Paused
+				? 0.0 : root.State.InteractiveSpeedRatio
+					* root.Timing.SpeedRatio
+					* (projection.Reversed ? -1.0 : 1.0) };
+	}
+
+	size_t AnimationClockNodeCountForTesting() const noexcept
+	{
+		return ClockNodes.OccupiedCount();
+	}
+
+	size_t AnimationLayerStackCountForTesting() const noexcept
+	{
+		return AnimationLayerStacks.size();
+	}
+
+	size_t AnimationLayerCountForTesting() const noexcept
+	{
+		return AnimationLayers.size();
+	}
+
+	size_t AnimationLayerMaxDepthForTesting() const noexcept
+	{
+		size_t result = 0;
+		for (const auto& stack : AnimationLayerStacks)
+			result = (std::max)(result,
+				static_cast<size_t>(stack.LayerCount));
+		return result;
+	}
+
+	size_t RootClockChildCountForTesting(size_t rootIndex) const noexcept
+	{
+		if (rootIndex >= ClockNodes.Roots.size()) return 0;
+		const auto* slot = ClockNodes.Resolve(
+			ClockNodes.Roots[rootIndex].NodeId, ClockNodeKind::Root);
+		return slot ? slot->ChildCount : 0;
+	}
+
+	uint64_t SingleRootClockIdForTesting() const noexcept
+	{
+		return ClockNodes.Roots.size() == 1
+			? ClockNodes.Roots.front().Identity.Instance.Value : 0;
+	}
+
+	uint64_t SingleRootClockNodeTokenForTesting() const noexcept
+	{
+		if (ClockNodes.Roots.size() != 1
+			|| !ClockNodes.Roots.front().NodeId.IsValid()) return 0;
+		const auto id = ClockNodes.Roots.front().NodeId;
+		return (static_cast<uint64_t>(id.Generation) << 32)
+			| (static_cast<uint64_t>(id.Index) + 1u);
+	}
+
+	bool ClockIdentityValidForTesting() const noexcept
+	{
+		if (ClockNodesDirty || !ClockNodeArenaValid()
+			|| !AnimationLayerStacksValid()) return false;
+		for (size_t index = 0; index < ClockNodes.Roots.size(); ++index)
+		{
+			const auto& root = ClockNodes.Roots[index];
+			if (root.Identity.Instance.Value == 0) return false;
+			if (IsVisualStateClock(root)
+				&& root.Identity.Storyboard.Owner.Value >= Groups.size())
+				return false;
+			for (size_t previous = 0; previous < index; ++previous)
+			{
+				const auto& other = ClockNodes.Roots[previous];
+				if (root.Identity.Instance == other.Identity.Instance
+					|| root.Identity.Storyboard
+						== other.Identity.Storyboard) return false;
+			}
+			const bool referencedByLeaf = std::any_of(
+				ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
+				[&](const auto& animation)
+				{ return animation.Parent == root.NodeId; });
+			const bool referencedByPending = std::any_of(
+				Groups.begin(), Groups.end(), [&](const auto& group)
+				{ return group.Pending
+					&& group.Pending->RootClockId == root.Identity.Instance; });
+			if (!referencedByLeaf && !referencedByPending) return false;
+		}
+		for (const auto& animation : ClockNodes.Leaves)
+			if (!ResolveClockRoot(animation)) return false;
+		for (size_t groupIndex = 0; groupIndex < Groups.size(); ++groupIndex)
+		{
+			const auto& pending = Groups[groupIndex].Pending;
+			if (!pending) continue;
+			const auto* root = FindClockRoot(pending->RootClockId);
+			if (!root || root->Identity.Storyboard.Owner
+				!= VisualStateOwner(groupIndex)) return false;
+			for (const auto& animation : ClockNodes.Leaves)
+				if (IsOwnedByVisualStateGroup(animation, groupIndex)
+					&& animation.Parent != root->NodeId) return false;
+		}
+		return true;
+	}
+
+	bool CommitPendingRootControls(
+		unsigned long long nowMilliseconds,
+		bool& committedAny)
+	{
+		committedAny = std::any_of(
+			ClockNodes.Roots.begin(), ClockNodes.Roots.end(),
+			[](const auto& root)
+			{ return HasPendingRootControl(root.State); });
+		if (!committedAny) return true;
+
+		std::vector<PropertySnapshot> snapshots;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations)) return false;
+		auto previousRoots = ClockNodes.Roots;
+		const bool previousApplying = Applying;
+		Applying = true;
+		bool committed = false;
+		ControlScopeExit rollback{ [&]
+			{
+				if (!committed)
+					RestoreActiveAnimationTransaction(
+						previousAnimations, previousRoots,
+						snapshots, previousApplying);
+				else
+					Applying = previousApplying;
+			} };
+
+		std::vector<StoryboardClockKey> removals;
+		std::vector<StoryboardClockKey> stops;
+		for (const auto& root : ClockNodes.Roots)
+			if (root.State.PendingRemove)
+				removals.push_back(root.Identity.Storyboard);
+			else if (root.State.PendingStop)
+				stops.push_back(root.Identity.Storyboard);
+
+		for (const auto& storyboard : removals)
+			if (!CommitRemoveEventStoryboard(
+				storyboard, nowMilliseconds)) return false;
+		for (const auto& storyboard : stops)
+		{
+			auto found = std::find_if(ClockNodes.Roots.begin(),
+				ClockNodes.Roots.end(), [&](const auto& root)
+				{ return root.Identity.Storyboard == storyboard; });
+			if (found == ClockNodes.Roots.end()) continue;
+			found->State.PendingStop = false;
+			if (!CommitStopEventStoryboard(
+				storyboard, nowMilliseconds)) return false;
+		}
+
+		bool directStateChanged = false;
+		for (auto& root : ClockNodes.Roots)
+		{
+			auto currentAnchor = ProjectInteractiveRootElapsed(
+				root.State, nowMilliseconds);
+			const bool sought =
+				root.State.PendingSeekOffsetMilliseconds.has_value();
+			if (sought)
+			{
+				root.State.StartTick = nowMilliseconds;
+				root.State.SeekOffsetMilliseconds =
+					*root.State.PendingSeekOffsetMilliseconds;
+				root.State.PendingSeekOffsetMilliseconds.reset();
+				root.State.Stopped = false;
+				if (root.State.Paused)
+					root.State.PauseTick = nowMilliseconds;
+				for (auto& animation : ClockNodes.Leaves)
+					if (animation.Parent == root.NodeId)
+					{
+						animation.Completed = false;
+						std::fill(animation.KeySplineParameters.begin(),
+							animation.KeySplineParameters.end(), 0.0);
+				}
+				directStateChanged = true;
+				currentAnchor = root.State.SeekOffsetMilliseconds;
+			}
+			const bool speedChanged = root.State.PendingSpeedRatio.has_value()
+				&& (!root.State.Stopped || sought);
+			if (speedChanged)
+			{
+				root.State.StartTick = nowMilliseconds;
+				root.State.SeekOffsetMilliseconds = currentAnchor;
+				root.State.InteractiveSpeedRatio =
+					*root.State.PendingSpeedRatio;
+				root.State.PendingSpeedRatio.reset();
+				if (root.State.Paused)
+					root.State.PauseTick = nowMilliseconds;
+				directStateChanged = true;
+			}
+			if (root.State.PendingPause)
+			{
+				root.State.PendingPause = false;
+				if (!root.State.Paused)
+				{
+					root.State.Paused = true;
+					root.State.PauseTick = nowMilliseconds;
+					directStateChanged = true;
+				}
+			}
+			if (root.State.PendingResume)
+			{
+				root.State.PendingResume = false;
+				if (root.State.Paused)
+				{
+					if (!sought && !speedChanged)
+					{
+						const auto pausedFor = nowMilliseconds
+							>= root.State.PauseTick
+							? nowMilliseconds - root.State.PauseTick : 0;
+						root.State.StartTick = SaturatingAdd(
+							root.State.StartTick, pausedFor);
+					}
+					root.State.Paused = false;
+					root.State.PauseTick = 0;
+					directStateChanged = true;
+				}
+			}
+		}
+		if (directStateChanged
+			&& !ApplyRetainedAnimationFrame(nowMilliseconds)) return false;
+		committed = true;
+		Applying = previousApplying;
+		PublishClockRootRegistry();
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
 	bool AdvanceAnimations(unsigned long long nowMilliseconds)
 	{
-		if (!HasActiveAnimations()) return false;
+		LastAdvanceFailed = false;
+		if (!SynchronizeClockNodeArena())
+		{
+			LastAdvanceFailed = true;
+			return false;
+		}
+		std::vector<RootTimingSnapshot> timingBefore;
+		std::vector<DeclarativeClockTimingEventArgs> timingEvents;
+		try
+		{
+			timingBefore = CaptureRootTimingSnapshots();
+			if (timingBefore.size()
+				> (std::numeric_limits<size_t>::max)() / 5u)
+				throw std::length_error("Clock timing event batch is too large.");
+			timingEvents.reserve(timingBefore.size() * 5u);
+		}
+		catch (...)
+		{
+			LastAdvanceFailed = true;
+			return false;
+		}
+		bool committedRootControl = false;
+		if (!CommitPendingRootControls(
+			nowMilliseconds, committedRootControl))
+		{
+			LastAdvanceFailed = true;
+			return false;
+		}
+		const auto rootProjections = ProjectClockRoots(
+			ClockNodes.Roots, nowMilliseconds);
+		if (!HasActiveAnimations())
+		{
+			FinalizeRootTimingEvents(
+				timingBefore, nowMilliseconds, timingEvents);
+			PublishRootTimingEvents(std::move(timingEvents));
+			return committedRootControl;
+		}
 		const bool hadActive = true;
+		auto fail = [&]() noexcept
+			{
+				LastAdvanceFailed = true;
+				return false;
+			};
 		const bool previousApplying = Applying;
 		Applying = true;
 		ControlScopeExit restoreApplying{ [&]
 			{ Applying = previousApplying; } };
 		std::vector<AnimationFrameValue> frameValues;
-		std::vector<const ActiveAnimation*> stoppingAnimations;
-		frameValues.reserve(ActiveAnimations.size());
-		for (auto& animation : ActiveAnimations)
-		{
-			const auto clockTick = animation.Paused
-				? animation.PauseTick : nowMilliseconds;
-			const auto elapsed = clockTick >= animation.StartTick
-				? clockTick - animation.StartTick : 0;
-			if (elapsed < animation.BeginTimeMilliseconds) continue;
-			const auto activeDuration =
-				TimelineActiveDurationMilliseconds(animation);
-			const auto activeElapsed = animation.Completed
-				? activeDuration : elapsed - animation.BeginTimeMilliseconds;
+		std::vector<AnimationClockView> stoppingAnimations;
+		std::vector<ActiveAnimation*> reenteredAnimations;
+		std::vector<BindingValue> composedValues(AnimationExactKeyCount);
+		std::vector<bool> composedHasFrame(AnimationExactKeyCount, false);
+		frameValues.resize(ClockNodes.Leaves.size());
+		if (!VisitClockLeavesByRoot(rootProjections,
+			[&](auto& root, const auto& rootProjection, auto& animation,
+				uint32_t payloadIndex)
+			{
+			const auto projection = ProjectAnimationClock(
+				animation, root, rootProjection, animation);
+			const auto* layer = ResolveAnimationLayer(animation);
+			if (!layer) return false;
+			if (layer->ExactKeyIndex >= composedValues.size()) return false;
+			auto& composed = composedValues[layer->ExactKeyIndex];
+			if (composed.Kind() == BindingValueKind::Empty)
+				composed = layer->Values.Base;
+			if (root.State.Stopped)
+			{
+				if (!composedHasFrame[layer->ExactKeyIndex])
+				{
+					BindingValue stoppedBase;
+					if (!TryReadBaseAnimationValue(
+						animation, stoppedBase)) return false;
+					frameValues[payloadIndex] = {
+						&animation, std::move(stoppedBase) };
+					composed = frameValues[payloadIndex].Value;
+					composedHasFrame[layer->ExactKeyIndex] = true;
+				}
+				return true;
+			}
+			if (projection.BeforeBegin)
+			{
+				if (layer->Handoff
+					== DeclarativeHandoffBehavior::SnapshotAndReplace)
+				{
+					frameValues[payloadIndex] = {
+						&animation, layer->Values.Snapshot };
+					composed = layer->Values.Snapshot;
+					composedHasFrame[layer->ExactKeyIndex] = true;
+				}
+				return true;
+			}
+			if (projection.RootFillStopped)
+			{
+				if (layer->Handoff == DeclarativeHandoffBehavior::Compose)
+					return true;
+				frameValues[payloadIndex] = {
+					&animation, layer->Values.Snapshot };
+				composed = layer->Values.Snapshot;
+				composedHasFrame[layer->ExactKeyIndex] = true;
+				return true;
+			}
 			BindingValue value;
-			if (!Interpolate(animation, activeElapsed, value)) return false;
-			frameValues.push_back({ &animation, std::move(value) });
-			if (!animation.Completed && animation.FillBehavior
+			const bool reentered = animation.Completed
+				&& !projection.ActivePeriodComplete;
+			if (reentered) reenteredAnimations.push_back(&animation);
+			if (animation.Completed && !reentered && animation.FillBehavior
+				== DeclarativeTimelineFillBehavior::Stop)
+			{
+				if (layer->Handoff == DeclarativeHandoffBehavior::Compose)
+					return true;
+				value = layer->Values.Snapshot;
+			}
+			else if (!Interpolate(animation, layer->Values,
+				projection.ActiveElapsedMilliseconds, value,
+				layer->Handoff == DeclarativeHandoffBehavior::Compose
+					? &composed : nullptr)) return false;
+			frameValues[payloadIndex] = { &animation, std::move(value) };
+			composed = frameValues[payloadIndex].Value;
+			composedHasFrame[layer->ExactKeyIndex] = true;
+			if ((!animation.Completed || reentered) && animation.FillBehavior
 				== DeclarativeTimelineFillBehavior::Stop
-				&& activeElapsed >= activeDuration)
-				stoppingAnimations.push_back(&animation);
-		}
-		// The ordinary frame path only stages DP writes in ApplyAnimationFrame.
-		// Deep clock/property snapshots are needed solely on a FillBehavior=Stop
-		// boundary, where releasing values and recomposing retained clocks adds a
-		// second fallible mutation after the frame has committed.
+				&& projection.ActivePeriodComplete)
+				stoppingAnimations.push_back(
+					{ &animation, &layer->Values, root.Identity.Instance });
+			return true;
+		})) return fail();
+		// The ordinary frame path only stages DP writes in the explicit
+		// per-property layer stacks. BeforeBegin leaves keep an empty frame so
+		// their layer remains owned without overwriting a live sibling.
+		// Deep clock/property snapshots are needed on a FillBehavior=Stop boundary
+		// and when a repeating root re-enters a previously completed child. Both
+		// paths mutate retained clock state after the frame commit.
 		std::vector<PropertySnapshot> stopSnapshots;
-		std::vector<ActiveAnimation> stopAnimations;
-		bool stopCommitted = stoppingAnimations.empty();
+		std::vector<CandidateAnimation> stopAnimations;
+		std::vector<ActiveClockRoot> stopRoots;
+		bool stopCommitted = stoppingAnimations.empty()
+			&& reenteredAnimations.empty();
 		if (!stopCommitted)
 		{
-			CaptureActiveAnimationSnapshots(ActiveAnimations, stopSnapshots);
-			stopAnimations = ActiveAnimations;
+			CaptureActiveAnimationSnapshots(ClockNodes.Leaves, stopSnapshots);
+			if (!SnapshotClockCandidates(stopAnimations)) return fail();
+			stopRoots = ClockNodes.Roots;
 		}
 		ControlScopeExit rollbackStop{ [&]
 			{
 				if (!stopCommitted)
 					RestoreActiveAnimationTransaction(
-						stopAnimations, stopSnapshots, previousApplying);
+						stopAnimations, stopRoots,
+						stopSnapshots, previousApplying);
 			} };
-		if (!ApplyAnimationFrame(frameValues)) return false;
-		if (!ReleaseStoppedAnimationValues(
-			stoppingAnimations, ActiveAnimations, nowMilliseconds)) return false;
-		ActiveAnimations.erase(std::remove_if(
-			ActiveAnimations.begin(), ActiveAnimations.end(),
+		if (std::exchange(FailNextFrameCommitForTesting, false)) return fail();
+		if (!ApplyCommittedAnimationFrame(frameValues)) return fail();
+		for (auto* animation : reenteredAnimations)
+			if (animation) animation->Completed = false;
+		std::vector<AnimationClockView> activeClockViews;
+		if (!ActiveClockViews(activeClockViews)
+			|| !ReleaseStoppedAnimationValues(
+			stoppingAnimations, activeClockViews,
+			ClockNodes.Roots, nowMilliseconds, rootProjections)) return fail();
+		const auto animationCountBeforePrune = ClockNodes.Leaves.size();
+		ClockNodes.Leaves.erase(std::remove_if(
+			ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
 			[&](auto& animation)
 			{
-				const auto clockTick = animation.Paused
-					? animation.PauseTick : nowMilliseconds;
-				const auto elapsed = clockTick >= animation.StartTick
-					? clockTick - animation.StartTick : 0;
-				const bool completed = animation.Completed
-					|| (elapsed >= animation.BeginTimeMilliseconds
-						&& elapsed - animation.BeginTimeMilliseconds
-						>= TimelineActiveDurationMilliseconds(animation));
-				if (!completed) return false;
-				if (!animation.IsEventStoryboard
-					&& animation.GroupIndex < Groups.size()
-					&& Groups[static_cast<size_t>(animation.GroupIndex)].Pending)
-					return false;
-				if (animation.IsEventStoryboard && animation.FillBehavior
-					== DeclarativeTimelineFillBehavior::HoldEnd)
+				const auto* root = ResolveClockRoot(animation);
+				if (!root)
 				{
-					animation.Completed = true;
+					LastAdvanceFailed = true;
 					return false;
 				}
-				return true;
-			}), ActiveAnimations.end());
+				const auto rootIndex = static_cast<size_t>(
+					root - ClockNodes.Roots.data());
+				if (rootIndex >= rootProjections.size())
+				{
+					LastAdvanceFailed = true;
+					return false;
+				}
+				const auto projection = ProjectAnimationClock(
+					animation, *root, rootProjections[rootIndex], animation);
+				if (!projection.ActivePeriodComplete) return false;
+				if (IsVisualStateClock(*root))
+				{
+					const auto groupIndex =
+						root->Identity.Storyboard.Owner.Value;
+					if (groupIndex < Groups.size())
+					{
+						const auto& pending = Groups[
+							static_cast<size_t>(groupIndex)].Pending;
+						if (pending && pending->RootClockId
+							== root->Identity.Instance) return false;
+					}
+				}
+				animation.Completed = true;
+				return false;
+			}), ClockNodes.Leaves.end());
+		if (ClockNodes.Leaves.size() != animationCountBeforePrune)
+			ClockNodesDirty = true;
+		if (LastAdvanceFailed) return fail();
 		if (!stoppingAnimations.empty()
-			&& !ApplyRetainedAnimationFrame(nowMilliseconds)) return false;
+			&& !ApplyRetainedAnimationFrame(nowMilliseconds)) return fail();
 		stopCommitted = true;
 		Applying = previousApplying;
 		for (size_t groupIndex = 0; groupIndex < Groups.size(); ++groupIndex)
@@ -7230,10 +10809,20 @@ struct Control::DeclarativeVisualStateRuntime
 			RuntimeState targetStorage;
 			const auto* target = ResolveState(
 				groupIndex, targetState, targetStorage, nullptr);
-			if (!target) continue;
+			if (!target)
+			{
+				LastAdvanceFailed = true;
+				continue;
+			}
 			auto transitionProperties = group.Pending->Properties;
 			auto previousPending = group.Pending;
-			auto previousAnimations = ActiveAnimations;
+			std::vector<CandidateAnimation> previousAnimations;
+			if (!SnapshotClockCandidates(previousAnimations))
+			{
+				LastAdvanceFailed = true;
+				continue;
+			}
+			auto previousRoots = ClockNodes.Roots;
 			const auto previousState = group.CurrentState;
 			bool committed = false;
 			ControlScopeExit rollbackCompletion{ [&]
@@ -7241,19 +10830,29 @@ struct Control::DeclarativeVisualStateRuntime
 					if (committed) return;
 					group.CurrentState = previousState;
 					group.Pending = std::move(previousPending);
-					ActiveAnimations = std::move(previousAnimations);
+					(void)CommitClockCandidates(
+						std::move(previousAnimations),
+						std::move(previousRoots));
 				} };
 			group.Pending.reset();
-			ActiveAnimations.erase(std::remove_if(
-				ActiveAnimations.begin(), ActiveAnimations.end(),
+			ClockNodes.Leaves.erase(std::remove_if(
+				ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
 				[&](const auto& animation)
-				{ return !animation.IsEventStoryboard
-				&& animation.GroupIndex == groupIndex; }),
-				ActiveAnimations.end());
+				{ return IsOwnedByVisualStateGroup(animation, groupIndex); }),
+				ClockNodes.Leaves.end());
 			if (!GoToImmediate(groupIndex, targetState, nullptr,
-				nowMilliseconds, true, &transitionProperties)) continue;
+				nowMilliseconds, true, &transitionProperties))
+			{
+				LastAdvanceFailed = true;
+				continue;
+			}
 			committed = true;
 		}
+		FinalizeRootTimingEvents(
+			timingBefore, nowMilliseconds, timingEvents);
+		PruneClockRoots();
+		PublishClockRootRegistry();
+		PublishRootTimingEvents(std::move(timingEvents));
 		return hadActive;
 	}
 
@@ -7273,8 +10872,8 @@ struct Control::DeclarativeVisualStateRuntime
 				cleared.push_back(key);
 				(void)key.Target->ClearPropertyValue(*key.Property, source);
 			};
-		for (const auto& animation : ActiveAnimations)
-			if (includeEventStoryboards || !animation.IsEventStoryboard)
+		for (const auto& animation : ClockNodes.Leaves)
+			if (includeEventStoryboards || IsVisualStateClock(animation))
 				clearOnce(animationValuesCleared,
 					{ animation.Target, PropertyIdentity(animation.Metadata) },
 					DependencyPropertyValueSource::Animation);
@@ -7433,14 +11032,18 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 
 	__declspec(noinline) void RestoreActiveAnimationTransaction(
-		std::vector<ActiveAnimation>& savedAnimations,
+		std::vector<CandidateAnimation>& savedAnimations,
+		std::vector<ActiveClockRoot>& savedRoots,
 		const std::vector<PropertySnapshot>& snapshots,
 		bool previousApplying) noexcept
 	{
 		Applying = true;
-		ActiveAnimations = std::move(savedAnimations);
+		if (!CommitClockCandidates(
+			std::move(savedAnimations), std::move(savedRoots)))
+			LastAdvanceFailed = true;
 		(void)RestoreSnapshots(snapshots);
 		Applying = previousApplying;
+		PublishClockRootRegistry();
 	}
 
 	bool GoToImmediate(
@@ -7476,6 +11079,13 @@ struct Control::DeclarativeVisualStateRuntime
 			groupIndex, stateIndex, nextStorage, outError);
 		if (!nextState) return false;
 		const auto& next = *nextState;
+		ClockIdentity clockIdentity;
+		if (!TryAllocateClockIdentity(
+			VisualStateClockKey(groupIndex, stateIndex), clockIdentity))
+		{
+			if (outError) *outError = L"视觉状态 ClockId 已耗尽。";
+			return false;
+		}
 
 		std::vector<PropertyKey> affected;
 		auto addAffected = [&](Control* target,
@@ -7515,21 +11125,15 @@ struct Control::DeclarativeVisualStateRuntime
 				CapturePropertySnapshot(key, source, snapshots);
 
 		unsigned long long startTick = requestedStartTick.value_or(0);
-		std::vector<ActiveAnimation> pendingAnimations;
+		std::vector<CandidateAnimation> pendingAnimations;
 		pendingAnimations.reserve(next.Animations.size());
 		for (const auto& animation : next.Animations)
 		{
 			BindingValue current;
-			if (!TryReadAnimationValue(animation, current))
-			{
-				if (outError) *outError = L"视觉状态动画无法捕获起始值："
-					+ animation.Metadata->Name();
-				return false;
-			}
 			BindingValue base;
-			if (!TryReadBaseAnimationValue(animation, base))
+			if (!TryReadAnimationSnapshotAndBase(animation, current, base))
 			{
-				if (outError) *outError = L"视觉状态动画无法捕获基础值："
+				if (outError) *outError = L"视觉状态动画无法捕获快照/基础值："
 					+ animation.Metadata->Name();
 				return false;
 			}
@@ -7543,22 +11147,21 @@ struct Control::DeclarativeVisualStateRuntime
 					+ animation.Metadata->Name();
 				return false;
 			}
-			pendingAnimations.push_back({
-				groupIndex, animation.Target, animation.Metadata,
-				animation.Kind,
-				std::move(base), std::move(foundation),
-				std::move(from), std::move(to),
-				animation.KeyFrames,
-				animation.IsCumulative,
-				animation.ObjectPath, startTick,
-				animation.BeginTimeMilliseconds,
-				animation.DurationMilliseconds,
-				animation.RepeatBehavior, animation.RepeatCount,
-				animation.RepeatDurationMilliseconds,
-				animation.AutoReverse, animation.FillBehavior,
-				animation.SpeedRatio, animation.AccelerationRatio,
-				animation.DecelerationRatio,
-				animation.Easing, animation.EasingMode });
+			CandidateAnimation candidate;
+			static_cast<TimelineDefinition&>(candidate) =
+				static_cast<const TimelineDefinition&>(animation);
+			candidate.RootClockId = clockIdentity.Instance;
+			candidate.Target = animation.Target;
+			candidate.Metadata = animation.Metadata;
+			candidate.LayerValues.Snapshot = std::move(current);
+			candidate.LayerValues.Base = std::move(base);
+			candidate.LayerValues.Foundation = std::move(foundation);
+			candidate.From = std::move(from);
+			candidate.To = std::move(to);
+			candidate.ObjectPath = animation.ObjectPath;
+			candidate.KeySplineParameters.assign(
+				candidate.KeyFrames.size(), 0.0);
+			pendingAnimations.push_back(std::move(candidate));
 		}
 
 		auto stateHasSetter = [](const auto& state,
@@ -7583,17 +11186,49 @@ struct Control::DeclarativeVisualStateRuntime
 			};
 
 		const bool animationsEnabled = Owner->AreSystemAnimationsEnabled();
-		auto candidateAnimations = ActiveAnimations;
+		std::vector<CandidateAnimation> candidateAnimations;
+		if (!SnapshotClockCandidates(candidateAnimations))
+		{
+			if (outError) *outError = L"视觉状态动画候选快照失败。";
+			return false;
+		}
 		candidateAnimations.erase(std::remove_if(
 			candidateAnimations.begin(), candidateAnimations.end(),
-			[&](const auto& animation) { return !animation.IsEventStoryboard
-				&& animation.GroupIndex == groupIndex; }),
+			[&](const auto& animation)
+			{
+				const auto* root = FindClockRoot(animation.RootClockId);
+				return (root && root->Identity.Storyboard.Owner
+					== VisualStateOwner(groupIndex))
+					|| ConflictsAnyAnimationLayer(
+						animation, pendingAnimations);
+			}),
 			candidateAnimations.end());
-		if (animationsEnabled)
-			for (const auto& animation : pendingAnimations)
-				if (animation.BeginTimeMilliseconds > 0
-					|| TimelineActiveDurationMilliseconds(animation) > 0)
-					candidateAnimations.push_back(animation);
+		auto candidateRoots = ClockNodes.Roots;
+		EraseClockRootsByOwner(candidateRoots, VisualStateOwner(groupIndex));
+		unsigned long long rootSimpleDuration = 0;
+		bool rootSimpleDurationForever = false;
+		if (!ResolveStoryboardTiming(next.StoryboardTiming, pendingAnimations,
+			next.TimelineGroups,
+			rootSimpleDuration, rootSimpleDurationForever))
+		{
+			if (outError) *outError = L"视觉状态 Storyboard 根时序尚不受支持。";
+			return false;
+		}
+		for (auto& animation : pendingAnimations)
+		{
+			const bool active = animationsEnabled
+				&& (animation.TimelineGroupIndex
+						!= CompiledInteractionInvalidIndex
+					|| animation.BeginTimeMilliseconds > 0
+					|| TimelineActiveDurationMilliseconds(animation) > 0);
+			if (active)
+				candidateAnimations.push_back(animation);
+			else
+			{
+				animation.Completed = true;
+				candidateAnimations.push_back(animation);
+			}
+		}
 		const bool previousApplying = Applying;
 		Applying = true;
 		ControlScopeExit restoreApplying{ [&]
@@ -7647,14 +11282,33 @@ struct Control::DeclarativeVisualStateRuntime
 				const auto activeDuration =
 					TimelineActiveDurationMilliseconds(animation);
 				const bool active = animationsEnabled
-					&& (animation.BeginTimeMilliseconds > 0
+					&& (animation.TimelineGroupIndex
+							!= CompiledInteractionInvalidIndex
+						|| animation.BeginTimeMilliseconds > 0
 						|| activeDuration > 0);
 				BindingValue value;
-				if (active && animation.BeginTimeMilliseconds > 0)
-					value = animation.Base;
+				if (animationsEnabled)
+				{
+					const auto projection = ProjectAnimationAtRootBegin(
+						animation, animation, next.StoryboardTiming,
+						rootSimpleDuration, rootSimpleDurationForever,
+						next.TimelineGroups);
+					if (projection.BeforeBegin || projection.RootFillStopped)
+						value = animation.LayerValues.Snapshot;
+					else if (projection.ActivePeriodComplete
+						&& animation.FillBehavior
+							== DeclarativeTimelineFillBehavior::Stop)
+						value = animation.LayerValues.Snapshot;
+					else if (!Interpolate(animation,
+						projection.ActiveElapsedMilliseconds, value))
+					{
+						success = false;
+						break;
+					}
+				}
 				else if (!active && animation.FillBehavior
 					== DeclarativeTimelineFillBehavior::Stop)
-					value = animation.Base;
+					value = animation.LayerValues.Snapshot;
 				else if (!Interpolate(animation,
 					active ? 0 : activeDuration, value))
 				{
@@ -7666,20 +11320,21 @@ struct Control::DeclarativeVisualStateRuntime
 			if (success) success = ApplyAnimationFrame(initialValues);
 			if (success)
 			{
-				startTick = requestedStartTick.value_or(::GetTickCount64());
-				for (auto& animation : pendingAnimations)
-					animation.StartTick = startTick;
-				std::vector<const ActiveAnimation*> stopped;
-				for (const auto& animation : pendingAnimations)
-					if (animation.FillBehavior
-						== DeclarativeTimelineFillBehavior::Stop
-						&& (!animationsEnabled
-							|| TimelineActiveDurationMilliseconds(animation) == 0))
-						stopped.push_back(&animation);
-				if (!ReleaseStoppedAnimationValues(stopped, pendingAnimations,
+				startTick = requestedStartTick.value_or(NowMilliseconds());
+				if (!InstallClockRoot(candidateRoots, clockIdentity, startTick,
+					next.StoryboardTiming, rootSimpleDuration,
+					rootSimpleDurationForever,
+					next.TimelineGroups)) success = false;
+				std::vector<AnimationClockView> stopped;
+				// A stopped child retains the SnapshotAndReplace snapshot until
+				// the owning Storyboard is explicitly stopped or replaced.
+				const auto pendingViews = CandidateClockViews(pendingAnimations);
+				if (success && !ReleaseStoppedAnimationValues(
+					stopped, pendingViews, candidateRoots,
 					animationsEnabled ? startTick
 					: (std::numeric_limits<unsigned long long>::max)()))
 					success = false;
+				PruneCandidateRoots(candidateRoots, candidateAnimations);
 			}
 		}
 		if (success && transitionPropertiesToClear
@@ -7697,38 +11352,43 @@ struct Control::DeclarativeVisualStateRuntime
 #if CUI_ENABLE_DYNAMIC_XAML
 		const auto oldState = previous ? previous->Name : std::wstring{};
 #endif
-		for (auto& animation : candidateAnimations)
-			if (!animation.IsEventStoryboard
-				&& animation.GroupIndex == groupIndex)
-				animation.StartTick = startTick;
-		auto previousAnimations = std::move(ActiveAnimations);
-		ActiveAnimations = std::move(candidateAnimations);
-		if (!ApplyRetainedAnimationFrame(startTick))
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations))
+		{
+			(void)RestoreSnapshots(snapshots);
+			if (outError) *outError = L"视觉状态动画回滚快照失败。";
+			return false;
+		}
+		auto previousRoots = ClockNodes.Roots;
+		if (!CommitClockCandidates(
+			std::move(candidateAnimations), std::move(candidateRoots))
+			|| !ApplyRetainedAnimationFrame(startTick))
 		{
 			RestoreActiveAnimationTransaction(
-				previousAnimations, snapshots, previousApplying);
+				previousAnimations, previousRoots,
+				snapshots, previousApplying);
 			if (outError) *outError = L"视觉状态动画时钟无法重组。";
 			return false;
 		}
 		group.CurrentState = stateIndex;
 		// The implicit clock begins when the state transaction is committed,
 		// after initial frame composition. Otherwise materialization work between
-		// capturing GetTickCount64 and returning from GoToVisualState leaks into
+		// capturing the presentation clock and returning from GoToVisualState
+		// leaks into
 		// the first externally advanced frame. Transition completion supplies an
 		// explicit tick and intentionally keeps that shared timeline origin.
 		if (!requestedStartTick)
 		{
-			startTick = ::GetTickCount64();
-			for (auto& animation : ActiveAnimations)
-				if (!animation.IsEventStoryboard
-					&& animation.GroupIndex == groupIndex)
-					animation.StartTick = startTick;
+			startTick = NowMilliseconds();
+			if (auto* root = FindClockRoot(clockIdentity.Instance))
+				root->State.StartTick = startTick;
 		}
 		Applying = previousApplying;
-		if (std::any_of(ActiveAnimations.begin(), ActiveAnimations.end(),
-			[&](const auto& animation) { return !animation.IsEventStoryboard
-			&& animation.GroupIndex == groupIndex; }))
-			Owner->InvalidateVisual();
+		PublishClockRootRegistry();
+		if (std::any_of(ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
+			[&](const auto& animation)
+			{ return IsOwnedByVisualStateGroup(animation, groupIndex); }))
+			Owner->RefreshDeclarativeAnimationWindowScheduling();
 		if (!SuppressStateChangedEvents && oldStateToken != next.Token)
 		{
 			DeclarativeVisualStateChangedEventArgs args;
@@ -7824,8 +11484,9 @@ struct Control::DeclarativeVisualStateRuntime
 			root, *animation.ObjectPath, output);
 	}
 
+	template<typename TAnimation>
 	bool TryReadBaseAnimationValue(
-		const RuntimeAnimation& animation,
+		const TAnimation& animation,
 		BindingValue& output) const
 	{
 		if (!animation.Target || !animation.Metadata) return false;
@@ -7851,6 +11512,63 @@ struct Control::DeclarativeVisualStateRuntime
 		if (!NormalizeObjectPathRoot(animation, root)) return false;
 		return TryReadObjectPathMember(
 			root, *animation.ObjectPath, output);
+	}
+
+	template<typename TLeft, typename TRight>
+	static bool SameAnimationLayerKey(
+		const TLeft& left,
+		const TRight& right) noexcept
+	{
+		return left.Target == right.Target
+			&& PropertyIdentity(left.Metadata)
+				== PropertyIdentity(right.Metadata)
+			&& left.ObjectPath.has_value() == right.ObjectPath.has_value()
+			&& ObjectPathIdentity(left.ObjectPath)
+				== ObjectPathIdentity(right.ObjectPath);
+	}
+
+	template<typename TAnimation, typename TAnimations>
+	static bool ConflictsAnyAnimationLayer(
+		const TAnimation& animation,
+		const TAnimations& candidates) noexcept
+	{
+		return std::any_of(candidates.begin(), candidates.end(),
+			[&](const auto& candidate)
+			{ return SameAnimationLayerKey(animation, candidate); });
+	}
+
+	template<typename TAnimation>
+	const AnimationLayerRecord* FindTopAnimationLayer(
+		const TAnimation& key) const noexcept
+	{
+		for (size_t index = AnimationLayers.size(); index-- > 0;)
+		{
+			const auto& layer = AnimationLayers[index];
+			const auto* slot = ClockNodes.Resolve(
+				layer.Owner, ClockNodeKind::Leaf);
+			if (!slot || slot->PayloadIndex >= ClockNodes.Leaves.size())
+				continue;
+			const auto& animation = ClockNodes.Leaves[slot->PayloadIndex];
+			if (animation.NodeId == layer.Owner
+				&& SameAnimationLayerKey(animation, key)) return &layer;
+		}
+		return nullptr;
+	}
+
+	bool TryReadAnimationSnapshotAndBase(
+		const RuntimeAnimation& animation,
+		BindingValue& snapshot,
+		BindingValue& base) const
+	{
+		if (!TryReadAnimationValue(animation, snapshot)) return false;
+		if (const auto* layer = FindTopAnimationLayer(animation))
+		{
+			base = layer->Values.Base;
+			return true;
+		}
+		if (!TryReadBaseAnimationValue(animation, base))
+			base = snapshot;
+		return base.Kind() != BindingValueKind::Empty;
 	}
 
 	bool TryReadValueBelowVisualState(
@@ -7885,7 +11603,8 @@ struct Control::DeclarativeVisualStateRuntime
 		if (!animation.KeyFrames.empty())
 		{
 			output = animation.KeyFrames.front().Value;
-			if (animation.IsAdditive)
+			if (animation.IsAdditive
+				&& !MatrixKeyFramesUseDirectValues(animation))
 				return AddAnimationValues(animation, output, current, output);
 			return true;
 		}
@@ -7905,58 +11624,56 @@ struct Control::DeclarativeVisualStateRuntime
 		return true;
 	}
 
-	static ActiveAnimation MakeActiveAnimation(
-		uint64_t groupIndex,
+	static CandidateAnimation MakeCandidateAnimation(
+		const ClockIdentity& identity,
 		const RuntimeAnimation& animation,
+		BindingValue snapshot,
 		BindingValue base,
 		BindingValue foundation,
 		BindingValue from,
-		BindingValue to,
-		unsigned long long startTick)
+		BindingValue to)
 	{
-		return {
-			groupIndex, animation.Target, animation.Metadata,
-			animation.Kind,
-			std::move(base), std::move(foundation),
-			std::move(from), std::move(to),
-			animation.KeyFrames,
-			animation.IsCumulative,
-			animation.ObjectPath, startTick,
-			animation.BeginTimeMilliseconds,
-			animation.DurationMilliseconds,
-			animation.RepeatBehavior, animation.RepeatCount,
-			animation.RepeatDurationMilliseconds,
-			animation.AutoReverse, animation.FillBehavior,
-			animation.SpeedRatio, animation.AccelerationRatio,
-			animation.DecelerationRatio,
-			animation.Easing, animation.EasingMode };
+		CandidateAnimation result;
+		static_cast<TimelineDefinition&>(result) =
+			static_cast<const TimelineDefinition&>(animation);
+		result.RootClockId = identity.Instance;
+		result.Target = animation.Target;
+		result.Metadata = animation.Metadata;
+		result.LayerValues.Snapshot = std::move(snapshot);
+		result.LayerValues.Base = std::move(base);
+		result.LayerValues.Foundation = std::move(foundation);
+		result.From = std::move(from);
+		result.To = std::move(to);
+		result.ObjectPath = animation.ObjectPath;
+		result.KeySplineParameters.assign(
+			result.KeyFrames.size(), 0.0);
+		return result;
 	}
 
-	static ActiveAnimation MakeActiveAnimation(
-		uint64_t groupIndex,
+	static CandidateAnimation MakeCandidateAnimation(
+		const ClockIdentity& identity,
 		RuntimeAnimation&& animation,
+		BindingValue snapshot,
 		BindingValue base,
 		BindingValue foundation,
 		BindingValue from,
-		BindingValue to,
-		unsigned long long startTick)
+		BindingValue to)
 	{
-		return {
-			groupIndex, animation.Target, animation.Metadata,
-			animation.Kind,
-			std::move(base), std::move(foundation),
-			std::move(from), std::move(to),
-			std::move(animation.KeyFrames),
-			animation.IsCumulative,
-			std::move(animation.ObjectPath), startTick,
-			animation.BeginTimeMilliseconds,
-			animation.DurationMilliseconds,
-			animation.RepeatBehavior, animation.RepeatCount,
-			animation.RepeatDurationMilliseconds,
-			animation.AutoReverse, animation.FillBehavior,
-			animation.SpeedRatio, animation.AccelerationRatio,
-			animation.DecelerationRatio,
-			animation.Easing, animation.EasingMode };
+		CandidateAnimation result;
+		static_cast<TimelineDefinition&>(result) = std::move(
+			static_cast<TimelineDefinition&>(animation));
+		result.RootClockId = identity.Instance;
+		result.Target = animation.Target;
+		result.Metadata = animation.Metadata;
+		result.LayerValues.Snapshot = std::move(snapshot);
+		result.LayerValues.Base = std::move(base);
+		result.LayerValues.Foundation = std::move(foundation);
+		result.From = std::move(from);
+		result.To = std::move(to);
+		result.ObjectPath = std::move(animation.ObjectPath);
+		result.KeySplineParameters.assign(
+			result.KeyFrames.size(), 0.0);
+		return result;
 	}
 
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -8093,7 +11810,7 @@ struct Control::DeclarativeVisualStateRuntime
 			if (outError) outError->clear();
 			return true;
 		}
-		const auto now = ::GetTickCount64();
+		const auto now = NowMilliseconds();
 		RuntimeTransition transitionStorage;
 		const RuntimeTransition* transition = nullptr;
 		if (useTransitions && Owner->AreSystemAnimationsEnabled()
@@ -8118,21 +11835,24 @@ struct Control::DeclarativeVisualStateRuntime
 			if (group.Pending)
 				oldTransitionProperties = group.Pending->Properties;
 			auto previousPending = group.Pending;
-			auto previousAnimations = ActiveAnimations;
+			std::vector<CandidateAnimation> previousAnimations;
+			if (!SnapshotClockCandidates(previousAnimations)) return false;
+			auto previousRoots = ClockNodes.Roots;
 			bool committed = false;
 			ControlScopeExit rollback{ [&]
 				{
 					if (committed) return;
 					group.Pending = std::move(previousPending);
-					ActiveAnimations = std::move(previousAnimations);
+					(void)CommitClockCandidates(
+						std::move(previousAnimations),
+						std::move(previousRoots));
 				} };
 			group.Pending.reset();
-			ActiveAnimations.erase(std::remove_if(
-				ActiveAnimations.begin(), ActiveAnimations.end(),
+			ClockNodes.Leaves.erase(std::remove_if(
+				ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
 				[&](const auto& animation)
-				{ return !animation.IsEventStoryboard
-				&& animation.GroupIndex == groupIndex; }),
-				ActiveAnimations.end());
+				{ return IsOwnedByVisualStateGroup(animation, groupIndex); }),
+				ClockNodes.Leaves.end());
 			if (!GoToImmediate(groupIndex, stateIndex, outError,
 				std::nullopt, force, &oldTransitionProperties)) return false;
 			committed = true;
@@ -8152,7 +11872,15 @@ struct Control::DeclarativeVisualStateRuntime
 			groupIndex, stateIndex, toStorage, outError);
 		if (!resolvedToState) return false;
 		const auto& toState = *resolvedToState;
-		std::vector<ActiveAnimation> pendingAnimations;
+		ClockIdentity transitionClockIdentity;
+		if (!TryAllocateClockIdentity(
+			VisualStateClockKey(groupIndex, stateIndex),
+			transitionClockIdentity))
+		{
+			if (outError) *outError = L"VisualTransition ClockId 已耗尽。";
+			return false;
+		}
+		std::vector<CandidateAnimation> pendingAnimations;
 		std::vector<PropertyKey> pendingProperties;
 		auto addProperty = [&](const RuntimeAnimation& animation)
 			{
@@ -8211,8 +11939,12 @@ struct Control::DeclarativeVisualStateRuntime
 					transition->GeneratedDurationMilliseconds;
 				generated.Easing = transition->GeneratedEasing;
 				generated.EasingMode = transition->GeneratedEasingMode;
+				generated.EasingParameters =
+					transition->GeneratedEasingParameters;
 				BindingValue current;
-				if (!TryReadAnimationValue(generated, current))
+				BindingValue base;
+				if (!TryReadAnimationSnapshotAndBase(
+					generated, current, base))
 				{
 					if (outError) *outError = L"VisualTransition 无法读取"
 						+ context + L" Setter 起始值：" + metadata->Name();
@@ -8221,9 +11953,10 @@ struct Control::DeclarativeVisualStateRuntime
 				generated.From = current;
 				generated.To = destination;
 				BindingValue foundation = ZeroAnimationValue(generated);
-				pendingAnimations.push_back(MakeActiveAnimation(
-					groupIndex, generated, current, std::move(foundation),
-					std::move(current), std::move(destination), now));
+				pendingAnimations.push_back(MakeCandidateAnimation(
+					transitionClockIdentity, generated, current, std::move(base),
+					std::move(foundation),
+					std::move(current), std::move(destination)));
 				addProperty(generated);
 				return true;
 			};
@@ -8262,9 +11995,10 @@ struct Control::DeclarativeVisualStateRuntime
 			{
 				BindingValue current;
 				BindingValue base;
-				if (!TryReadAnimationValue(animation, current)
-					|| !TryReadBaseAnimationValue(animation, base)) return false;
+				if (!TryReadAnimationSnapshotAndBase(
+					animation, current, base)) return false;
 				auto generated = animation;
+				generated.TimelineGroupIndex = CompiledInteractionInvalidIndex;
 				generated.From.reset();
 				generated.To.reset();
 				generated.By.reset();
@@ -8284,9 +12018,10 @@ struct Control::DeclarativeVisualStateRuntime
 				generated.DecelerationRatio = 0.0;
 				generated.Easing = DeclarativeEasingKind::Linear;
 				generated.EasingMode = DeclarativeEasingMode::EaseOut;
-				pendingAnimations.push_back(MakeActiveAnimation(
-					groupIndex, generated, base, BindingValue{},
-					std::move(current), std::move(base), now));
+				generated.EasingParameters = {};
+				pendingAnimations.push_back(MakeCandidateAnimation(
+					transitionClockIdentity, generated, current, base, BindingValue{},
+					std::move(current), std::move(base)));
 				addProperty(generated);
 				return true;
 			};
@@ -8322,13 +12057,15 @@ struct Control::DeclarativeVisualStateRuntime
 				if (animation.Kind == DeclarativeAnimationKind::Object
 					|| explicitlyControls(animation)) continue;
 				BindingValue from;
-				if (!TryReadAnimationValue(animation, from))
+				BindingValue base;
+				if (!TryReadAnimationSnapshotAndBase(animation, from, base))
 				{
 					if (outError) *outError = L"VisualTransition 无法读取进入动画起始值："
 						+ animation.Metadata->Name();
 					return false;
 				}
 				auto generated = animation;
+				generated.TimelineGroupIndex = CompiledInteractionInvalidIndex;
 				generated.From = from;
 				BindingValue to;
 				if (!EnteringAnimationValue(animation, from, to))
@@ -8357,12 +12094,13 @@ struct Control::DeclarativeVisualStateRuntime
 				generated.DecelerationRatio = 0.0;
 				generated.Easing = transition->GeneratedEasing;
 				generated.EasingMode = transition->GeneratedEasingMode;
-				BindingValue base = from;
+				generated.EasingParameters =
+					transition->GeneratedEasingParameters;
 				BindingValue foundation = ZeroAnimationValue(generated);
-				pendingAnimations.push_back(MakeActiveAnimation(
-					groupIndex, generated, std::move(base),
+				pendingAnimations.push_back(MakeCandidateAnimation(
+					transitionClockIdentity, generated, from, std::move(base),
 					std::move(foundation),
-					std::move(from), std::move(to), now));
+					std::move(from), std::move(to)));
 				addProperty(generated);
 			}
 			if (fromState)
@@ -8379,10 +12117,10 @@ struct Control::DeclarativeVisualStateRuntime
 						footprint, animation, nullptr)) continue;
 					BindingValue from;
 					BindingValue to;
-					if (!TryReadAnimationValue(animation, from)
-						|| !TryReadBaseAnimationValue(animation, to))
+					if (!TryReadAnimationSnapshotAndBase(animation, from, to))
 						continue;
 					auto generated = animation;
+					generated.TimelineGroupIndex = CompiledInteractionInvalidIndex;
 					generated.From = from;
 					generated.To = to;
 					generated.By.reset();
@@ -8404,19 +12142,22 @@ struct Control::DeclarativeVisualStateRuntime
 					generated.DecelerationRatio = 0.0;
 					generated.Easing = transition->GeneratedEasing;
 					generated.EasingMode = transition->GeneratedEasingMode;
-					BindingValue base = from;
+					generated.EasingParameters =
+						transition->GeneratedEasingParameters;
+					BindingValue base = to;
 					BindingValue foundation = ZeroAnimationValue(generated);
-					pendingAnimations.push_back(MakeActiveAnimation(
-						groupIndex, generated, std::move(base),
+					pendingAnimations.push_back(MakeCandidateAnimation(
+						transitionClockIdentity, generated, from, std::move(base),
 						std::move(foundation),
-						std::move(from), std::move(to), now));
+						std::move(from), std::move(to)));
 					addProperty(generated);
 				}
 		}
 		for (const auto& animation : transition->Animations)
 		{
+			BindingValue snapshot;
 			BindingValue base;
-			if (!TryReadAnimationValue(animation, base))
+			if (!TryReadAnimationSnapshotAndBase(animation, snapshot, base))
 			{
 				if (outError) *outError = L"VisualTransition Storyboard 无法捕获基础值："
 					+ animation.Metadata->Name();
@@ -8426,16 +12167,17 @@ struct Control::DeclarativeVisualStateRuntime
 			BindingValue to;
 			BindingValue foundation;
 			if (!ResolveAnimationEndpoints(
-				animation, base, base, from, to, foundation))
+				animation, snapshot, base, from, to, foundation))
 			{
 				if (outError) *outError = L"VisualTransition Storyboard 无法解析 From/To/By："
 					+ animation.Metadata->Name();
 				return false;
 			}
-			pendingAnimations.push_back(MakeActiveAnimation(
-				groupIndex, animation, std::move(base),
+			pendingAnimations.push_back(MakeCandidateAnimation(
+				transitionClockIdentity, animation, std::move(snapshot),
+				std::move(base),
 				std::move(foundation),
-				std::move(from), std::move(to), now));
+				std::move(from), std::move(to)));
 			addProperty(animation);
 		}
 
@@ -8454,19 +12196,48 @@ struct Control::DeclarativeVisualStateRuntime
 				DependencyPropertyValueSource::VisualState,
 				DependencyPropertyValueSource::Animation })
 				CapturePropertySnapshot(key, source, snapshots);
-		auto candidateAnimations = ActiveAnimations;
+		std::vector<CandidateAnimation> candidateAnimations;
+		if (!SnapshotClockCandidates(candidateAnimations))
+		{
+			if (outError) *outError = L"VisualTransition 动画候选快照失败。";
+			return false;
+		}
 		candidateAnimations.erase(std::remove_if(
 			candidateAnimations.begin(), candidateAnimations.end(),
 			[&](const auto& animation)
-			{ return !animation.IsEventStoryboard
-				&& animation.GroupIndex == groupIndex; }),
+			{
+				const auto* root = FindClockRoot(animation.RootClockId);
+				return (root && root->Identity.Storyboard.Owner
+					== VisualStateOwner(groupIndex))
+					|| ConflictsAnyAnimationLayer(
+						animation, pendingAnimations);
+			}),
 			candidateAnimations.end());
 		candidateAnimations.reserve(
 			candidateAnimations.size() + pendingAnimations.size());
-		for (const auto& animation : pendingAnimations)
+		for (auto& animation : pendingAnimations)
+		{
+			if (animation.TimelineGroupIndex
+					== CompiledInteractionInvalidIndex
+				&& animation.BeginTimeMilliseconds == 0
+				&& TimelineActiveDurationMilliseconds(animation) == 0)
+				animation.Completed = true;
 			candidateAnimations.push_back(animation);
+		}
+		auto candidateRoots = ClockNodes.Roots;
+		EraseClockRootsByOwner(candidateRoots, VisualStateOwner(groupIndex));
 		PendingTransition candidatePending{
-			stateIndex, 0, pendingProperties };
+			stateIndex, 0, transitionClockIdentity.Instance,
+			pendingProperties };
+		unsigned long long rootSimpleDuration = 0;
+		bool rootSimpleDurationForever = false;
+		if (!ResolveStoryboardTiming(transition->StoryboardTiming,
+			pendingAnimations, transition->TimelineGroups,
+			rootSimpleDuration, rootSimpleDurationForever))
+		{
+			if (outError) *outError = L"VisualTransition Storyboard 根时序无效。";
+			return false;
+		}
 		const bool previousApplying = Applying;
 		Applying = true;
 		bool committed = false;
@@ -8490,12 +12261,18 @@ struct Control::DeclarativeVisualStateRuntime
 		for (const auto& animation : pendingAnimations)
 		{
 			BindingValue value;
-			if (animation.BeginTimeMilliseconds > 0
-				|| (TimelineActiveDurationMilliseconds(animation) == 0
-					&& animation.FillBehavior
-					== DeclarativeTimelineFillBehavior::Stop))
-				value = animation.Base;
-			else if (!Interpolate(animation, 0, value))
+			const auto projection = ProjectAnimationAtRootBegin(
+				animation, animation, transition->StoryboardTiming,
+				rootSimpleDuration, rootSimpleDurationForever,
+				transition->TimelineGroups);
+			if (projection.BeforeBegin || projection.RootFillStopped)
+				value = animation.LayerValues.Snapshot;
+			else if (projection.ActivePeriodComplete
+				&& animation.FillBehavior
+					== DeclarativeTimelineFillBehavior::Stop)
+				value = animation.LayerValues.Snapshot;
+			else if (!Interpolate(animation,
+				projection.ActiveElapsedMilliseconds, value))
 			{
 				if (outError) *outError = L"VisualTransition 初始帧无效。";
 				return false;
@@ -8507,33 +12284,73 @@ struct Control::DeclarativeVisualStateRuntime
 			if (outError) *outError = L"VisualTransition 无法事务性应用。";
 			return false;
 		}
-		const auto startTick = ::GetTickCount64();
-		for (auto& animation : pendingAnimations)
-			animation.StartTick = startTick;
-		std::vector<const ActiveAnimation*> initiallyStopped;
-		for (const auto& animation : pendingAnimations)
-			if (animation.FillBehavior
-				== DeclarativeTimelineFillBehavior::Stop
-				&& animation.BeginTimeMilliseconds == 0
-				&& TimelineActiveDurationMilliseconds(animation) == 0)
-				initiallyStopped.push_back(&animation);
-		if (!ReleaseStoppedAnimationValues(
-			initiallyStopped, pendingAnimations, startTick))
+		const auto startTick = NowMilliseconds();
+		if (!InstallClockRoot(candidateRoots, transitionClockIdentity, startTick,
+			transition->StoryboardTiming, rootSimpleDuration,
+			rootSimpleDurationForever, transition->TimelineGroups))
+		{
+			if (outError) *outError = L"VisualTransition root registry 已耗尽。";
+			return false;
+		}
+		std::vector<AnimationClockView> initiallyStopped;
+		const auto pendingViews = CandidateClockViews(pendingAnimations);
+		if (!ReleaseStoppedAnimationValues(initiallyStopped,
+			pendingViews, candidateRoots, startTick))
 		{
 			if (outError) *outError =
 				L"VisualTransition 无法释放已停止的动画值。";
 			return false;
 		}
-		for (auto& animation : candidateAnimations)
-			if (!animation.IsEventStoryboard
-				&& animation.GroupIndex == groupIndex)
-				animation.StartTick = startTick;
-		candidatePending.EndTick = SaturatingAdd(startTick, totalDuration);
-		ActiveAnimations = std::move(candidateAnimations);
+		PruneCandidateRoots(candidateRoots, candidateAnimations);
+		if (rootSimpleDurationForever
+			|| transition->StoryboardTiming.RepeatBehavior
+				== DeclarativeRepeatBehaviorKind::Forever)
+			candidatePending.EndTick =
+				(std::numeric_limits<unsigned long long>::max)();
+		else
+		{
+			const auto rootActiveDurationExact =
+				transition->StoryboardTiming.RepeatBehavior
+					== DeclarativeRepeatBehaviorKind::Duration
+				? static_cast<long double>(transition->StoryboardTiming
+					.RepeatDurationMilliseconds)
+				: static_cast<long double>(rootSimpleDuration)
+					* (transition->StoryboardTiming.AutoReverse ? 2.0L : 1.0L)
+					* static_cast<long double>(
+						transition->StoryboardTiming.RepeatCount)
+					/ static_cast<long double>(
+						transition->StoryboardTiming.SpeedRatio);
+			const auto maximum =
+				(std::numeric_limits<unsigned long long>::max)();
+			const auto rootActiveDuration = !std::isfinite(rootActiveDurationExact)
+				|| rootActiveDurationExact >= static_cast<long double>(maximum)
+				? maximum : static_cast<unsigned long long>(
+					std::ceil(rootActiveDurationExact));
+			candidatePending.EndTick = SaturatingAdd(startTick,
+				SaturatingAdd(transition->StoryboardTiming.BeginTimeMilliseconds,
+					rootActiveDuration));
+		}
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations))
+		{
+			if (outError) *outError = L"VisualTransition 回滚快照失败。";
+			return false;
+		}
+		auto previousRoots = ClockNodes.Roots;
+		if (!CommitClockCandidates(
+			std::move(candidateAnimations), std::move(candidateRoots)))
+		{
+			(void)CommitClockCandidates(
+				std::move(previousAnimations), std::move(previousRoots));
+			if (outError)
+				*outError = L"VisualTransition ClockNode arena 已耗尽。";
+			return false;
+		}
 		group.Pending = std::move(candidatePending);
 		committed = true;
 		Applying = previousApplying;
-		Owner->InvalidateVisual();
+		PublishClockRootRegistry();
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
 		if (outError) outError->clear();
 		return true;
 	}
@@ -8584,49 +12401,126 @@ struct Control::DeclarativeVisualStateRuntime
 
 	bool ApplyRetainedAnimationFrame(unsigned long long nowMilliseconds)
 	{
+		if (!SynchronizeClockNodeArena()) return false;
+		const auto rootProjections = ProjectClockRoots(
+			ClockNodes.Roots, nowMilliseconds);
 		std::vector<AnimationFrameValue> values;
-		values.reserve(ActiveAnimations.size());
-		for (const auto& animation : ActiveAnimations)
-		{
-			const auto clockTick = animation.Paused
-				? animation.PauseTick : nowMilliseconds;
-			const auto elapsed = clockTick >= animation.StartTick
-				? clockTick - animation.StartTick : 0;
-			if (elapsed < animation.BeginTimeMilliseconds)
+		values.resize(ClockNodes.Leaves.size());
+		std::vector<BindingValue> composedValues(AnimationExactKeyCount);
+		std::vector<bool> composedHasFrame(AnimationExactKeyCount, false);
+		if (!VisitClockLeavesByRoot(rootProjections,
+			[&](const auto& root, const auto& rootProjection,
+				const auto& animation, uint32_t payloadIndex)
 			{
-				values.push_back({ &animation, animation.Base });
-				continue;
+			const auto projection = ProjectAnimationClock(
+				animation, root, rootProjection, animation);
+			const auto* layer = ResolveAnimationLayer(animation);
+			if (!layer) return false;
+			if (layer->ExactKeyIndex >= composedValues.size()) return false;
+			auto& composed = composedValues[layer->ExactKeyIndex];
+			if (composed.Kind() == BindingValueKind::Empty)
+				composed = layer->Values.Base;
+			if (root.State.Stopped)
+			{
+				if (!composedHasFrame[layer->ExactKeyIndex])
+				{
+					BindingValue stoppedBase;
+					if (!TryReadBaseAnimationValue(
+						animation, stoppedBase)) return false;
+					values[payloadIndex] = {
+						&animation, std::move(stoppedBase) };
+					composed = values[payloadIndex].Value;
+					composedHasFrame[layer->ExactKeyIndex] = true;
+				}
+				return true;
 			}
-			const auto activeDuration =
-				TimelineActiveDurationMilliseconds(animation);
+			if (projection.BeforeBegin)
+			{
+				if (layer->Handoff
+					!= DeclarativeHandoffBehavior::Compose)
+				{
+					values[payloadIndex] = { &animation, layer->Values.Snapshot };
+					composed = layer->Values.Snapshot;
+					composedHasFrame[layer->ExactKeyIndex] = true;
+				}
+				return true;
+			}
+			if (projection.RootFillStopped)
+			{
+				if (layer->Handoff
+					!= DeclarativeHandoffBehavior::Compose)
+				{
+					values[payloadIndex] = {
+						&animation, layer->Values.Snapshot };
+					composed = layer->Values.Snapshot;
+					composedHasFrame[layer->ExactKeyIndex] = true;
+				}
+				return true;
+			}
+			if (animation.Completed && projection.ActivePeriodComplete
+				&& animation.FillBehavior
+				== DeclarativeTimelineFillBehavior::Stop)
+			{
+				if (layer->Handoff
+					!= DeclarativeHandoffBehavior::Compose)
+				{
+					values[payloadIndex] = { &animation, layer->Values.Snapshot };
+					composed = layer->Values.Snapshot;
+					composedHasFrame[layer->ExactKeyIndex] = true;
+				}
+				return true;
+			}
 			BindingValue value;
-			if (!Interpolate(animation, animation.Completed
-				? activeDuration
-				: elapsed - animation.BeginTimeMilliseconds, value)) return false;
-			values.push_back({ &animation, std::move(value) });
-		}
-		return ApplyAnimationFrame(values);
+			if (!Interpolate(animation, layer->Values,
+				projection.ActiveElapsedMilliseconds, value,
+				layer->Handoff == DeclarativeHandoffBehavior::Compose
+					? &composed : nullptr)) return false;
+			values[payloadIndex] = { &animation, std::move(value) };
+			composed = values[payloadIndex].Value;
+			composedHasFrame[layer->ExactKeyIndex] = true;
+			return true;
+		})) return false;
+		if (!ApplyCommittedAnimationFrame(values)) return false;
+		for (auto& root : ClockNodes.Roots)
+			root.State.LastTick = nowMilliseconds;
+		return true;
 	}
 
 	template<typename TAnimations>
 	bool BeginResolvedEventStoryboard(
-		uint64_t clockSlot,
+		const StoryboardClockKey& storyboard,
 		TAnimations& animations,
+		const std::vector<RuntimeTimelineGroup>& timelineGroups,
+		const DeclarativeStoryboardTimingDefinition& timing,
+		DeclarativeHandoffBehavior handoff,
 		std::wstring* outError)
 	{
+		if (handoff != DeclarativeHandoffBehavior::SnapshotAndReplace
+			&& handoff != DeclarativeHandoffBehavior::Compose)
+		{
+			if (outError) *outError = L"BeginStoryboard HandoffBehavior 无效。";
+			return false;
+		}
+		ClockIdentity clockIdentity;
+		if (!TryAllocateClockIdentity(storyboard, clockIdentity))
+		{
+			if (outError) *outError = L"BeginStoryboard ClockId 已耗尽。";
+			return false;
+		}
 		std::vector<PropertySnapshot> snapshots;
-		CaptureActiveAnimationSnapshots(ActiveAnimations, snapshots);
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
 		for (const auto& animation : animations)
 			CapturePropertySnapshot({ animation.Target,
 				PropertyIdentity(animation.Metadata) },
 				DependencyPropertyValueSource::Animation, snapshots);
 
-		std::vector<ActiveAnimation> pending;
+		std::vector<CandidateAnimation> pending;
 		pending.reserve(animations.size());
 		for (auto& animation : animations)
 		{
 			BindingValue current;
-			if (!TryReadAnimationValue(animation, current))
+			BindingValue base;
+			if (!TryReadAnimationSnapshotAndBase(animation, current, base))
 			{
 				if (outError) *outError = L"BeginStoryboard 无法捕获当前值："
 					+ animation.Metadata->Name();
@@ -8635,28 +12529,48 @@ struct Control::DeclarativeVisualStateRuntime
 			BindingValue from;
 			BindingValue to;
 			BindingValue foundation;
-			if (!ResolveAnimationEndpoints(animation, current, current,
+			if (!ResolveAnimationEndpoints(animation, current, base,
 				from, to, foundation))
 			{
 				if (outError) *outError = L"BeginStoryboard 无法解析 From/To/By："
 					+ animation.Metadata->Name();
 				return false;
 			}
-			ActiveAnimation active;
+			CandidateAnimation candidate;
+			AnimationLayerValueState dynamicValues;
+			if (handoff == DeclarativeHandoffBehavior::Compose)
+				ConfigureComposeDynamicValues(animation, dynamicValues);
 			if constexpr (std::is_const_v<
 				std::remove_reference_t<decltype(animation)>>)
-				active = MakeActiveAnimation(clockSlot, animation,
-					current, std::move(foundation), std::move(from),
-					std::move(to), 0);
+				candidate = MakeCandidateAnimation(clockIdentity, animation,
+					current, std::move(base), std::move(foundation), std::move(from),
+					std::move(to));
 			else
-				active = MakeActiveAnimation(clockSlot, std::move(animation),
-					current, std::move(foundation), std::move(from),
-					std::move(to), 0);
-			active.IsEventStoryboard = true;
-			pending.push_back(std::move(active));
+				candidate = MakeCandidateAnimation(clockIdentity, std::move(animation),
+					current, std::move(base), std::move(foundation), std::move(from),
+					std::move(to));
+			candidate.Handoff = handoff;
+			candidate.LayerValues.DynamicFrom = dynamicValues.DynamicFrom;
+			candidate.LayerValues.DynamicFoundation =
+				dynamicValues.DynamicFoundation;
+			pending.push_back(std::move(candidate));
+		}
+		unsigned long long rootSimpleDuration = 0;
+		bool rootSimpleDurationForever = false;
+		if (!ResolveStoryboardTiming(timing, pending, timelineGroups,
+			rootSimpleDuration, rootSimpleDurationForever))
+		{
+			if (outError) *outError = L"BeginStoryboard 根时序无效或尚不受支持。";
+			return false;
 		}
 
-		auto previousAnimations = ActiveAnimations;
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations))
+		{
+			if (outError) *outError = L"BeginStoryboard 回滚快照失败。";
+			return false;
+		}
+		auto previousRoots = ClockNodes.Roots;
 		const bool animationsEnabled = Owner->AreSystemAnimationsEnabled();
 		const bool previousApplying = Applying;
 		Applying = true;
@@ -8665,7 +12579,8 @@ struct Control::DeclarativeVisualStateRuntime
 			{
 				if (!committed)
 					RestoreActiveAnimationTransaction(
-						previousAnimations, snapshots, previousApplying);
+						previousAnimations, previousRoots,
+						snapshots, previousApplying);
 				else
 					Applying = previousApplying;
 			} };
@@ -8677,13 +12592,40 @@ struct Control::DeclarativeVisualStateRuntime
 			const auto activeDuration =
 				TimelineActiveDurationMilliseconds(animation);
 			const bool active = animationsEnabled
-				&& (animation.BeginTimeMilliseconds > 0 || activeDuration > 0);
+				&& (animation.TimelineGroupIndex
+						!= CompiledInteractionInvalidIndex
+					|| animation.BeginTimeMilliseconds > 0 || activeDuration > 0);
 			BindingValue value;
-			if (active && animation.BeginTimeMilliseconds > 0)
-				value = animation.Base;
+			if (animationsEnabled)
+			{
+				const auto projection = ProjectAnimationAtRootBegin(
+					animation, animation, timing, rootSimpleDuration,
+					rootSimpleDurationForever, timelineGroups);
+				const bool childFillStopped =
+					projection.ActivePeriodComplete
+					&& animation.FillBehavior
+						== DeclarativeTimelineFillBehavior::Stop;
+				if ((projection.BeforeBegin || projection.RootFillStopped
+					|| childFillStopped)
+					&& handoff == DeclarativeHandoffBehavior::Compose)
+					continue;
+				if (projection.BeforeBegin || projection.RootFillStopped
+					|| childFillStopped)
+					value = animation.LayerValues.Snapshot;
+				else if (!Interpolate(animation,
+					projection.ActiveElapsedMilliseconds, value))
+				{
+					success = false;
+					break;
+				}
+			}
+			else if (handoff == DeclarativeHandoffBehavior::Compose
+				&& !active && animation.FillBehavior
+					== DeclarativeTimelineFillBehavior::Stop)
+				continue;
 			else if (!active && animation.FillBehavior
 				== DeclarativeTimelineFillBehavior::Stop)
-				value = animation.Base;
+				value = animation.LayerValues.Snapshot;
 			else if (!Interpolate(animation,
 				active ? 0 : activeDuration, value))
 			{
@@ -8699,40 +12641,54 @@ struct Control::DeclarativeVisualStateRuntime
 			return false;
 		}
 
-		const auto startTick = ::GetTickCount64();
-		auto candidateAnimations = ActiveAnimations;
+		const auto startTick = NowMilliseconds();
+		std::vector<CandidateAnimation> candidateAnimations;
+		if (!SnapshotClockCandidates(candidateAnimations))
+		{
+			if (outError) *outError = L"BeginStoryboard 动画候选快照失败。";
+			return false;
+		}
 		candidateAnimations.erase(std::remove_if(
 			candidateAnimations.begin(), candidateAnimations.end(),
 			[&](const auto& animation)
 			{
-				return animation.IsEventStoryboard
-					&& animation.GroupIndex == clockSlot;
+				const auto* root = FindClockRoot(animation.RootClockId);
+				return (root && root->Identity.Storyboard == storyboard)
+					|| (handoff
+						== DeclarativeHandoffBehavior::SnapshotAndReplace
+						&& ConflictsAnyAnimationLayer(animation, pending));
 			}), candidateAnimations.end());
-		for (auto& animation : pending)
-			animation.StartTick = startTick;
-		std::vector<ActiveAnimation> releaseContext = candidateAnimations;
-		const auto pendingOffset = releaseContext.size();
+		auto candidateRoots = ClockNodes.Roots;
+		if (!InstallClockRoot(candidateRoots, clockIdentity, startTick, timing,
+			rootSimpleDuration, rootSimpleDurationForever, timelineGroups))
+		{
+			if (outError) *outError = L"BeginStoryboard root registry 已耗尽。";
+			return false;
+		}
+		auto evaluationRoots = ClockNodes.Roots;
+		if (!AppendClockRoot(evaluationRoots, clockIdentity, startTick, timing,
+			rootSimpleDuration, rootSimpleDurationForever, timelineGroups))
+		{
+			if (outError) *outError = L"BeginStoryboard evaluation roots 已耗尽。";
+			return false;
+		}
+		std::vector<CandidateAnimation> releaseContext = candidateAnimations;
 		for (const auto& animation : pending)
 			releaseContext.push_back(animation);
-		std::vector<const ActiveAnimation*> stopping;
-		stopping.reserve(ActiveAnimations.size() + pending.size());
-		for (const auto& animation : ActiveAnimations)
-			if (animation.IsEventStoryboard
-				&& animation.GroupIndex == clockSlot)
-				stopping.push_back(&animation);
-		for (size_t index = 0; index < pending.size(); ++index)
-		{
-			const auto& animation = pending[index];
-			const auto activeDuration =
-				TimelineActiveDurationMilliseconds(animation);
-			const bool active = animationsEnabled
-				&& (animation.BeginTimeMilliseconds > 0 || activeDuration > 0);
-			if (!active && animation.FillBehavior
-				== DeclarativeTimelineFillBehavior::Stop)
-				stopping.push_back(
-					&releaseContext[pendingOffset + index]);
-		}
-		if (!ReleaseStoppedAnimationValues(stopping, releaseContext, startTick))
+		std::vector<AnimationClockView> stopping;
+		stopping.reserve(ClockNodes.Leaves.size() + pending.size());
+		for (const auto& animation : ClockNodes.Leaves)
+			if (IsStoryboardClock(animation, storyboard)
+				|| (handoff == DeclarativeHandoffBehavior::SnapshotAndReplace
+					&& ConflictsAnyAnimationLayer(animation, pending)))
+			{
+				AnimationClockView view;
+				if (!ActiveClockView(animation, view)) return false;
+				stopping.push_back(view);
+			}
+		const auto releaseViews = CandidateClockViews(releaseContext);
+		if (!ReleaseStoppedAnimationValues(
+			stopping, releaseViews, evaluationRoots, startTick))
 		{
 			if (outError) *outError =
 				L"BeginStoryboard 无法释放被替换或已停止的动画值。";
@@ -8745,17 +12701,24 @@ struct Control::DeclarativeVisualStateRuntime
 			const auto activeDuration =
 				TimelineActiveDurationMilliseconds(animation);
 			const bool active = animationsEnabled
-				&& (animation.BeginTimeMilliseconds > 0 || activeDuration > 0);
+				&& (animation.TimelineGroupIndex
+						!= CompiledInteractionInvalidIndex
+					|| animation.BeginTimeMilliseconds > 0 || activeDuration > 0);
 			if (active)
 				candidateAnimations.push_back(std::move(animation));
-			else if (animation.FillBehavior
-				== DeclarativeTimelineFillBehavior::HoldEnd)
+			else
 			{
 				animation.Completed = true;
 				candidateAnimations.push_back(std::move(animation));
 			}
 		}
-		ActiveAnimations = std::move(candidateAnimations);
+		PruneCandidateRoots(candidateRoots, candidateAnimations);
+		if (!CommitClockCandidates(
+			std::move(candidateAnimations), std::move(candidateRoots)))
+		{
+			if (outError) *outError = L"BeginStoryboard ClockNode arena 已耗尽。";
+			return false;
+		}
 		if (!stopping.empty() && !ApplyRetainedAnimationFrame(startTick))
 		{
 			if (outError) *outError =
@@ -8764,8 +12727,9 @@ struct Control::DeclarativeVisualStateRuntime
 		}
 		committed = true;
 		Applying = previousApplying;
+		PublishClockRootRegistry();
 		if (HasActiveAnimations() || !stopping.empty())
-			Owner->InvalidateVisual();
+			Owner->RefreshDeclarativeAnimationWindowScheduling();
 		if (outError) outError->clear();
 		return true;
 	}
@@ -8778,64 +12742,114 @@ struct Control::DeclarativeVisualStateRuntime
 			if (outError) *outError = L"BeginStoryboard 索引无效。";
 			return false;
 		}
-		const auto& animations = EventStoryboards[storyboardIndex].Animations;
+		const auto& definition = EventStoryboards[storyboardIndex];
+		const auto& animations = definition.Animations;
 		return BeginResolvedEventStoryboard(
-			static_cast<uint64_t>(storyboardIndex), animations, outError);
+			ComponentStoryboardClockKey(storyboardIndex), animations,
+			definition.TimelineGroups, definition.Timing,
+			definition.Handoff, outError);
 	}
 #endif
 
-	bool PauseEventStoryboard(uint64_t storyboardIndex)
+	bool PauseEventStoryboard(const StoryboardClockKey& storyboard)
 	{
-		const auto now = ::GetTickCount64();
-		bool changed = false;
-		for (auto& animation : ActiveAnimations)
-			if (animation.IsEventStoryboard
-				&& animation.GroupIndex == storyboardIndex
-				&& !animation.Completed && !animation.Paused)
-			{
-				animation.Paused = true;
-				animation.PauseTick = now;
-				changed = true;
-			}
-		return changed;
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return false;
+		if (found->State.PendingResume)
+			found->State.PendingResume = false;
+		else if (!found->State.Paused)
+			found->State.PendingPause = true;
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
 	}
 
-	bool ResumeEventStoryboard(uint64_t storyboardIndex)
+	bool SeekEventStoryboard(
+		const StoryboardClockKey& storyboard,
+		unsigned long long offsetMilliseconds)
 	{
-		const auto now = ::GetTickCount64();
-		bool changed = false;
-		for (auto& animation : ActiveAnimations)
-			if (animation.IsEventStoryboard
-				&& animation.GroupIndex == storyboardIndex
-				&& !animation.Completed && animation.Paused)
-			{
-				const auto pausedFor = now >= animation.PauseTick
-					? now - animation.PauseTick : 0;
-				animation.StartTick = SaturatingAdd(
-					animation.StartTick, pausedFor);
-				animation.Paused = false;
-				animation.PauseTick = 0;
-				changed = true;
-			}
-		if (changed) Owner->InvalidateVisual();
-		return changed;
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return false;
+		found->State.PendingSeekOffsetMilliseconds =
+			RootParentOffsetForSeek(*found, offsetMilliseconds);
+		found->State.PendingStop = false;
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
 	}
 
-	bool StopEventStoryboard(uint64_t storyboardIndex)
+	bool SetSpeedRatioEventStoryboard(
+		const StoryboardClockKey& storyboard,
+		double ratio)
 	{
-		const auto now = ::GetTickCount64();
-		std::vector<const ActiveAnimation*> stopping;
-		for (const auto& animation : ActiveAnimations)
-			if (animation.IsEventStoryboard
-				&& animation.GroupIndex == storyboardIndex)
-				stopping.push_back(&animation);
+		if (!std::isfinite(ratio) || ratio < 0.0) return false;
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return false;
+		found->State.PendingSpeedRatio = ratio;
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	bool SkipEventStoryboardToFill(const StoryboardClockKey& storyboard)
+	{
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return false;
+		const auto duration = RootActiveDuration(*found);
+		if (!duration) return false;
+		found->State.PendingSeekOffsetMilliseconds =
+			static_cast<long double>(found->Timing.BeginTimeMilliseconds)
+				+ static_cast<long double>(*duration);
+		found->State.PendingStop = false;
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	bool ResumeEventStoryboard(const StoryboardClockKey& storyboard)
+	{
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return false;
+		if (found->State.PendingPause)
+			found->State.PendingPause = false;
+		else if (found->State.Paused)
+			found->State.PendingResume = true;
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	bool CommitRemoveEventStoryboard(
+		const StoryboardClockKey& storyboard,
+		unsigned long long now)
+	{
+		std::vector<AnimationClockView> stopping;
+		for (const auto& animation : ClockNodes.Leaves)
+			if (IsStoryboardClock(animation, storyboard))
+			{
+				AnimationClockView view;
+				if (!ActiveClockView(animation, view)) return false;
+				stopping.push_back(view);
+			}
 		// Stop is an idempotent action.  A missing clock is a successful no-op;
 		// false is reserved for a failed retained-frame recomposition so callers
 		// with an enclosing transaction can roll the mutation back.
 		if (stopping.empty()) return true;
 		std::vector<PropertySnapshot> snapshots;
-		CaptureActiveAnimationSnapshots(ActiveAnimations, snapshots);
-		auto previousAnimations = ActiveAnimations;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations)) return false;
+		auto previousRoots = ClockNodes.Roots;
 		const bool previousApplying = Applying;
 		Applying = true;
 		bool committed = false;
@@ -8843,42 +12857,126 @@ struct Control::DeclarativeVisualStateRuntime
 			{
 				if (!committed)
 					RestoreActiveAnimationTransaction(
-						previousAnimations, snapshots, previousApplying);
+						previousAnimations, previousRoots,
+						snapshots, previousApplying);
 				else
 					Applying = previousApplying;
 			} };
-		if (!ReleaseStoppedAnimationValues(
-			stopping, ActiveAnimations, now)) return false;
-		ActiveAnimations.erase(std::remove_if(
-			ActiveAnimations.begin(), ActiveAnimations.end(),
+		std::vector<AnimationClockView> activeViews;
+		if (!ActiveClockViews(activeViews)
+			|| !ReleaseStoppedAnimationValues(
+				stopping, activeViews, ClockNodes.Roots, now)) return false;
+		ClockNodes.Leaves.erase(std::remove_if(
+			ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
 			[&](const auto& animation)
 			{
-				return animation.IsEventStoryboard
-					&& animation.GroupIndex == storyboardIndex;
-			}), ActiveAnimations.end());
+				return IsStoryboardClock(animation, storyboard);
+			}), ClockNodes.Leaves.end());
+		EraseClockRootsByStoryboard(ClockNodes.Roots, storyboard);
+		ClockNodesDirty = true;
 		if (!ApplyRetainedAnimationFrame(now)) return false;
 		committed = true;
 		Applying = previousApplying;
-		Owner->InvalidateVisual();
+		PublishClockRootRegistry();
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	bool CommitStopEventStoryboard(
+		const StoryboardClockKey& storyboard,
+		unsigned long long now)
+	{
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		// WPF Stop is idempotent and retains the controllable clock tree.
+		if (found == ClockNodes.Roots.end() || found->State.Stopped) return true;
+		std::vector<PropertySnapshot> snapshots;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> previousAnimations;
+		if (!SnapshotClockCandidates(previousAnimations)) return false;
+		auto previousRoots = ClockNodes.Roots;
+		const bool previousApplying = Applying;
+		Applying = true;
+		bool committed = false;
+		ControlScopeExit rollback{ [&]
+			{
+				if (!committed)
+					RestoreActiveAnimationTransaction(
+						previousAnimations, previousRoots,
+						snapshots, previousApplying);
+				else
+					Applying = previousApplying;
+			} };
+		found->State.Stopped = true;
+		if (!ApplyRetainedAnimationFrame(now)) return false;
+		committed = true;
+		Applying = previousApplying;
+		PublishClockRootRegistry();
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	bool StopEventStoryboard(const StoryboardClockKey& storyboard)
+	{
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return true;
+		found->State.PendingStop = true;
+		found->State.PendingSeekOffsetMilliseconds.reset();
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
+		return true;
+	}
+
+	bool RemoveEventStoryboard(const StoryboardClockKey& storyboard)
+	{
+		auto found = std::find_if(ClockNodes.Roots.begin(),
+			ClockNodes.Roots.end(), [&](const auto& root)
+			{ return root.Identity.Storyboard == storyboard; });
+		if (found == ClockNodes.Roots.end()
+			|| !found->State.ControlLookupAvailable) return true;
+		found->State.PendingRemove = true;
+		found->State.PendingStop = true;
+		found->State.PendingSeekOffsetMilliseconds.reset();
+		found->State.ControlLookupAvailable = false;
+		Owner->RefreshDeclarativeAnimationWindowScheduling();
 		return true;
 	}
 
 #if CUI_ENABLE_DYNAMIC_XAML
 	void ExecuteEventTriggerAction(const RuntimeEventTriggerAction& action)
 	{
+		const auto storyboard =
+			ComponentStoryboardClockKey(action.StoryboardIndex);
 		switch (action.Kind)
 		{
 		case DeclarativeStoryboardActionKind::Begin:
 			(void)BeginEventStoryboard(action.StoryboardIndex, nullptr);
 			break;
 		case DeclarativeStoryboardActionKind::Pause:
-			(void)PauseEventStoryboard(action.StoryboardIndex);
+			(void)PauseEventStoryboard(storyboard);
 			break;
 		case DeclarativeStoryboardActionKind::Resume:
-			(void)ResumeEventStoryboard(action.StoryboardIndex);
+			(void)ResumeEventStoryboard(storyboard);
 			break;
 		case DeclarativeStoryboardActionKind::Stop:
-			(void)StopEventStoryboard(action.StoryboardIndex);
+			(void)StopEventStoryboard(storyboard);
+			break;
+		case DeclarativeStoryboardActionKind::Remove:
+			(void)RemoveEventStoryboard(storyboard);
+			break;
+		case DeclarativeStoryboardActionKind::Seek:
+			(void)SeekEventStoryboard(
+				storyboard, action.SeekOffsetMilliseconds);
+			break;
+		case DeclarativeStoryboardActionKind::SetSpeedRatio:
+			(void)SetSpeedRatioEventStoryboard(
+				storyboard, action.SpeedRatio);
+			break;
+		case DeclarativeStoryboardActionKind::SkipToFill:
+			(void)SkipEventStoryboardToFill(storyboard);
 			break;
 		}
 	}
@@ -8887,6 +12985,7 @@ struct Control::DeclarativeVisualStateRuntime
 	bool TryBuildCompiledEventStoryboard(
 		uint32_t storyboardIndex,
 		std::vector<RuntimeAnimation>& animations,
+		std::vector<RuntimeTimelineGroup>& timelineGroups,
 		std::wstring* outError)
 	{
 		if (!CompiledInteractions
@@ -8899,7 +12998,10 @@ struct Control::DeclarativeVisualStateRuntime
 		const auto& storyboard = instance.Program.Storyboards[storyboardIndex];
 		if (!ValidCompiledRange(
 			storyboard.Animations, instance.Program.Animations.size())
-			|| storyboard.Animations.Count == 0)
+			|| !ValidCompiledRange(storyboard.TimelineGroups,
+				instance.Program.TimelineGroups.size())
+			|| (storyboard.Animations.Count == 0
+				&& storyboard.TimelineGroups.Count == 0))
 		{
 			if (outError) *outError = L"编译 Storyboard animation range 无效。";
 			return false;
@@ -8915,6 +13017,11 @@ struct Control::DeclarativeVisualStateRuntime
 				L"编译 EventTrigger Storyboard", outError)) return false;
 			animations.push_back(std::move(animation));
 		}
+		timelineGroups.clear();
+		if (!AppendCompiledTimelineGroups(instance.Program, instance.Values,
+			instance.Targets, storyboard.TimelineGroups,
+			CompiledInteractionInvalidIndex, animations, timelineGroups,
+			L"编译 EventTrigger Storyboard", outError)) return false;
 		return true;
 	}
 
@@ -8922,29 +13029,48 @@ struct Control::DeclarativeVisualStateRuntime
 		const CompiledInteractionActionOp& action)
 	{
 		if (!CompiledInteractions
-			|| action.StoryboardIndex >= CompiledInteractions->Program.Storyboards.size()
-			|| action.StoryboardIndex > CompiledInteractionClockPayloadMask)
+			|| action.StoryboardIndex
+				>= CompiledInteractions->Program.Storyboards.size())
 			return;
-		const uint64_t clockSlot = CompiledInteractionClockDomain
-			| static_cast<uint64_t>(action.StoryboardIndex);
+		const auto storyboard = CompiledInteractionStoryboardClockKey(
+			action.StoryboardIndex);
 		switch (action.Kind)
 		{
 		case DeclarativeStoryboardActionKind::Begin:
 		{
 			std::vector<RuntimeAnimation> animations;
+			std::vector<RuntimeTimelineGroup> timelineGroups;
 			if (TryBuildCompiledEventStoryboard(
-				action.StoryboardIndex, animations, nullptr))
-				(void)BeginResolvedEventStoryboard(clockSlot, animations, nullptr);
+				action.StoryboardIndex, animations, timelineGroups, nullptr))
+				(void)BeginResolvedEventStoryboard(
+					storyboard, animations, timelineGroups,
+					CompiledInteractions->Program.Storyboards[
+						action.StoryboardIndex].Timing,
+					action.Handoff, nullptr);
 			break;
 		}
 		case DeclarativeStoryboardActionKind::Pause:
-			(void)PauseEventStoryboard(clockSlot);
+			(void)PauseEventStoryboard(storyboard);
 			break;
 		case DeclarativeStoryboardActionKind::Resume:
-			(void)ResumeEventStoryboard(clockSlot);
+			(void)ResumeEventStoryboard(storyboard);
 			break;
 		case DeclarativeStoryboardActionKind::Stop:
-			(void)StopEventStoryboard(clockSlot);
+			(void)StopEventStoryboard(storyboard);
+			break;
+		case DeclarativeStoryboardActionKind::Remove:
+			(void)RemoveEventStoryboard(storyboard);
+			break;
+		case DeclarativeStoryboardActionKind::Seek:
+			(void)SeekEventStoryboard(
+				storyboard, action.SeekOffsetMilliseconds);
+			break;
+		case DeclarativeStoryboardActionKind::SetSpeedRatio:
+			(void)SetSpeedRatioEventStoryboard(
+				storyboard, action.SpeedRatio);
+			break;
+		case DeclarativeStoryboardActionKind::SkipToFill:
+			(void)SkipEventStoryboardToFill(storyboard);
 			break;
 		default:
 			break;
@@ -8962,6 +13088,7 @@ struct Control::DeclarativeVisualStateRuntime
 
 #if CUI_ENABLE_DYNAMIC_XAML
 	bool ExecuteStyleTriggerActions(
+		const RuntimeStyleTriggerScope& scope,
 		const std::vector<RuntimeEventTriggerAction>& actions,
 		std::wstring* outError)
 	{
@@ -8983,7 +13110,7 @@ struct Control::DeclarativeVisualStateRuntime
 					snapshot.Value = std::move(value);
 				snapshots.push_back(std::move(snapshot));
 			};
-		for (const auto& animation : ActiveAnimations)
+		for (const auto& animation : ClockNodes.Leaves)
 			snapshotProperty(animation.Target, animation.Metadata);
 		for (const auto& action : actions)
 		{
@@ -8996,36 +13123,65 @@ struct Control::DeclarativeVisualStateRuntime
 				: EventStoryboards[action.StoryboardIndex].Animations)
 				snapshotProperty(animation.Target, animation.Metadata);
 		}
-		auto activeAnimations = ActiveAnimations;
+		std::vector<CandidateAnimation> activeAnimations;
+		if (!SnapshotClockCandidates(activeAnimations)) return false;
+		auto activeRoots = ClockNodes.Roots;
 		const bool previousApplying = Applying;
 		bool committed = false;
 		ControlScopeExit rollback{ [&]
 			{
 				if (committed) return;
 				RestoreActiveAnimationTransaction(
-					activeAnimations, snapshots, previousApplying);
+					activeAnimations, activeRoots,
+					snapshots, previousApplying);
 			} };
 		for (const auto& action : actions)
 		{
+			const auto storyboard = StyleStoryboardClockKey(
+				scope, static_cast<uint64_t>(action.StoryboardIndex));
 			switch (action.Kind)
 			{
 			case DeclarativeStoryboardActionKind::Begin:
-				if (!BeginEventStoryboard(action.StoryboardIndex, outError))
+				if (!BeginResolvedEventStoryboard(storyboard,
+					EventStoryboards[action.StoryboardIndex].Animations,
+					EventStoryboards[action.StoryboardIndex].TimelineGroups,
+					EventStoryboards[action.StoryboardIndex].Timing,
+					EventStoryboards[action.StoryboardIndex].Handoff,
+					outError))
 					return false;
 				break;
 			case DeclarativeStoryboardActionKind::Pause:
-				(void)PauseEventStoryboard(action.StoryboardIndex);
+				(void)PauseEventStoryboard(storyboard);
 				break;
 			case DeclarativeStoryboardActionKind::Resume:
-				(void)ResumeEventStoryboard(action.StoryboardIndex);
+				(void)ResumeEventStoryboard(storyboard);
 				break;
 			case DeclarativeStoryboardActionKind::Stop:
-				if (!StopEventStoryboard(action.StoryboardIndex))
+				if (!StopEventStoryboard(storyboard))
 				{
 					if (outError)
 						*outError = L"Style StopStoryboard 无法重组动画值。";
 					return false;
 				}
+				break;
+			case DeclarativeStoryboardActionKind::Remove:
+				if (!RemoveEventStoryboard(storyboard))
+				{
+					if (outError)
+						*outError = L"Style RemoveStoryboard 无法重组动画值。";
+					return false;
+				}
+				break;
+			case DeclarativeStoryboardActionKind::Seek:
+				(void)SeekEventStoryboard(
+					storyboard, action.SeekOffsetMilliseconds);
+				break;
+			case DeclarativeStoryboardActionKind::SetSpeedRatio:
+				(void)SetSpeedRatioEventStoryboard(
+					storyboard, action.SpeedRatio);
+				break;
+			case DeclarativeStoryboardActionKind::SkipToFill:
+				(void)SkipEventStoryboardToFill(storyboard);
 				break;
 			default:
 				if (outError) *outError = L"Style Storyboard action enum 无效。";
@@ -9038,27 +13194,11 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 #endif
 
-	bool TryAllocateCompiledStyleClockRange(
-		size_t storyboardCount,
-		uint64_t& base) noexcept
-	{
-		if (storyboardCount == 0
-			|| storyboardCount > CompiledStyleClockPayloadMask)
-			return false;
-		const auto count = static_cast<uint64_t>(storyboardCount);
-		if (NextCompiledStyleClockPayload > CompiledStyleClockPayloadMask
-			|| count - 1 > CompiledStyleClockPayloadMask
-				- NextCompiledStyleClockPayload)
-			return false;
-		base = CompiledStyleClockDomain | NextCompiledStyleClockPayload;
-		NextCompiledStyleClockPayload += count;
-		return true;
-	}
-
 	bool TryBuildCompiledStyleStoryboard(
 		const RuntimeStyleTriggerScope& scope,
 		uint32_t storyboardIndex,
 		std::vector<RuntimeAnimation>& animations,
+		std::vector<RuntimeTimelineGroup>& timelineGroups,
 		std::wstring* outError)
 	{
 		auto fail = [&](std::wstring message)
@@ -9075,7 +13215,10 @@ struct Control::DeclarativeVisualStateRuntime
 		const auto& storyboard = styleProgram.Storyboards[storyboardIndex];
 		if (!ValidCompiledRange(
 				storyboard.Animations, styleProgram.Animations.size())
-			|| storyboard.Animations.Count == 0)
+			|| !ValidCompiledRange(storyboard.TimelineGroups,
+				styleProgram.TimelineGroups.size())
+			|| (storyboard.Animations.Count == 0
+				&& storyboard.TimelineGroups.Count == 0))
 			return fail(L"编译 Style storyboard 动画 range 无效。");
 
 		CompiledInteractionProgramView interactionProgram;
@@ -9085,7 +13228,9 @@ struct Control::DeclarativeVisualStateRuntime
 			styleProgram.ObjectPathChildIndices;
 		interactionProgram.ObjectPaths = styleProgram.ObjectPaths;
 		interactionProgram.KeyFrames = styleProgram.KeyFrames;
+		interactionProgram.PathSegments = styleProgram.PathSegments;
 		interactionProgram.Animations = styleProgram.Animations;
+		interactionProgram.TimelineGroups = styleProgram.TimelineGroups;
 		interactionProgram.Storyboards = styleProgram.Storyboards;
 		interactionProgram.Actions = styleProgram.Actions;
 		Control* targetSlots[] = { Owner };
@@ -9109,6 +13254,11 @@ struct Control::DeclarativeVisualStateRuntime
 				L"Style BeginStoryboard", outError)) return false;
 			animations.push_back(std::move(animation));
 		}
+		timelineGroups.clear();
+		if (!AppendCompiledTimelineGroups(interactionProgram,
+			scope.CompiledValues, targets, storyboard.TimelineGroups,
+			CompiledInteractionInvalidIndex, animations, timelineGroups,
+			L"Style BeginStoryboard", outError)) return false;
 		return true;
 	}
 
@@ -9125,58 +13275,86 @@ struct Control::DeclarativeVisualStateRuntime
 			return false;
 		}
 		std::vector<PropertySnapshot> snapshots;
-		CaptureActiveAnimationSnapshots(ActiveAnimations, snapshots);
-		auto activeAnimations = ActiveAnimations;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> activeAnimations;
+		if (!SnapshotClockCandidates(activeAnimations)) return false;
+		auto activeRoots = ClockNodes.Roots;
 		const bool previousApplying = Applying;
 		bool committed = false;
 		ControlScopeExit rollback{ [&]
 			{
 				if (committed) return;
 				RestoreActiveAnimationTransaction(
-					activeAnimations, snapshots, previousApplying);
+					activeAnimations, activeRoots,
+					snapshots, previousApplying);
 			} };
 		for (uint32_t offset = 0; offset < range.Count; ++offset)
 		{
 			const auto& action = scope.CompiledProgram->Actions[
 				range.Offset + offset];
 			if (!ValidCompiledActionKind(action.Kind)
+				|| !ValidCompiledHandoffBehavior(action.Handoff)
 				|| action.StoryboardIndex
 					>= scope.CompiledProgram->Storyboards.size())
 			{
 				if (outError) *outError = L"Style Storyboard action 无效。";
 				return false;
 			}
-			const uint64_t clockSlot = scope.CompiledClockBase
-				+ static_cast<uint64_t>(action.StoryboardIndex);
+			const auto storyboard = StyleStoryboardClockKey(
+				scope, static_cast<uint64_t>(action.StoryboardIndex));
 			switch (action.Kind)
 			{
 			case DeclarativeStoryboardActionKind::Begin:
 			{
 				std::vector<RuntimeAnimation> animations;
+				std::vector<RuntimeTimelineGroup> timelineGroups;
 				if (!TryBuildCompiledStyleStoryboard(
-					scope, action.StoryboardIndex, animations, outError))
+					scope, action.StoryboardIndex, animations,
+					timelineGroups, outError))
 					return false;
 				for (const auto& animation : animations)
 					CapturePropertySnapshot({ animation.Target,
 						PropertyIdentity(animation.Metadata) },
 						DependencyPropertyValueSource::Animation, snapshots);
 				if (!BeginResolvedEventStoryboard(
-					clockSlot, animations, outError)) return false;
+					storyboard, animations, timelineGroups,
+					scope.CompiledProgram->Storyboards[
+						action.StoryboardIndex].Timing,
+					action.Handoff, outError)) return false;
 				break;
 			}
 			case DeclarativeStoryboardActionKind::Pause:
-				(void)PauseEventStoryboard(clockSlot);
+				(void)PauseEventStoryboard(storyboard);
 				break;
 			case DeclarativeStoryboardActionKind::Resume:
-				(void)ResumeEventStoryboard(clockSlot);
+				(void)ResumeEventStoryboard(storyboard);
 				break;
 			case DeclarativeStoryboardActionKind::Stop:
-				if (!StopEventStoryboard(clockSlot))
+				if (!StopEventStoryboard(storyboard))
 				{
 					if (outError)
 						*outError = L"Style StopStoryboard 无法重组动画值。";
 					return false;
 				}
+				break;
+			case DeclarativeStoryboardActionKind::Remove:
+				if (!RemoveEventStoryboard(storyboard))
+				{
+					if (outError)
+						*outError = L"Style RemoveStoryboard 无法重组动画值。";
+					return false;
+				}
+				break;
+			case DeclarativeStoryboardActionKind::Seek:
+				(void)SeekEventStoryboard(
+					storyboard, action.SeekOffsetMilliseconds);
+				break;
+			case DeclarativeStoryboardActionKind::SetSpeedRatio:
+				(void)SetSpeedRatioEventStoryboard(
+					storyboard, action.SpeedRatio);
+				break;
+			case DeclarativeStoryboardActionKind::SkipToFill:
+				(void)SkipEventStoryboardToFill(storyboard);
 				break;
 			default:
 				return false;
@@ -9200,10 +13378,13 @@ struct Control::DeclarativeVisualStateRuntime
 		return EventStoryboards.size() - 1;
 	}
 
-	bool ReleaseStyleStoryboardIndex(size_t index)
+	bool ReleaseStyleStoryboardIndex(
+		size_t index,
+		const RuntimeStyleTriggerScope& scope)
 	{
 		if (index >= EventStoryboards.size()) return false;
-		if (!StopEventStoryboard(index)) return false;
+		if (!RemoveEventStoryboard(StyleStoryboardClockKey(
+			scope, static_cast<uint64_t>(index)))) return false;
 		EventStoryboards[index] = {};
 		if (std::find(FreeStyleStoryboardIndices.begin(),
 			FreeStyleStoryboardIndices.end(), index)
@@ -9231,21 +13412,17 @@ struct Control::DeclarativeVisualStateRuntime
 					return range.Offset <= size
 						&& range.Count <= size - range.Offset;
 				};
-			if (!Owner || program.Version != CompiledStyleProgramViewVersion)
+			if (!Owner || scope.ClockOwner.Value == 0
+				|| program.Version != CompiledStyleProgramViewVersion)
 				return fail(L"编译 Style action 程序版本无效。");
 			if (!validRange(source.CompiledEnterActions, program.Actions.size())
 				|| !validRange(
 					source.CompiledExitActions, program.Actions.size()))
 				return fail(L"编译 Style action range 越界。");
-			uint64_t clockBase = 0;
-			if (!TryAllocateCompiledStyleClockRange(
-				program.Storyboards.size(), clockBase))
-				return fail(L"编译 Style storyboard clock slot 已耗尽。");
 			scope.CompiledProgram = source.CompiledProgram;
 			scope.CompiledValues = source.CompiledValues;
 			scope.CompiledEnterActions = source.CompiledEnterActions;
 			scope.CompiledExitActions = source.CompiledExitActions;
-			scope.CompiledClockBase = clockBase;
 			if (outError) outError->clear();
 			return true;
 		}
@@ -9275,14 +13452,17 @@ struct Control::DeclarativeVisualStateRuntime
 				originalStoryboards.reserve(indices.size() + additionalCount);
 #if CUI_ENABLE_DYNAMIC_XAML
 				const bool shrinking = storyboards.size() < indices.size();
-				std::vector<ActiveAnimation> originalActiveAnimations;
+				std::vector<CandidateAnimation> originalActiveAnimations;
+				std::vector<ActiveClockRoot> originalActiveRoots;
 				std::vector<PropertySnapshot> animationSnapshots;
 				const bool previousApplying = Applying;
 				if (shrinking)
 				{
-					originalActiveAnimations = ActiveAnimations;
-					animationSnapshots.reserve(ActiveAnimations.size());
-					for (const auto& animation : ActiveAnimations)
+					if (!SnapshotClockCandidates(originalActiveAnimations))
+						return false;
+					originalActiveRoots = ClockNodes.Roots;
+					animationSnapshots.reserve(ClockNodes.Leaves.size());
+					for (const auto& animation : ClockNodes.Leaves)
 					{
 						PropertyKey key{ animation.Target,
 							PropertyIdentity(animation.Metadata) };
@@ -9319,8 +13499,9 @@ struct Control::DeclarativeVisualStateRuntime
 						if (shrinking)
 						{
 							Applying = true;
-							ActiveAnimations =
-								std::move(originalActiveAnimations);
+							(void)CommitClockCandidates(
+								std::move(originalActiveAnimations),
+								std::move(originalActiveRoots));
 							(void)RestoreSnapshots(animationSnapshots);
 							Applying = previousApplying;
 						}
@@ -9350,7 +13531,7 @@ struct Control::DeclarativeVisualStateRuntime
 				mapIndices(enterActions);
 				mapIndices(exitActions);
 				for (size_t index = storyboards.size(); index < indices.size(); ++index)
-					if (!ReleaseStyleStoryboardIndex(indices[index]))
+					if (!ReleaseStyleStoryboardIndex(indices[index], scope))
 					{
 						if (outError) *outError =
 							L"Style Storyboard scope 缩容时无法释放动画时钟。";
@@ -9376,17 +13557,24 @@ struct Control::DeclarativeVisualStateRuntime
 				{
 					RuntimeEventTriggerAction action;
 					action.Kind = definition.Kind;
+					action.Handoff = definition.Handoff;
+					action.SeekOffsetMilliseconds =
+						definition.SeekOffsetMilliseconds;
+					action.SpeedRatio = definition.SpeedRatio;
 					if (definition.Kind == DeclarativeStoryboardActionKind::Begin)
 					{
 						if (!definition.StoryboardName.empty()
 							&& ContainsName(beginNames, definition.StoryboardName))
 							return fail(L"BeginStoryboard x:Name 重复："
 								+ definition.StoryboardName);
-						if (definition.Animations.empty())
+						if (definition.Animations.empty()
+							&& definition.TimelineGroups.empty())
 							return fail(L"BeginStoryboard 的 Storyboard 不能为空。");
 						RuntimeEventStoryboard storyboard;
 						storyboard.Name = definition.StoryboardName;
+						storyboard.Timing = definition.StoryboardTiming;
 						storyboard.IsStyleStoryboard = true;
+						storyboard.Handoff = definition.Handoff;
 						struct PropertyOwnership
 						{
 							PropertyKey Root;
@@ -9434,6 +13622,45 @@ struct Control::DeclarativeVisualStateRuntime
 							}
 							storyboard.Animations.push_back(std::move(animation));
 						}
+						const auto nestedAnimationOffset =
+							storyboard.Animations.size();
+						if (!AppendDeclarativeTimelineGroups(
+							definition.TimelineGroups,
+							CompiledInteractionInvalidIndex,
+							storyboard.Animations, storyboard.TimelineGroups,
+							L"Style BeginStoryboard", outError)) return false;
+						for (size_t animationIndex = nestedAnimationOffset;
+							animationIndex < storyboard.Animations.size();
+							++animationIndex)
+						{
+							const auto& animation =
+								storyboard.Animations[animationIndex];
+							PropertyKey key{ animation.Target,
+								PropertyIdentity(animation.Metadata) };
+							const auto pathIdentity =
+								ObjectPathIdentity(animation.ObjectPath);
+							auto owner = std::find_if(properties.begin(),
+								properties.end(), [&](const auto& existing)
+								{ return SameProperty(existing.Root, key); });
+							if (owner != properties.end())
+							{
+								if (pathIdentity == 0 || owner->Exclusive
+									|| ContainsObjectPathIdentity(
+										owner->PathIdentities, pathIdentity))
+									return fail(L"BeginStoryboard 目标重复："
+										+ animation.Metadata->Name());
+								owner->PathIdentities.push_back(pathIdentity);
+							}
+							else
+							{
+								PropertyOwnership ownership;
+								ownership.Root = key;
+								ownership.Exclusive = pathIdentity == 0;
+								if (pathIdentity != 0)
+									ownership.PathIdentities.push_back(pathIdentity);
+								properties.push_back(std::move(ownership));
+							}
+						}
 						action.StoryboardIndex = storyboards.size();
 						storyboards.push_back(std::move(storyboard));
 						if (!definition.StoryboardName.empty())
@@ -9463,6 +13690,16 @@ struct Control::DeclarativeVisualStateRuntime
 					if (found == storyboards.end())
 						return fail(L"Storyboard 控制动作找不到 BeginStoryboard："
 							+ action.PendingStoryboardName);
+					if (action.Kind == DeclarativeStoryboardActionKind::SkipToFill
+						&& (found->Timing.RepeatBehavior
+								== DeclarativeRepeatBehaviorKind::Forever
+							|| std::any_of(found->Animations.begin(),
+							found->Animations.end(), [](const auto& animation)
+							{ return animation.RepeatBehavior
+								== DeclarativeRepeatBehaviorKind::Forever; })
+							|| TimelineGroupsContainForever(
+								found->TimelineGroups)))
+						return fail(L"SkipStoryboardToFill 不能引用 Forever Storyboard。");
 					action.StoryboardIndex = static_cast<size_t>(
 						std::distance(storyboards.begin(), found));
 					action.PendingStoryboardName.clear();
@@ -9485,21 +13722,15 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		if (index >= StyleTriggerScopes.size()) return false;
 		const auto& scope = StyleTriggerScopes[index];
-		std::vector<uint64_t> clockSlots;
+		std::vector<StoryboardClockKey> storyboards;
 		if (scope.CompiledProgram)
 		{
-			const auto storyboardCount =
-				static_cast<uint64_t>(scope.CompiledProgram->Storyboards.size());
-			for (const auto& animation : ActiveAnimations)
-			{
-				if (!animation.IsEventStoryboard
-					|| animation.GroupIndex < scope.CompiledClockBase
-					|| animation.GroupIndex - scope.CompiledClockBase
-						>= storyboardCount
-					|| std::find(clockSlots.begin(), clockSlots.end(),
-						animation.GroupIndex) != clockSlots.end()) continue;
-				clockSlots.push_back(animation.GroupIndex);
-			}
+			storyboards.reserve(scope.CompiledProgram->Storyboards.size());
+			for (size_t storyboardIndex = 0;
+				storyboardIndex < scope.CompiledProgram->Storyboards.size();
+				++storyboardIndex)
+				storyboards.push_back(StyleStoryboardClockKey(
+					scope, static_cast<uint64_t>(storyboardIndex)));
 		}
 #if CUI_ENABLE_DYNAMIC_XAML
 		else
@@ -9509,23 +13740,27 @@ struct Control::DeclarativeVisualStateRuntime
 			for (const auto storyboardIndex : scope.StoryboardIndices)
 			{
 				if (storyboardIndex >= EventStoryboards.size()) return false;
-				clockSlots.push_back(static_cast<uint64_t>(storyboardIndex));
+				storyboards.push_back(StyleStoryboardClockKey(
+					scope, static_cast<uint64_t>(storyboardIndex)));
 			}
 		}
 #endif
 		std::vector<PropertySnapshot> snapshots;
-		CaptureActiveAnimationSnapshots(ActiveAnimations, snapshots);
-		auto activeAnimations = ActiveAnimations;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> activeAnimations;
+		if (!SnapshotClockCandidates(activeAnimations)) return false;
+		auto activeRoots = ClockNodes.Roots;
 		const bool previousApplying = Applying;
 		bool committed = false;
 		ControlScopeExit rollback{ [&]
 			{
 				if (committed) return;
 				RestoreActiveAnimationTransaction(
-					activeAnimations, snapshots, previousApplying);
+					activeAnimations, activeRoots,
+					snapshots, previousApplying);
 			} };
-		for (const auto clockSlot : clockSlots)
-			if (!StopEventStoryboard(clockSlot))
+		for (const auto& storyboard : storyboards)
+			if (!RemoveEventStoryboard(storyboard))
 				return false;
 #if CUI_ENABLE_DYNAMIC_XAML
 		if (!scope.CompiledProgram)
@@ -9571,6 +13806,13 @@ struct Control::DeclarativeVisualStateRuntime
 				scope.Source = source;
 				scope.Sheet = sheet;
 				scope.RuleId = trigger.RuleId;
+				if (!TryAllocateStyleOwnerScope(scope.ClockOwner))
+				{
+					if (outError)
+						*outError = L"Style DataTrigger owner scope 已耗尽。";
+					success = false;
+					continue;
+				}
 				if (!CompileStyleTriggerScope(trigger, scope, outError))
 				{
 					success = false;
@@ -9597,6 +13839,7 @@ struct Control::DeclarativeVisualStateRuntime
 #if CUI_ENABLE_DYNAMIC_XAML
 			else
 				executed = ExecuteStyleTriggerActions(
+					*found,
 					next ? found->EnterActions : found->ExitActions,
 					outError);
 #endif
@@ -9621,8 +13864,10 @@ struct Control::DeclarativeVisualStateRuntime
 		const std::vector<const ControlStyleSheet*>& visibleSheets)
 	{
 		std::vector<PropertySnapshot> snapshots;
-		CaptureActiveAnimationSnapshots(ActiveAnimations, snapshots);
-		auto activeAnimations = ActiveAnimations;
+		CaptureActiveAnimationSnapshots(ClockNodes.Leaves, snapshots);
+		std::vector<CandidateAnimation> activeAnimations;
+		if (!SnapshotClockCandidates(activeAnimations)) return false;
+		auto activeRoots = ClockNodes.Roots;
 		auto styleTriggerScopes = StyleTriggerScopes;
 #if CUI_ENABLE_DYNAMIC_XAML
 		auto eventStoryboards = EventStoryboards;
@@ -9640,7 +13885,8 @@ struct Control::DeclarativeVisualStateRuntime
 					std::move(freeStyleStoryboardIndices);
 #endif
 				RestoreActiveAnimationTransaction(
-					activeAnimations, snapshots, previousApplying);
+					activeAnimations, activeRoots,
+					snapshots, previousApplying);
 			} };
 		for (size_t index = StyleTriggerScopes.size(); index-- > 0;)
 		{
@@ -9659,15 +13905,22 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		Connections.clear();
 		ClearAppliedValues();
-		ActiveAnimations.erase(std::remove_if(
-			ActiveAnimations.begin(), ActiveAnimations.end(),
-			[](const auto& animation) { return !animation.IsEventStoryboard; }),
-			ActiveAnimations.end());
+		ClockNodes.Leaves.erase(std::remove_if(
+			ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
+			[&](const auto& animation)
+			{ return IsVisualStateClock(animation); }),
+			ClockNodes.Leaves.end());
+		ClockNodes.Roots.erase(std::remove_if(
+			ClockNodes.Roots.begin(), ClockNodes.Roots.end(),
+			[](const auto& root) { return IsVisualStateClock(root); }),
+			ClockNodes.Roots.end());
 		Groups.clear();
 		EventTriggers.clear();
 		for (auto& storyboard : EventStoryboards)
 			if (!storyboard.IsStyleStoryboard) storyboard = {};
-		(void)ApplyRetainedAnimationFrame(::GetTickCount64());
+		ClockNodesDirty = true;
+		PublishClockRootRegistry();
+		(void)ApplyRetainedAnimationFrame(NowMilliseconds());
 		DeclarativeInteractionsDefined = false;
 		InstallingInteractions = false;
 		SuppressStateChangedEvents = false;
@@ -9682,16 +13935,24 @@ struct Control::DeclarativeVisualStateRuntime
 		// by earlier groups in the failed initial-state transaction.
 		Connections.clear();
 		ClearAppliedValues(false);
-		ActiveAnimations.erase(std::remove_if(
-			ActiveAnimations.begin(), ActiveAnimations.end(),
-			[](const auto& animation)
+		ClockNodes.Leaves.erase(std::remove_if(
+			ClockNodes.Leaves.begin(), ClockNodes.Leaves.end(),
+			[&](const auto& animation)
 			{
-				return !animation.IsEventStoryboard
-					|| ((animation.GroupIndex & CompiledStyleClockDomain) == 0
-						&& (animation.GroupIndex
-							& CompiledInteractionClockDomain) != 0);
+				const auto* root = ResolveClockRoot(animation);
+				return !root || IsVisualStateClock(*root)
+					|| root->Identity.Storyboard.Owner.Kind
+						== ClockOwnerKind::CompiledInteractionStoryboard;
 			}),
-			ActiveAnimations.end());
+			ClockNodes.Leaves.end());
+		ClockNodes.Roots.erase(std::remove_if(
+			ClockNodes.Roots.begin(), ClockNodes.Roots.end(),
+			[](const auto& root)
+			{
+				return IsVisualStateClock(root)
+					|| root.Identity.Storyboard.Owner.Kind
+						== ClockOwnerKind::CompiledInteractionStoryboard;
+			}), ClockNodes.Roots.end());
 		Groups.clear();
 	#if CUI_ENABLE_DYNAMIC_XAML
 		EventTriggers.clear();
@@ -9699,7 +13960,9 @@ struct Control::DeclarativeVisualStateRuntime
 		(void)RestoreSnapshots(FailedCompiledSnapshots);
 		FailedCompiledSnapshots.clear();
 		CompiledInteractions.reset();
-		(void)ApplyRetainedAnimationFrame(::GetTickCount64());
+		ClockNodesDirty = true;
+		PublishClockRootRegistry();
+		(void)ApplyRetainedAnimationFrame(NowMilliseconds());
 		DeclarativeInteractionsDefined = false;
 		InstallingInteractions = false;
 		SuppressStateChangedEvents = false;
@@ -9791,6 +14054,45 @@ struct Control::DeclarativeVisualStateRuntime
 		// propertyPath is diagnostic context only and must not gate execution.
 		if (!target || !metadata)
 			return fail(L"Storyboard 已解析目标无效。");
+		if (sourceAnimation.Path.Enabled)
+		{
+			const auto& path = sourceAnimation.Path;
+			if ((sourceAnimation.Kind != DeclarativeAnimationKind::Double
+					&& sourceAnimation.Kind != DeclarativeAnimationKind::Point
+					&& sourceAnimation.Kind != DeclarativeAnimationKind::Matrix)
+				|| !std::isfinite(path.Start.x) || !std::isfinite(path.Start.y)
+				|| sourceAnimation.PathSegments.empty()
+				|| static_cast<unsigned char>(path.Source)
+					> static_cast<unsigned char>(
+						DeclarativePathAnimationSource::Angle)
+				|| sourceAnimation.From || sourceAnimation.To || sourceAnimation.By
+				|| !sourceAnimation.KeyFrames.empty()
+				|| sourceAnimation.Easing != DeclarativeEasingKind::Linear)
+				return fail(L"UsingPath 定义无效。");
+			for (const auto& segment : sourceAnimation.PathSegments)
+				if (static_cast<unsigned char>(segment.Kind)
+						> static_cast<unsigned char>(
+							DeclarativePathSegmentKind::CubicBezier)
+					|| !std::isfinite(segment.Point1.x)
+					|| !std::isfinite(segment.Point1.y)
+					|| !std::isfinite(segment.Point2.x)
+					|| !std::isfinite(segment.Point2.y)
+					|| !std::isfinite(segment.Point3.x)
+					|| !std::isfinite(segment.Point3.y))
+					return fail(L"UsingPath segment 无效。");
+			if (sourceAnimation.Kind != DeclarativeAnimationKind::Double
+				&& path.Source != DeclarativePathAnimationSource::X)
+				return fail(L"仅 DoubleAnimationUsingPath 可声明 Source。");
+			if (sourceAnimation.Kind != DeclarativeAnimationKind::Matrix
+				&& (path.DoesRotateWithTangent || path.IsOffsetCumulative
+					|| path.IsAngleCumulative))
+				return fail(L"仅 MatrixAnimationUsingPath 可声明矩阵路径标志。");
+			if (sourceAnimation.Kind == DeclarativeAnimationKind::Matrix
+				&& sourceAnimation.IsCumulative)
+				return fail(L"MatrixAnimationUsingPath 不使用 IsCumulative。");
+		}
+		else if (!sourceAnimation.PathSegments.empty())
+			return fail(L"非路径动画不能携带 path segment。");
 		BindingValue convertedScratch;
 		auto validTypedAnimationValue = [&](const BindingValue& value)
 			{
@@ -9964,7 +14266,9 @@ struct Control::DeclarativeVisualStateRuntime
 					sourceKeyFrame.KeySplineX1,
 					sourceKeyFrame.KeySplineY1,
 					sourceKeyFrame.KeySplineX2,
-					sourceKeyFrame.KeySplineY2 };
+					sourceKeyFrame.KeySplineY2,
+					sourceKeyFrame.KeyTimeSubMillisecondTicks,
+					sourceKeyFrame.EasingParameters };
 				if (sourceAnimation.Kind == DeclarativeAnimationKind::Object
 					&& keyFrame.Kind != DeclarativeKeyFrameKind::Discrete)
 					return fail(L"ObjectAnimationUsingKeyFrames 只能包含 DiscreteObjectKeyFrame。");
@@ -9997,8 +14301,10 @@ struct Control::DeclarativeVisualStateRuntime
 			std::stable_sort(keyFrames.begin(), keyFrames.end(),
 				[](const auto& left, const auto& right)
 				{
-					return left.KeyTimeMilliseconds
-						< right.KeyTimeMilliseconds;
+					return std::tie(left.KeyTimeMilliseconds,
+						left.KeyTimeSubMillisecondTicks)
+						< std::tie(right.KeyTimeMilliseconds,
+							right.KeyTimeSubMillisecondTicks);
 				});
 		}
 		animation.Kind = sourceAnimation.Kind;
@@ -10010,6 +14316,10 @@ struct Control::DeclarativeVisualStateRuntime
 		animation.By = std::move(coercedBy);
 		animation.IsAdditive = sourceAnimation.IsAdditive;
 		animation.IsCumulative = sourceAnimation.IsCumulative;
+		animation.Path = sourceAnimation.Path;
+		animation.PathSegments = sourceAnimation.PathSegments;
+		if (animation.Path.Enabled && !PrepareWpfPath(animation))
+			return fail(L"UsingPath 无法建立WPF长度表。");
 		animation.KeyFrames = std::move(keyFrames);
 		animation.BeginTimeMilliseconds = sourceAnimation.BeginTimeMilliseconds;
 		animation.DurationMilliseconds = sourceAnimation.DurationMilliseconds;
@@ -10068,6 +14378,7 @@ struct Control::DeclarativeVisualStateRuntime
 		animation.DecelerationRatio = sourceAnimation.DecelerationRatio;
 		animation.Easing = sourceAnimation.Easing;
 		animation.EasingMode = sourceAnimation.EasingMode;
+		animation.EasingParameters = sourceAnimation.EasingParameters;
 		if (outError) outError->clear();
 		return true;
 	}
@@ -10120,6 +14431,8 @@ struct Control::DeclarativeVisualStateRuntime
 		definition.By = sourceAnimation.By;
 		definition.IsAdditive = sourceAnimation.IsAdditive;
 		definition.IsCumulative = sourceAnimation.IsCumulative;
+		definition.Path = sourceAnimation.Path;
+		definition.PathSegments = sourceAnimation.PathSegments;
 		definition.KeyFrames.reserve(sourceAnimation.KeyFrames.size());
 		for (const auto& keyFrame : sourceAnimation.KeyFrames)
 			definition.KeyFrames.push_back({
@@ -10131,7 +14444,9 @@ struct Control::DeclarativeVisualStateRuntime
 				keyFrame.KeySplineX1,
 				keyFrame.KeySplineY1,
 				keyFrame.KeySplineX2,
-				keyFrame.KeySplineY2 });
+				keyFrame.KeySplineY2,
+				keyFrame.KeyTimeSubMillisecondTicks,
+				keyFrame.EasingParameters });
 		definition.BeginTimeMilliseconds =
 			sourceAnimation.BeginTimeMilliseconds;
 		definition.DurationMilliseconds = sourceAnimation.DurationMilliseconds;
@@ -10146,9 +14461,62 @@ struct Control::DeclarativeVisualStateRuntime
 		definition.DecelerationRatio = sourceAnimation.DecelerationRatio;
 		definition.Easing = sourceAnimation.Easing;
 		definition.EasingMode = sourceAnimation.EasingMode;
+		definition.EasingParameters = sourceAnimation.EasingParameters;
 		return TryBuildResolvedAnimation(
 			definition, target, metadata, std::move(objectPath), propertyPath,
 			animation, context, outError);
+	}
+
+	bool AppendDeclarativeTimelineGroups(
+		const std::vector<DeclarativeTimelineGroupDefinition>& sources,
+		uint32_t parentIndex,
+		std::vector<RuntimeAnimation>& animations,
+		std::vector<RuntimeTimelineGroup>& groups,
+		std::wstring_view context,
+		std::wstring* outError)
+	{
+		for (const auto& source : sources)
+		{
+			if (groups.size() >= CompiledInteractionInvalidIndex)
+			{
+				if (outError) *outError = std::wstring(context)
+					+ L" 的 ParallelTimeline 层级过大。";
+				return false;
+			}
+			const auto groupIndex = static_cast<uint32_t>(groups.size());
+			groups.push_back({ parentIndex, source.Timing });
+			const auto animationOffset = animations.size();
+			for (const auto& sourceAnimation : source.Animations)
+			{
+				RuntimeAnimation animation;
+				if (!TryBuildAnimation(sourceAnimation, animation,
+					std::wstring(context), outError)) return false;
+				animation.TimelineGroupIndex = groupIndex;
+				animations.push_back(std::move(animation));
+			}
+			const auto animationCount = animations.size() - animationOffset;
+			if (!AppendDeclarativeTimelineGroups(source.Children, groupIndex,
+				animations, groups, context, outError)) return false;
+			auto& group = groups[groupIndex];
+			const auto direct = std::span<const RuntimeAnimation>{ animations }
+				.subspan(animationOffset, animationCount);
+			if (!ResolveStoryboardTiming(group.Timing, direct,
+				group.ResolvedSimpleDurationMilliseconds,
+				group.ResolvedSimpleDurationForever))
+			{
+				if (outError) *outError = std::wstring(context)
+					+ L" 的 ParallelTimeline 时序无效。";
+				return false;
+			}
+			if (group.Timing.DurationAutomatic
+				&& !group.ResolvedSimpleDurationForever)
+				for (const auto& child : groups)
+					if (child.ParentIndex == groupIndex
+						&& !ExtendParallelNaturalDuration(child,
+							group.ResolvedSimpleDurationMilliseconds,
+							group.ResolvedSimpleDurationForever)) return false;
+		}
+		return true;
 	}
 
 	bool Build(
@@ -10196,6 +14564,7 @@ struct Control::DeclarativeVisualStateRuntime
 				RuntimeState state;
 				state.Name = std::move(sourceState.Name);
 				state.Token = MakeVisualStateToken(state.Name);
+				state.StoryboardTiming = sourceState.StoryboardTiming;
 				if (sourceState.Conditions.empty() && !hasEvents)
 				{
 					if (fallback)
@@ -10363,6 +14732,21 @@ struct Control::DeclarativeVisualStateRuntime
 						return false;
 					state.Animations.push_back(std::move(animation));
 				}
+				const auto nestedAnimationOffset = state.Animations.size();
+				if (!AppendDeclarativeTimelineGroups(sourceState.TimelineGroups,
+					CompiledInteractionInvalidIndex, state.Animations,
+					state.TimelineGroups, L"视觉状态 Storyboard", outError))
+					return false;
+				for (size_t index = nestedAnimationOffset;
+					index < state.Animations.size(); ++index)
+				{
+					const auto& animation = state.Animations[index];
+					PropertyKey key{ animation.Target,
+						PropertyIdentity(animation.Metadata) };
+					if (!registerControlledProperty(key,
+						animation.Metadata->Name(),
+						ObjectPathIdentity(animation.ObjectPath))) return false;
+				}
 				group.States.push_back(std::move(state));
 			}
 			if (!fallback)
@@ -10378,6 +14762,7 @@ struct Control::DeclarativeVisualStateRuntime
 			for (const auto& sourceTransition : sourceGroup.Transitions)
 			{
 				RuntimeTransition transition;
+				transition.StoryboardTiming = sourceTransition.StoryboardTiming;
 				transition.FromState = findState(sourceTransition.FromState);
 				transition.ToState = findState(sourceTransition.ToState);
 				if (!sourceTransition.FromState.empty() && !transition.FromState)
@@ -10400,6 +14785,8 @@ struct Control::DeclarativeVisualStateRuntime
 				transition.GeneratedEasing = sourceTransition.GeneratedEasing;
 				transition.GeneratedEasingMode =
 					sourceTransition.GeneratedEasingMode;
+				transition.GeneratedEasingParameters =
+					sourceTransition.GeneratedEasingParameters;
 				struct TransitionPropertyOwnership
 				{
 					PropertyKey Root;
@@ -10447,6 +14834,51 @@ struct Control::DeclarativeVisualStateRuntime
 					if (groupOwner == groupProperties.end())
 						groupProperties.emplace_back(key, Groups.size());
 					transition.Animations.push_back(std::move(animation));
+				}
+				const auto nestedAnimationOffset = transition.Animations.size();
+				if (!AppendDeclarativeTimelineGroups(
+					sourceTransition.TimelineGroups,
+					CompiledInteractionInvalidIndex, transition.Animations,
+					transition.TimelineGroups,
+					L"VisualTransition Storyboard", outError)) return false;
+				for (size_t index = nestedAnimationOffset;
+					index < transition.Animations.size(); ++index)
+				{
+					const auto& animation = transition.Animations[index];
+					PropertyKey key{ animation.Target,
+						PropertyIdentity(animation.Metadata) };
+					const auto pathIdentity =
+						ObjectPathIdentity(animation.ObjectPath);
+					auto owner = std::find_if(transitionProperties.begin(),
+						transitionProperties.end(), [&](const auto& existing)
+						{ return SameProperty(existing.Root, key); });
+					if (owner != transitionProperties.end())
+					{
+						if (pathIdentity == 0 || owner->Exclusive
+							|| ContainsObjectPathIdentity(
+								owner->AnimationPathIdentities, pathIdentity))
+							return fail(L"VisualTransition Storyboard 目标重复："
+								+ animation.Metadata->Name());
+						owner->AnimationPathIdentities.push_back(pathIdentity);
+					}
+					else
+					{
+						TransitionPropertyOwnership ownership;
+						ownership.Root = key;
+						ownership.Exclusive = pathIdentity == 0;
+						if (pathIdentity != 0)
+							ownership.AnimationPathIdentities.push_back(pathIdentity);
+						transitionProperties.push_back(std::move(ownership));
+					}
+					const auto groupOwner = std::find_if(groupProperties.begin(),
+						groupProperties.end(), [&](const auto& existing)
+						{ return SameProperty(existing.first, key); });
+					if (groupOwner != groupProperties.end()
+						&& groupOwner->second != Groups.size())
+						return fail(L"不同视觉状态组不能控制同一 Transition 属性："
+							+ animation.Metadata->Name());
+					if (groupOwner == groupProperties.end())
+						groupProperties.emplace_back(key, Groups.size());
 				}
 				group.Transitions.push_back(std::move(transition));
 			}
@@ -10501,6 +14933,10 @@ struct Control::DeclarativeVisualStateRuntime
 			{
 				RuntimeEventTriggerAction action;
 				action.Kind = sourceAction.Kind;
+				action.Handoff = sourceAction.Handoff;
+				action.SeekOffsetMilliseconds =
+					sourceAction.SeekOffsetMilliseconds;
+				action.SpeedRatio = sourceAction.SpeedRatio;
 				if (sourceAction.Kind
 					== DeclarativeStoryboardActionKind::Begin)
 				{
@@ -10512,10 +14948,13 @@ struct Control::DeclarativeVisualStateRuntime
 								sourceAction.StoryboardName); }))
 						return fail(L"BeginStoryboard x:Name 重复："
 							+ sourceAction.StoryboardName);
-					if (sourceAction.Animations.empty())
+					if (sourceAction.Animations.empty()
+						&& sourceAction.TimelineGroups.empty())
 						return fail(L"BeginStoryboard 的 Storyboard 不能为空。");
 					RuntimeEventStoryboard storyboard;
 					storyboard.Name = std::move(sourceAction.StoryboardName);
+					storyboard.Timing = sourceAction.StoryboardTiming;
+					storyboard.Handoff = sourceAction.Handoff;
 					struct StoryboardPropertyOwnership
 					{
 						PropertyKey Root;
@@ -10555,6 +14994,42 @@ struct Control::DeclarativeVisualStateRuntime
 						}
 						storyboard.Animations.push_back(std::move(animation));
 					}
+					const auto nestedAnimationOffset = storyboard.Animations.size();
+					if (!AppendDeclarativeTimelineGroups(
+						sourceAction.TimelineGroups,
+						CompiledInteractionInvalidIndex, storyboard.Animations,
+						storyboard.TimelineGroups, L"BeginStoryboard", outError))
+						return false;
+					for (size_t index = nestedAnimationOffset;
+						index < storyboard.Animations.size(); ++index)
+					{
+						const auto& animation = storyboard.Animations[index];
+						PropertyKey key{ animation.Target,
+							PropertyIdentity(animation.Metadata) };
+						const auto pathIdentity =
+							ObjectPathIdentity(animation.ObjectPath);
+						auto owner = std::find_if(properties.begin(), properties.end(),
+							[&](const auto& existing)
+							{ return SameProperty(existing.Root, key); });
+						if (owner != properties.end())
+						{
+							if (pathIdentity == 0 || owner->Exclusive
+								|| ContainsObjectPathIdentity(
+									owner->PathIdentities, pathIdentity))
+								return fail(L"BeginStoryboard 目标重复："
+									+ animation.Metadata->Name());
+							owner->PathIdentities.push_back(pathIdentity);
+						}
+						else
+						{
+							StoryboardPropertyOwnership ownership;
+							ownership.Root = key;
+							ownership.Exclusive = pathIdentity == 0;
+							if (pathIdentity != 0)
+								ownership.PathIdentities.push_back(pathIdentity);
+							properties.push_back(std::move(ownership));
+						}
+					}
 					action.StoryboardIndex = EventStoryboards.size();
 					EventStoryboards.push_back(std::move(storyboard));
 				}
@@ -10582,6 +15057,16 @@ struct Control::DeclarativeVisualStateRuntime
 				if (found == EventStoryboards.end())
 					return fail(L"Storyboard 控制动作找不到 BeginStoryboard："
 						+ action.PendingStoryboardName);
+				if (action.Kind == DeclarativeStoryboardActionKind::SkipToFill
+					&& (found->Timing.RepeatBehavior
+							== DeclarativeRepeatBehaviorKind::Forever
+						|| std::any_of(found->Animations.begin(),
+						found->Animations.end(), [](const auto& animation)
+						{ return animation.RepeatBehavior
+							== DeclarativeRepeatBehaviorKind::Forever; })
+						|| TimelineGroupsContainForever(
+							found->TimelineGroups)))
+					return fail(L"SkipStoryboardToFill 不能引用 Forever Storyboard。");
 				action.StoryboardIndex = static_cast<size_t>(
 					std::distance(EventStoryboards.begin(), found));
 				action.PendingStoryboardName.clear();
@@ -10635,13 +15120,31 @@ struct Control::DeclarativeVisualStateRuntime
 		DeclarativeAnimationKind value) noexcept
 	{
 		return static_cast<unsigned char>(value)
-			<= static_cast<unsigned char>(DeclarativeAnimationKind::Object);
+			<= static_cast<unsigned char>(DeclarativeAnimationKind::Single);
 	}
 
 	static bool ValidCompiledEasingKind(DeclarativeEasingKind value) noexcept
 	{
 		return static_cast<unsigned char>(value)
-			<= static_cast<unsigned char>(DeclarativeEasingKind::Sine);
+			<= static_cast<unsigned char>(DeclarativeEasingKind::Quintic);
+	}
+
+	static bool ValidCompiledEasingParameters(
+		DeclarativeEasingKind kind,
+		DeclarativeEasingParameters parameters) noexcept
+	{
+		if (!std::isfinite(parameters.Primary)
+			|| !std::isfinite(parameters.Secondary)) return false;
+		if (kind == DeclarativeEasingKind::Bounce
+			|| kind == DeclarativeEasingKind::Elastic)
+			return std::trunc(parameters.Secondary) == parameters.Secondary
+				&& parameters.Secondary >= static_cast<double>((std::numeric_limits<int>::min)())
+				&& parameters.Secondary <= static_cast<double>((std::numeric_limits<int>::max)());
+		if (kind == DeclarativeEasingKind::Back
+			|| kind == DeclarativeEasingKind::Exponential
+			|| kind == DeclarativeEasingKind::Power)
+			return parameters.Secondary == 0.0;
+		return parameters.Primary == 0.0 && parameters.Secondary == 0.0;
 	}
 
 	static bool ValidCompiledEasingMode(DeclarativeEasingMode value) noexcept
@@ -10654,7 +15157,41 @@ struct Control::DeclarativeVisualStateRuntime
 		DeclarativeStoryboardActionKind value) noexcept
 	{
 		return static_cast<unsigned char>(value)
-			<= static_cast<unsigned char>(DeclarativeStoryboardActionKind::Stop);
+			<= static_cast<unsigned char>(
+				DeclarativeStoryboardActionKind::SkipToFill);
+	}
+
+	static bool ValidCompiledHandoffBehavior(
+		DeclarativeHandoffBehavior value) noexcept
+	{
+		return static_cast<unsigned char>(value)
+			<= static_cast<unsigned char>(DeclarativeHandoffBehavior::Compose);
+	}
+
+	static bool ValidCompiledStoryboardTiming(
+		const DeclarativeStoryboardTimingDefinition& timing) noexcept
+	{
+		if (static_cast<unsigned char>(timing.RepeatBehavior)
+			> static_cast<unsigned char>(
+				DeclarativeRepeatBehaviorKind::Forever)
+			|| static_cast<unsigned char>(timing.FillBehavior)
+				> static_cast<unsigned char>(
+					DeclarativeTimelineFillBehavior::Stop)
+			|| !std::isfinite(timing.SpeedRatio) || timing.SpeedRatio <= 0.0
+			|| !std::isfinite(timing.AccelerationRatio)
+			|| timing.AccelerationRatio < 0.0
+			|| timing.AccelerationRatio > 1.0
+			|| !std::isfinite(timing.DecelerationRatio)
+			|| timing.DecelerationRatio < 0.0
+			|| timing.DecelerationRatio > 1.0
+			|| timing.AccelerationRatio + timing.DecelerationRatio > 1.0)
+			return false;
+		if (timing.RepeatBehavior == DeclarativeRepeatBehaviorKind::Count)
+			return std::isfinite(timing.RepeatCount)
+				&& timing.RepeatCount > 0.0;
+		if (timing.RepeatBehavior == DeclarativeRepeatBehaviorKind::Duration)
+			return timing.RepeatDurationMilliseconds > 0;
+		return true;
 	}
 
 	bool TryBuildCompiledAnimation(
@@ -10673,7 +15210,9 @@ struct Control::DeclarativeVisualStateRuntime
 			};
 		if (!ValidCompiledAnimationKind(operation.Kind)
 			|| !ValidCompiledEasingKind(operation.Easing)
-			|| !ValidCompiledEasingMode(operation.EasingMode))
+			|| !ValidCompiledEasingMode(operation.EasingMode)
+			|| !ValidCompiledEasingParameters(
+				operation.Easing, operation.EasingParameters))
 			return fail(L"动画类型或 easing enum 无效。" );
 		if (operation.OperandIndex >= program.PropertyOperands.size())
 			return fail(L"属性 operand 索引越界。" );
@@ -10703,17 +15242,23 @@ struct Control::DeclarativeVisualStateRuntime
 			const auto& compiled = program.KeyFrames[
 				operation.KeyFrames.Offset + offset];
 			if (compiled.ValueIndex >= values.size()
+				|| compiled.KeyTimeSubMillisecondTicks >= 10000u
 				|| static_cast<unsigned char>(compiled.Kind)
 					> static_cast<unsigned char>(DeclarativeKeyFrameKind::Spline)
 				|| !ValidCompiledEasingKind(compiled.Easing)
-				|| !ValidCompiledEasingMode(compiled.EasingMode))
+				|| !ValidCompiledEasingMode(compiled.EasingMode)
+				|| !ValidCompiledEasingParameters(
+					compiled.Easing, compiled.EasingParameters))
 				return fail(L"关键帧 value 索引越界。" );
 			RuntimeAnimationKeyFrame keyFrame;
 			keyFrame.Kind = compiled.Kind;
 			keyFrame.KeyTimeMilliseconds = compiled.KeyTimeMilliseconds;
+			keyFrame.KeyTimeSubMillisecondTicks =
+				compiled.KeyTimeSubMillisecondTicks;
 			keyFrame.Value = values[compiled.ValueIndex];
 			keyFrame.Easing = compiled.Easing;
 			keyFrame.EasingMode = compiled.EasingMode;
+			keyFrame.EasingParameters = compiled.EasingParameters;
 			keyFrame.KeySplineX1 = compiled.KeySplineX1;
 			keyFrame.KeySplineY1 = compiled.KeySplineY1;
 			keyFrame.KeySplineX2 = compiled.KeySplineX2;
@@ -10722,6 +15267,14 @@ struct Control::DeclarativeVisualStateRuntime
 		}
 		source.IsAdditive = operation.IsAdditive;
 		source.IsCumulative = operation.IsCumulative;
+		source.Path = operation.Path;
+		if (!ValidCompiledRange(operation.PathSegments,
+			program.PathSegments.size()))
+			return fail(L"路径动画 segment range 越界。");
+		source.PathSegments.assign(
+			program.PathSegments.begin() + operation.PathSegments.Offset,
+			program.PathSegments.begin() + operation.PathSegments.Offset
+				+ operation.PathSegments.Count);
 		source.BeginTimeMilliseconds = operation.BeginTimeMilliseconds;
 		source.DurationMilliseconds = operation.DurationMilliseconds;
 		source.RepeatBehavior = operation.RepeatBehavior;
@@ -10734,6 +15287,7 @@ struct Control::DeclarativeVisualStateRuntime
 		source.DecelerationRatio = operation.DecelerationRatio;
 		source.Easing = operation.Easing;
 		source.EasingMode = operation.EasingMode;
+		source.EasingParameters = operation.EasingParameters;
 		auto* target = targets[operand.TargetSlot];
 		const auto* metadata = target->GetPropertyMetadata(
 			*operand.Property.Identity());
@@ -10873,6 +15427,94 @@ struct Control::DeclarativeVisualStateRuntime
 		return true;
 	}
 
+	bool AppendCompiledTimelineGroups(
+		const CompiledInteractionProgramView& program,
+		std::span<const BindingValue> values,
+		std::span<Control* const> targets,
+		CompiledInteractionRange sourceRange,
+		uint32_t parentIndex,
+		std::vector<RuntimeAnimation>& animations,
+		std::vector<RuntimeTimelineGroup>& groups,
+		std::wstring_view context,
+		std::wstring* outError,
+		std::vector<uint8_t>* visitedGroups = nullptr)
+	{
+		std::vector<uint8_t> ownedVisitedGroups;
+		if (!visitedGroups)
+		{
+			ownedVisitedGroups.resize(program.TimelineGroups.size(), 0);
+			visitedGroups = &ownedVisitedGroups;
+		}
+		if (!ValidCompiledRange(sourceRange, program.TimelineGroups.size()))
+		{
+			if (outError) *outError = std::wstring(context)
+				+ L" 的编译 ParallelTimeline range 无效。";
+			return false;
+		}
+		for (uint32_t offset = 0; offset < sourceRange.Count; ++offset)
+		{
+			const auto absoluteGroupIndex = sourceRange.Offset + offset;
+			if (absoluteGroupIndex >= visitedGroups->size()
+				|| (*visitedGroups)[absoluteGroupIndex] != 0)
+			{
+				if (outError) *outError = std::wstring(context)
+					+ L" 的编译 ParallelTimeline 图重复或成环。";
+				return false;
+			}
+			(*visitedGroups)[absoluteGroupIndex] = 1;
+			const auto& source = program.TimelineGroups[absoluteGroupIndex];
+			if (!ValidCompiledRange(source.Animations, program.Animations.size())
+				|| !ValidCompiledRange(source.Children,
+					program.TimelineGroups.size())
+				|| !ValidCompiledStoryboardTiming(source.Timing)
+				|| groups.size() >= CompiledInteractionInvalidIndex)
+			{
+				if (outError) *outError = std::wstring(context)
+					+ L" 的编译 ParallelTimeline 定义无效。";
+				return false;
+			}
+			const auto groupIndex = static_cast<uint32_t>(groups.size());
+			groups.push_back({ parentIndex, source.Timing });
+			const auto animationOffset = animations.size();
+			for (uint32_t animationOffsetInGroup = 0;
+				animationOffsetInGroup < source.Animations.Count;
+				++animationOffsetInGroup)
+			{
+				RuntimeAnimation animation;
+				if (!TryBuildCompiledAnimation(program, values, targets,
+					program.Animations[source.Animations.Offset
+						+ animationOffsetInGroup], animation,
+					std::wstring(context), outError)) return false;
+				animation.TimelineGroupIndex = groupIndex;
+				animations.push_back(std::move(animation));
+			}
+			const auto animationCount = animations.size() - animationOffset;
+			if (!AppendCompiledTimelineGroups(program, values, targets,
+				source.Children, groupIndex, animations, groups,
+				context, outError, visitedGroups)) return false;
+			auto& group = groups[groupIndex];
+			const auto direct = std::span<const RuntimeAnimation>{ animations }
+				.subspan(animationOffset, animationCount);
+			if (!ResolveStoryboardTiming(group.Timing, direct,
+				group.ResolvedSimpleDurationMilliseconds,
+				group.ResolvedSimpleDurationForever))
+			{
+				if (outError) *outError = std::wstring(context)
+					+ L" 的编译 ParallelTimeline 时序无效。";
+				return false;
+			}
+			if (group.Timing.DurationAutomatic
+				&& !group.ResolvedSimpleDurationForever)
+				for (const auto& child : groups)
+					if (child.ParentIndex == groupIndex
+						&& !ExtendParallelNaturalDuration(child,
+							group.ResolvedSimpleDurationMilliseconds,
+							group.ResolvedSimpleDurationForever)) return false;
+			(*visitedGroups)[absoluteGroupIndex] = 2;
+		}
+		return true;
+	}
+
 	bool TryBuildCompiledState(
 		size_t groupIndex,
 		size_t stateIndex,
@@ -10895,10 +15537,13 @@ struct Control::DeclarativeVisualStateRuntime
 		if (!ValidCompiledRange(source.Conditions, instance.Program.Conditions.size())
 			|| !ValidCompiledRange(source.Events, instance.Program.StateEvents.size())
 			|| !ValidCompiledRange(source.Setters, instance.Program.Setters.size())
-			|| !ValidCompiledRange(source.Animations, instance.Program.Animations.size()))
+			|| !ValidCompiledRange(source.Animations, instance.Program.Animations.size())
+			|| !ValidCompiledRange(source.TimelineGroups,
+				instance.Program.TimelineGroups.size()))
 			return fail(L"编译视觉状态结构已失效。");
 		state = {};
 		state.Token = source.Token;
+		state.StoryboardTiming = source.StoryboardTiming;
 		state.Conditions.reserve(source.Conditions.Count);
 		for (uint32_t offset = 0; offset < source.Conditions.Count; ++offset)
 		{
@@ -10959,6 +15604,11 @@ struct Control::DeclarativeVisualStateRuntime
 				L"编译视觉状态 Storyboard", outError)) return false;
 			state.Animations.push_back(std::move(animation));
 		}
+		if (!AppendCompiledTimelineGroups(instance.Program, instance.Values,
+			instance.Targets, source.TimelineGroups,
+			CompiledInteractionInvalidIndex, state.Animations,
+			state.TimelineGroups, L"编译视觉状态 Storyboard", outError))
+			return false;
 		return true;
 	}
 
@@ -11009,7 +15659,9 @@ struct Control::DeclarativeVisualStateRuntime
 		const auto& state = instance.Program.States[absolute];
 		if (!ValidCompiledRange(state.Setters, instance.Program.Setters.size())
 			|| !ValidCompiledRange(
-				state.Animations, instance.Program.Animations.size()))
+				state.Animations, instance.Program.Animations.size())
+			|| !ValidCompiledRange(state.TimelineGroups,
+				instance.Program.TimelineGroups.size()))
 			return fail(L"编译视觉状态 footprint 结构已失效。");
 		footprint.Token = state.Token;
 		footprint.Setters.reserve(state.Setters.Count);
@@ -11059,6 +15711,22 @@ struct Control::DeclarativeVisualStateRuntime
 			footprint.Animations.push_back({ target, metadata, animation.Kind,
 				pathIdentity, nullptr, animationIndex });
 		}
+		std::vector<RuntimeAnimation> nestedAnimations;
+		std::vector<RuntimeTimelineGroup> nestedGroups;
+		if (!AppendCompiledTimelineGroups(instance.Program, instance.Values,
+			instance.Targets, state.TimelineGroups,
+			CompiledInteractionInvalidIndex, nestedAnimations, nestedGroups,
+			L"编译视觉状态 footprint", outError)) return false;
+		for (auto& animation : nestedAnimations)
+		{
+			RuntimeAnimationFootprint item;
+			item.Target = animation.Target;
+			item.Metadata = animation.Metadata;
+			item.Kind = animation.Kind;
+			item.ObjectPathIdentity = ObjectPathIdentity(animation.ObjectPath);
+			item.Materialized = std::move(animation);
+			footprint.Animations.push_back(std::move(item));
+		}
 		return true;
 	}
 
@@ -11070,6 +15738,11 @@ struct Control::DeclarativeVisualStateRuntime
 		if (footprint.Resolved)
 		{
 			animation = *footprint.Resolved;
+			return true;
+		}
+		if (footprint.Materialized)
+		{
+			animation = *footprint.Materialized;
 			return true;
 		}
 		if (!CompiledInteractions
@@ -11118,7 +15791,9 @@ struct Control::DeclarativeVisualStateRuntime
 		const auto& instance = *CompiledInteractions;
 		const auto* group = CompiledGroupAt(groupIndex);
 		if (!group || !ValidCompiledRange(
-			source.Animations, instance.Program.Animations.size()))
+			source.Animations, instance.Program.Animations.size())
+			|| !ValidCompiledRange(source.TimelineGroups,
+				instance.Program.TimelineGroups.size()))
 		{
 			if (outError) *outError = L"编译 VisualTransition range 无效。";
 			return false;
@@ -11130,8 +15805,11 @@ struct Control::DeclarativeVisualStateRuntime
 			transition.ToState = source.ToStateIndex;
 		transition.GeneratedDurationMilliseconds =
 			source.GeneratedDurationMilliseconds;
+		transition.StoryboardTiming = source.StoryboardTiming;
 		transition.GeneratedEasing = source.GeneratedEasing;
 		transition.GeneratedEasingMode = source.GeneratedEasingMode;
+		transition.GeneratedEasingParameters =
+			source.GeneratedEasingParameters;
 		transition.Animations.reserve(source.Animations.Count);
 		for (uint32_t offset = 0; offset < source.Animations.Count; ++offset)
 		{
@@ -11142,6 +15820,11 @@ struct Control::DeclarativeVisualStateRuntime
 				L"编译 VisualTransition Storyboard", outError)) return false;
 			transition.Animations.push_back(std::move(animation));
 		}
+		if (!AppendCompiledTimelineGroups(instance.Program, instance.Values,
+			instance.Targets, source.TimelineGroups,
+			CompiledInteractionInvalidIndex, transition.Animations,
+			transition.TimelineGroups,
+			L"编译 VisualTransition Storyboard", outError)) return false;
 		return true;
 	}
 
@@ -11163,6 +15846,33 @@ struct Control::DeclarativeVisualStateRuntime
 			std::vector<uint64_t> ObjectPathIdentities;
 		};
 		std::vector<std::pair<PropertyKey, size_t>> groupProperties;
+		std::vector<uint32_t> timelineGroupOwners(
+			program.TimelineGroups.size(), CompiledInteractionInvalidIndex);
+		uint32_t nextTimelineOwner = 0;
+		std::function<bool(CompiledInteractionRange, uint32_t)>
+			claimTimelineGroups;
+		claimTimelineGroups = [&](CompiledInteractionRange range,
+			uint32_t owner)
+		{
+			if (!ValidCompiledRange(range, program.TimelineGroups.size()))
+				return false;
+			for (uint32_t offset = 0; offset < range.Count; ++offset)
+			{
+				const auto index = range.Offset + offset;
+				auto& existingOwner = timelineGroupOwners[index];
+				if (existingOwner != CompiledInteractionInvalidIndex) return false;
+				existingOwner = owner;
+				const auto& timelineGroup = program.TimelineGroups[index];
+				if (!ValidCompiledRange(
+						timelineGroup.Animations, program.Animations.size())
+					|| !ValidCompiledRange(timelineGroup.Children,
+						program.TimelineGroups.size())
+					|| !ValidCompiledStoryboardTiming(timelineGroup.Timing)
+					|| !claimTimelineGroups(timelineGroup.Children, owner))
+					return false;
+			}
+			return true;
+		};
 		auto registerControlledProperty = [&] (
 			std::vector<CompiledPropertyOwnership>& localProperties,
 			const PropertyKey& key,
@@ -11262,8 +15972,17 @@ struct Control::DeclarativeVisualStateRuntime
 					|| !ValidCompiledRange(
 						sourceState.Setters, program.Setters.size())
 					|| !ValidCompiledRange(
-						sourceState.Animations, program.Animations.size()))
+						sourceState.Animations, program.Animations.size())
+					|| !ValidCompiledRange(
+						sourceState.TimelineGroups,
+						program.TimelineGroups.size())
+					|| !ValidCompiledStoryboardTiming(
+						sourceState.StoryboardTiming))
 					return fail(L"编译视觉状态 range/token 无效。" );
+				if (nextTimelineOwner == CompiledInteractionInvalidIndex
+					|| !claimTimelineGroups(
+						sourceState.TimelineGroups, nextTimelineOwner++))
+					return fail(L"编译视觉状态 ParallelTimeline 图无效。" );
 				if (std::find(stateTokens.begin(), stateTokens.end(),
 					sourceState.Token) != stateTokens.end())
 					return fail(L"编译视觉状态 token 重复。" );
@@ -11354,6 +16073,18 @@ struct Control::DeclarativeVisualStateRuntime
 						ObjectPathIdentity(animation.ObjectPath), groupIndex,
 						L"编译视觉状态 Storyboard")) return false;
 				}
+				std::vector<RuntimeAnimation> nestedStateAnimations;
+				std::vector<RuntimeTimelineGroup> nestedStateGroups;
+				if (!AppendCompiledTimelineGroups(program, values, targets,
+					sourceState.TimelineGroups,
+					CompiledInteractionInvalidIndex, nestedStateAnimations,
+					nestedStateGroups, L"编译视觉状态 Storyboard", outError))
+					return false;
+				for (const auto& animation : nestedStateAnimations)
+					if (!registerControlledProperty(stateProperties,
+						{ animation.Target, PropertyIdentity(animation.Metadata) },
+						ObjectPathIdentity(animation.ObjectPath), groupIndex,
+						L"编译视觉状态 Storyboard")) return false;
 			}
 			if (sourceGroup.ConditionOperands.Count
 				!= actualGroupConditionOperands.size())
@@ -11387,9 +16118,22 @@ struct Control::DeclarativeVisualStateRuntime
 						&& sourceTransition.ToStateIndex >= sourceGroup.States.Count)
 					|| !ValidCompiledEasingKind(sourceTransition.GeneratedEasing)
 					|| !ValidCompiledEasingMode(sourceTransition.GeneratedEasingMode)
+					|| !ValidCompiledEasingParameters(
+						sourceTransition.GeneratedEasing,
+						sourceTransition.GeneratedEasingParameters)
 					|| !ValidCompiledRange(
-						sourceTransition.Animations, program.Animations.size()))
+						sourceTransition.Animations, program.Animations.size())
+					|| !ValidCompiledRange(
+						sourceTransition.TimelineGroups,
+						program.TimelineGroups.size())
+					|| !ValidCompiledStoryboardTiming(
+						sourceTransition.StoryboardTiming))
 					return fail(L"编译 VisualTransition 索引无效。" );
+				if (nextTimelineOwner == CompiledInteractionInvalidIndex
+					|| !claimTimelineGroups(
+						sourceTransition.TimelineGroups,
+						nextTimelineOwner++))
+					return fail(L"编译 VisualTransition ParallelTimeline 图无效。" );
 				const std::pair selector{ sourceTransition.FromStateIndex,
 					sourceTransition.ToStateIndex };
 				if (std::find(transitionSelectors.begin(), transitionSelectors.end(),
@@ -11412,6 +16156,18 @@ struct Control::DeclarativeVisualStateRuntime
 						ObjectPathIdentity(animation.ObjectPath), groupIndex,
 						L"编译 VisualTransition Storyboard")) return false;
 				}
+				std::vector<RuntimeAnimation> nestedTransitionAnimations;
+				std::vector<RuntimeTimelineGroup> nestedTransitionGroups;
+				if (!AppendCompiledTimelineGroups(program, values, targets,
+					sourceTransition.TimelineGroups,
+					CompiledInteractionInvalidIndex,
+					nestedTransitionAnimations, nestedTransitionGroups,
+					L"编译 VisualTransition Storyboard", outError)) return false;
+				for (const auto& animation : nestedTransitionAnimations)
+					if (!registerControlledProperty(transitionProperties,
+						{ animation.Target, PropertyIdentity(animation.Metadata) },
+						ObjectPathIdentity(animation.ObjectPath), groupIndex,
+						L"编译 VisualTransition Storyboard")) return false;
 			}
 			// Validation intentionally discards the materialized hierarchy.  Runtime
 			// groups below retain only the static program index and live state.
@@ -11421,8 +16177,16 @@ struct Control::DeclarativeVisualStateRuntime
 		{
 			if (!ValidCompiledRange(
 				sourceStoryboard.Animations, program.Animations.size())
-				|| sourceStoryboard.Animations.Count == 0)
+				|| !ValidCompiledRange(sourceStoryboard.TimelineGroups,
+					program.TimelineGroups.size())
+				|| (sourceStoryboard.Animations.Count == 0
+					&& sourceStoryboard.TimelineGroups.Count == 0)
+				|| !ValidCompiledStoryboardTiming(sourceStoryboard.Timing))
 				return fail(L"编译 Storyboard animation range 越界。" );
+			if (nextTimelineOwner == CompiledInteractionInvalidIndex
+				|| !claimTimelineGroups(
+					sourceStoryboard.TimelineGroups, nextTimelineOwner++))
+				return fail(L"编译 Storyboard ParallelTimeline 图无效。" );
 			std::vector<CompiledPropertyOwnership> storyboardProperties;
 			for (uint32_t offset = 0;
 				offset < sourceStoryboard.Animations.Count; ++offset)
@@ -11437,8 +16201,24 @@ struct Control::DeclarativeVisualStateRuntime
 					ObjectPathIdentity(animation.ObjectPath), std::nullopt,
 					L"编译 EventTrigger Storyboard")) return false;
 			}
+			std::vector<RuntimeAnimation> nestedStoryboardAnimations;
+			std::vector<RuntimeTimelineGroup> nestedStoryboardGroups;
+			if (!AppendCompiledTimelineGroups(program, values, targets,
+				sourceStoryboard.TimelineGroups,
+				CompiledInteractionInvalidIndex, nestedStoryboardAnimations,
+				nestedStoryboardGroups, L"编译 EventTrigger Storyboard", outError))
+				return false;
+			for (const auto& animation : nestedStoryboardAnimations)
+				if (!registerControlledProperty(storyboardProperties,
+					{ animation.Target, PropertyIdentity(animation.Metadata) },
+					ObjectPathIdentity(animation.ObjectPath), std::nullopt,
+					L"编译 EventTrigger Storyboard")) return false;
 			// The animation graph is validation scratch; Begin materializes it lazily.
 		}
+		if (std::any_of(timelineGroupOwners.begin(), timelineGroupOwners.end(),
+			[](uint32_t owner)
+			{ return owner == CompiledInteractionInvalidIndex; }))
+			return fail(L"编译 ParallelTimeline 表含孤儿定义。" );
 		std::vector<uint8_t> storyboardHasBegin(program.Storyboards.size(), 0);
 		for (const auto& sourceTrigger : program.EventTriggers)
 		{
@@ -11456,8 +16236,49 @@ struct Control::DeclarativeVisualStateRuntime
 				const auto& sourceAction = program.Actions[
 					sourceTrigger.Actions.Offset + offset];
 				if (!ValidCompiledActionKind(sourceAction.Kind)
+					|| !ValidCompiledHandoffBehavior(sourceAction.Handoff)
 					|| sourceAction.StoryboardIndex >= program.Storyboards.size())
 					return fail(L"编译 Storyboard action 索引越界。" );
+				if (sourceAction.Kind
+					== DeclarativeStoryboardActionKind::SkipToFill)
+				{
+					const auto& storyboard = program.Storyboards[
+						sourceAction.StoryboardIndex];
+					if (storyboard.Timing.RepeatBehavior
+						== DeclarativeRepeatBehaviorKind::Forever)
+						return fail(L"编译 SkipStoryboardToFill 不能引用 Forever Storyboard。" );
+					const auto range = storyboard.Animations;
+					for (uint32_t animationOffset = 0;
+						animationOffset < range.Count; ++animationOffset)
+						if (program.Animations[range.Offset + animationOffset]
+							.RepeatBehavior
+							== DeclarativeRepeatBehaviorKind::Forever)
+							return fail(L"编译 SkipStoryboardToFill 不能引用 Forever Storyboard。" );
+					std::function<bool(CompiledInteractionRange)> groupForever;
+					groupForever = [&](CompiledInteractionRange groups)
+					{
+						for (uint32_t groupOffset = 0;
+							groupOffset < groups.Count; ++groupOffset)
+						{
+							const auto& group = program.TimelineGroups[
+								groups.Offset + groupOffset];
+							if (group.Timing.RepeatBehavior
+								== DeclarativeRepeatBehaviorKind::Forever)
+								return true;
+							for (uint32_t animationOffset = 0;
+								animationOffset < group.Animations.Count;
+								++animationOffset)
+								if (program.Animations[group.Animations.Offset
+									+ animationOffset].RepeatBehavior
+									== DeclarativeRepeatBehaviorKind::Forever)
+									return true;
+							if (groupForever(group.Children)) return true;
+						}
+						return false;
+					};
+					if (groupForever(storyboard.TimelineGroups))
+						return fail(L"编译 SkipStoryboardToFill 不能引用 Forever Storyboard。" );
+				}
 				auto& hasBegin =
 					storyboardHasBegin[sourceAction.StoryboardIndex];
 				if (sourceAction.Kind == DeclarativeStoryboardActionKind::Begin)
@@ -11566,6 +16387,150 @@ struct Control::DeclarativeVisualStateRuntime
 		return true;
 	}
 	};
+
+std::optional<unsigned long long>
+Control::ExchangeVisualStateAnimationClockOverrideForTesting(
+	std::optional<unsigned long long> value) noexcept
+{
+	if (!_declarativeVisualStates) return std::nullopt;
+	auto previous = _declarativeVisualStates->AnimationClockOverride;
+	_declarativeVisualStates->AnimationClockOverride = value;
+	return previous;
+}
+
+bool Control::VisualStateAnimationAdvanceFailedForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->LastAdvanceFailed;
+}
+
+void Control::FailNextVisualStateAnimationFrameCommitForTesting() noexcept
+{
+	if (_declarativeVisualStates)
+		_declarativeVisualStates->FailNextFrameCommitForTesting = true;
+}
+
+size_t Control::VisualStateAnimationLeafCountForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->AnimationLeafCountForTesting() : 0u;
+}
+
+size_t Control::VisualStateAnimationRootClockCountForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->AnimationRootClockCountForTesting() : 0u;
+}
+
+bool Control::SeekSingleVisualStateAnimationRootAlignedForTesting(
+	unsigned long long offsetMilliseconds)
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->SeekSingleRootAlignedForTesting(
+			offsetMilliseconds);
+}
+
+bool Control::SeekSingleVisualStateAnimationRootForTesting(
+	unsigned long long offsetMilliseconds)
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->SeekSingleRootForTesting(
+			offsetMilliseconds);
+}
+
+bool Control::PauseSingleVisualStateAnimationRootForTesting()
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->PauseSingleRootForTesting();
+}
+
+bool Control::ResumeSingleVisualStateAnimationRootForTesting()
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->ResumeSingleRootForTesting();
+}
+
+bool Control::SetSpeedRatioSingleVisualStateAnimationRootForTesting(
+	double ratio)
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->SetSpeedRatioSingleRootForTesting(ratio);
+}
+
+bool Control::SkipSingleVisualStateAnimationRootToFillForTesting()
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->SkipSingleRootToFillForTesting();
+}
+
+bool Control::StopSingleVisualStateAnimationRootForTesting()
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->StopSingleRootForTesting();
+}
+
+bool Control::RemoveSingleVisualStateAnimationRootForTesting()
+{
+	return _declarativeVisualStates
+		&& _declarativeVisualStates->RemoveSingleRootForTesting();
+}
+
+std::optional<DeclarativeClockObservation>
+Control::QuerySingleVisualStateAnimationRootForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->QuerySingleRootForTesting()
+		: std::nullopt;
+}
+
+size_t Control::VisualStateAnimationClockNodeCountForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->AnimationClockNodeCountForTesting() : 0u;
+}
+
+size_t Control::VisualStateAnimationLayerStackCountForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->AnimationLayerStackCountForTesting() : 0u;
+}
+
+size_t Control::VisualStateAnimationLayerCountForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->AnimationLayerCountForTesting() : 0u;
+}
+
+size_t Control::VisualStateAnimationLayerMaxDepthForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->AnimationLayerMaxDepthForTesting() : 0u;
+}
+
+size_t Control::VisualStateAnimationRootClockChildCountForTesting(
+	size_t rootIndex) const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->RootClockChildCountForTesting(rootIndex) : 0u;
+}
+
+uint64_t Control::VisualStateAnimationSingleRootClockIdForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->SingleRootClockIdForTesting() : 0u;
+}
+
+uint64_t Control::VisualStateAnimationSingleRootClockNodeTokenForTesting() const noexcept
+{
+	return _declarativeVisualStates
+		? _declarativeVisualStates->SingleRootClockNodeTokenForTesting() : 0u;
+}
+
+bool Control::VisualStateAnimationClockIdentityValidForTesting() const noexcept
+{
+	return !_declarativeVisualStates
+		|| _declarativeVisualStates->ClockIdentityValidForTesting();
+}
 
 #if CUI_ENABLE_DYNAMIC_XAML
 bool Control::InstallDesignInteractionDefinitions(
@@ -11737,6 +16702,41 @@ bool Control::HasActiveVisualStateAnimations() const noexcept
 {
 	return _declarativeVisualStates
 		&& _declarativeVisualStates->HasActiveAnimations();
+}
+
+void Control::CollectDeclarativeCompositionAnimationTargets(
+	std::vector<Control*>& transformTargets,
+	std::vector<Control*>& opacityTargets) const
+{
+	if (_declarativeVisualStates)
+		_declarativeVisualStates->CollectCompositionAnimationTargets(
+			transformTargets, opacityTargets);
+}
+
+bool Control::HasRetainedVisualStateAnimationRoots() const noexcept
+{
+	return _declarativeVisualStates
+		&& !_declarativeVisualStates->ClockNodes.Roots.empty();
+}
+
+void Control::SynchronizeDeclarativeAnimationWindowRegistration() noexcept
+{
+	if (auto* window = GetPresentationWindow())
+		window->SynchronizeActiveDeclarativeAnimationControl(
+			this, HasRetainedVisualStateAnimationRoots());
+}
+
+void Control::RefreshDeclarativeAnimationWindowScheduling() noexcept
+{
+	if (auto* window = GetPresentationWindow())
+		window->RefreshAnimationTimer();
+}
+
+void Control::SynchronizeNativeAnimationWindowRegistration() noexcept
+{
+	if (auto* window = GetPresentationWindow())
+		window->SynchronizeRetainedNativeAnimationControl(
+			this, HasRetainedNativeAnimation());
 }
 
 bool Control::AdvanceVisualStateAnimations(
@@ -11955,7 +16955,9 @@ void Control::SetIsKeyboardFocusedCore(bool value)
 		live->_caretBlinkFocused = false;
 		live->_caretBlinkRectValid = false;
 		live->_caretBlinkRect = { 0, 0, 0, 0 };
+		live->SynchronizeNativeAnimationWindowRegistration();
 	}
+
 	live->_defaultLeftButtonPressActive = value
 		? live->_defaultLeftButtonPressActive : false;
 	if (!value) live->SetIsKeyboardFocusVisibleCore(false);
@@ -13860,6 +18862,48 @@ const DependencyProperty& Control::FontSizeProperty()
 	return FontSizePropertyMetadataRelation().Property();
 }
 
+const DependencyProperty& Control::OpacityProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Control, double> opacityOptions;
+		opacityOptions.DefaultValue = 1.0;
+		opacityOptions.Flags = DependencyPropertyFlags::None;
+		opacityOptions.Validate = [](const double& value)
+			{
+				return std::isfinite(value)
+					&& value >= 0.0 && value <= 1.0;
+			};
+		opacityOptions.Changed = [](
+			Control& target,
+			const double& previous,
+			const double& current)
+			{
+				if ((previous == 1.0) != (current == 1.0)
+					&& !target.HasPropertyValue(
+						OpacityProperty(),
+						DependencyPropertyValueSource::Animation))
+					if (auto* window = target.GetPresentationWindow())
+						window->InvalidatePresentationStructure();
+				target.InvalidateComposition();
+			};
+		CUI_DESIGN_METADATA_ONLY(
+		opacityOptions.Design = PropertyDesign(
+			L"Appearance", 200, 26,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Number,
+			L"Whole-element opacity");
+		opacityOptions.Design.Minimum = 0.0;
+		opacityOptions.Design.Maximum = 1.0;
+		opacityOptions.Design.Step = 0.05;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<Control, double>(
+			DependencyPropertyRegistrationLiteral(L"Opacity"),
+			std::move(opacityOptions));
+	}();
+	return *registration;
+}
+
 const DependencyProperty& Control::ClipProperty()
 {
 	static const auto registration = []
@@ -13910,6 +18954,8 @@ const DependencyProperty& Control::ClipToBoundsProperty()
 				{
 					auto* target = dynamic_cast<Control*>(&element);
 					if (!target) return;
+					if (auto* window = target->GetPresentationWindow())
+						window->InvalidatePresentationStructure();
 					// The old descendant pixels and the new clipped extent both
 					// participate in damage. The layout rectangle itself is unchanged.
 					target->InvalidateVisualSubtree();
@@ -15644,6 +20690,91 @@ D2D1_MATRIX_3X2_F Control::GetLocalToRenderTransform() const
 	return local
 		* D2D1::Matrix3x2F::Translation(absolute.x, absolute.y)
 		* AsMatrix(GetInheritedRenderTransform());
+}
+
+D2D1_MATRIX_3X2_F Control::GetInheritedRenderTransformForRecording() const
+{
+	auto result = D2D1::Matrix3x2F::Identity();
+	if (BreaksVisualPresentationInheritance()) return result;
+	InlinePointerSet<const Control> visited;
+	(void)visited.Insert(this);
+	for (auto* ancestor = this->_visualParent;
+		ancestor && visited.Insert(ancestor);
+		ancestor = ancestor->BreaksVisualPresentationInheritance()
+			? nullptr : ancestor->_visualParent)
+		result = result * AsMatrix(
+			ancestor->GetEffectiveDescendantRenderTransformForRecording());
+	return result;
+}
+
+D2D1_MATRIX_3X2_F
+Control::GetEffectiveDescendantRenderTransformForRecording() const
+{
+	auto result = D2D1::Matrix3x2F::Identity();
+	if (_renderTransform && !IsRenderTransformSuppressedForRecording(this))
+	{
+		const auto size = const_cast<Control*>(this)->GetActualSizeDip();
+		const auto local = AsMatrix(_renderTransform->ToMatrix(
+			D2D1::SizeF(size.width, size.height), _renderTransformOrigin));
+		const auto absolute = GetAbsoluteLocationDip();
+		result = D2D1::Matrix3x2F::Translation(-absolute.x, -absolute.y)
+			* local
+			* D2D1::Matrix3x2F::Translation(absolute.x, absolute.y);
+	}
+	D2D1_MATRIX_3X2_F extra{};
+	if (TryGetDescendantRenderTransform(extra))
+		result = result * AsMatrix(extra);
+	return result;
+}
+
+D2D1_MATRIX_3X2_F Control::GetLocalToRenderTransformForRecording() const
+{
+	const auto size = const_cast<Control*>(this)->GetActualSizeDip();
+	const auto local = _renderTransform
+		&& !IsRenderTransformSuppressedForRecording(this)
+		? AsMatrix(_renderTransform->ToMatrix(
+			D2D1::SizeF(size.width, size.height), _renderTransformOrigin))
+		: D2D1::Matrix3x2F::Identity();
+	const auto absolute = GetAbsoluteLocationDip();
+	return local
+		* D2D1::Matrix3x2F::Translation(absolute.x, absolute.y)
+		* AsMatrix(GetInheritedRenderTransformForRecording());
+}
+
+D2D1_RECT_F Control::GetRenderedAbsoluteRectDipForRecording() const
+{
+	const auto absolute = GetAbsoluteLocationDip();
+	const auto size = const_cast<Control*>(this)->GetRenderSizeDip();
+	const auto transform = D2D1::Matrix3x2F::Translation(
+		-absolute.x, -absolute.y)
+		* AsMatrix(GetLocalToRenderTransformForRecording());
+	const D2D1_RECT_F rect{
+		absolute.x, absolute.y,
+		absolute.x + size.width, absolute.y + size.height };
+	const D2D1_POINT_2F points[]{
+		transform.TransformPoint(D2D1::Point2F(rect.left, rect.top)),
+		transform.TransformPoint(D2D1::Point2F(rect.right, rect.top)),
+		transform.TransformPoint(D2D1::Point2F(rect.left, rect.bottom)),
+		transform.TransformPoint(D2D1::Point2F(rect.right, rect.bottom)) };
+	D2D1_RECT_F bounds{
+		points[0].x, points[0].y, points[0].x, points[0].y };
+	for (size_t index = 1; index < std::size(points); ++index)
+	{
+		bounds.left = (std::min)(bounds.left, points[index].x);
+		bounds.top = (std::min)(bounds.top, points[index].y);
+		bounds.right = (std::max)(bounds.right, points[index].x);
+		bounds.bottom = (std::max)(bounds.bottom, points[index].y);
+	}
+	return bounds;
+}
+
+std::span<Control* const>
+Control::ExchangeRenderTransformSuppressionsForRecording(
+	std::span<Control* const> roots) noexcept
+{
+	auto previous = RenderTransformSuppressionRoots;
+	RenderTransformSuppressionRoots = roots;
+	return previous;
 }
 
 bool Control::TryTransformRenderPointToLocal(

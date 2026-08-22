@@ -164,10 +164,13 @@ ID2D1Brush* Brush::CreateBrush(
 	{
 		auto stops = ResolveStops(GradientStops);
 		if (stops.empty()) return nullptr;
+		const auto gamma = ColorInterpolationMode
+			== GradientColorInterpolationMode::ScRgbLinearInterpolation
+			? D2D1_GAMMA_1_0 : D2D1_GAMMA_2_2;
 		if (Kind == BrushKind::LinearGradient)
 		{
 			auto* brush = graphics.CreateLinearGradientBrush(
-				stops.data(), static_cast<unsigned int>(stops.size()));
+				stops.data(), static_cast<unsigned int>(stops.size()), gamma);
 			if (!brush) return nullptr;
 			brush->SetStartPoint(ResolvePoint(
 				StartPoint, MappingMode, bounds));
@@ -179,7 +182,7 @@ ID2D1Brush* Brush::CreateBrush(
 		{
 			const auto center = ResolvePoint(Center, MappingMode, bounds);
 			auto* brush = graphics.CreateRadialGradientBrush(
-				stops.data(), static_cast<unsigned int>(stops.size()), center);
+				stops.data(), static_cast<unsigned int>(stops.size()), center, gamma);
 			if (!brush) return nullptr;
 			const auto origin = ResolvePoint(
 				GradientOrigin, MappingMode, bounds);

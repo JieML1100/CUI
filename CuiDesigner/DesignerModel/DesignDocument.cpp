@@ -213,14 +213,16 @@ DesignObjectResourceDictionary& DesignObjectResourceDictionary::operator=(
 
 bool DesignObjectResourceDictionary::Empty() const noexcept
 {
-	return Components.empty() && ControlTemplates.empty() && DataTemplates.empty()
+	return Storyboards.empty() && Components.empty()
+		&& ControlTemplates.empty() && DataTemplates.empty()
 		&& ItemsPanelTemplates.empty() && GroupStyles.empty();
 }
 
 bool DesignObjectResourceDictionary::operator==(
 	const DesignObjectResourceDictionary& other) const
 {
-	return Components == other.Components
+	return Storyboards == other.Storyboards
+		&& Components == other.Components
 		&& ControlTemplates == other.ControlTemplates
 		&& DataTemplates == other.DataTemplates
 		&& ItemsPanelTemplates == other.ItemsPanelTemplates
@@ -2179,6 +2181,15 @@ DesignObjectResourceDictionary DesignDocument::VisibleObjectResources(
 	DesignObjectResourceDictionary result;
 	auto append = [&](const DesignObjectResourceDictionary& source)
 	{
+		for (const auto& storyboard : source.Storyboards)
+		{
+			result.Storyboards.erase(std::remove_if(
+				result.Storyboards.begin(), result.Storyboards.end(),
+				[&](const auto& current)
+				{ return current.Key == storyboard.Key; }),
+				result.Storyboards.end());
+			result.Storyboards.push_back(storyboard);
+		}
 		for (const auto& component : source.Components)
 		{
 			result.Components.erase(std::remove_if(
@@ -2229,6 +2240,7 @@ DesignObjectResourceDictionary DesignDocument::VisibleObjectResources(
 		}
 	};
 	DesignObjectResourceDictionary documentResources;
+	documentResources.Storyboards = Storyboards;
 	documentResources.Components = Components;
 	documentResources.ControlTemplates = ControlTemplates;
 	documentResources.DataTemplates = DataTemplates;
@@ -2412,6 +2424,15 @@ const DesignDataTemplate* DesignDocument::FindDataTemplate(
 			return item.Key == key;
 		});
 	return found == DataTemplates.end() ? nullptr : &*found;
+}
+
+const DesignStoryboardResource* DesignDocument::FindStoryboard(
+	const std::wstring& key) const
+{
+	if (key.empty()) return nullptr;
+	const auto found = std::find_if(Storyboards.rbegin(), Storyboards.rend(),
+		[&](const auto& item) { return item.Key == key; });
+	return found == Storyboards.rend() ? nullptr : &*found;
 }
 
 const DesignDataTemplate* DesignDocument::FindDataTemplate(
@@ -3158,6 +3179,7 @@ bool DesignDocument::operator==(const DesignDocument& other) const
 		&& CodeBehind == other.CodeBehind
 		&& DataContextSchema == other.DataContextSchema
 		&& StyleSheet == other.StyleSheet
+		&& Storyboards == other.Storyboards
 		&& Components == other.Components
 		&& ControlTemplates == other.ControlTemplates
 		&& DataTypes == other.DataTypes

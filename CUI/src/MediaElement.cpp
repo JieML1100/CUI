@@ -3480,7 +3480,7 @@ void MediaElement::OnPresentationWindowChanged(
 	PresentationWindow* previousWindow,
 	PresentationWindow* currentWindow)
 {
-	(void)previousWindow;
+	Control::OnPresentationWindowChanged(previousWindow, currentWindow);
 	if (!currentWindow)
 	{
 		ApplyMediaState(_unloadedBehavior);

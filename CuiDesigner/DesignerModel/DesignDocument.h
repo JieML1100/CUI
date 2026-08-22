@@ -10,6 +10,7 @@
 #include <memory>
 #include <limits>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -101,9 +102,24 @@ struct DesignDataTemplate;
 struct DesignItemsPanelTemplate;
 struct DesignGroupStyle;
 
+/** One immutable Storyboard definition owned by a lexical Resources scope. */
+struct DesignStoryboardResource
+{
+	std::wstring Key;
+	DesignerStoryboardTiming Timing;
+	std::vector<DesignerVisualStateAnimation> Animations;
+	std::vector<DesignerTimelineGroup> TimelineGroups;
+	std::wstring SourceDictionary;
+
+	bool operator==(const DesignStoryboardResource&) const = default;
+};
+
 /** Structural resources owned by one XAML Resources scope. */
 struct DesignObjectResourceDictionary
 {
+	/** Parser-only lexical identity; excluded from persistence and equality. */
+	std::uint64_t TransientScopeId = 0;
+	std::vector<DesignStoryboardResource> Storyboards;
 	std::vector<DesignComponentDefinition> Components;
 	std::vector<DesignControlTemplate> ControlTemplates;
 	std::vector<DesignDataTemplate> DataTemplates;
@@ -702,7 +718,7 @@ struct DesignGroupStyle
 
 struct DesignDocument
 {
-	static constexpr int CurrentSchemaVersion = 43;
+	static constexpr int CurrentSchemaVersion = 48;
 	DesignDocument();
 	std::string Schema = "cui.designer";
 	int SchemaVersion = CurrentSchemaVersion;
@@ -712,6 +728,7 @@ struct DesignDocument
 	DesignCodeBehindModel CodeBehind;
 	DesignerDataContextSchema DataContextSchema;
 	DesignerStyleSheet StyleSheet;
+	std::vector<DesignStoryboardResource> Storyboards;
 	std::vector<DesignComponentDefinition> Components;
 	std::vector<DesignControlTemplate> ControlTemplates;
 	std::vector<DesignDataTypeDefinition> DataTypes;
@@ -740,6 +757,8 @@ struct DesignDocument
 	const DesignDataTypeDefinition* FindDataType(
 		const std::wstring& name) const;
 	const DesignDataTemplate* FindDataTemplate(
+		const std::wstring& key) const;
+	const DesignStoryboardResource* FindStoryboard(
 		const std::wstring& key) const;
 	const DesignDataTemplate* FindDataTemplate(
 		const DesignNode& origin,

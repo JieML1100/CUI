@@ -9,7 +9,9 @@
 #include <vector>
 
 struct IDCompositionDevice;
+struct IDCompositionSurface;
 struct IDCompositionVisual;
+struct ID2D1Device;
 
 // Deliberately value-only so the DirectComposition stack policy can be tested
 // without a desktop compositor or an HWND.  Tokens are opaque visual pointers
@@ -136,6 +138,24 @@ namespace cui::dcomp_detail
 class DCompLayeredHost
 {
 public:
+	struct VisualTopologyStatistics final
+	{
+		uint64_t StackRebuildCount = 0;
+		uint64_t StackRebuildEntryCount = 0;
+		uint64_t DeferredMutationCount = 0;
+		uint64_t BatchCommitCount = 0;
+		uint64_t BatchRollbackCount = 0;
+		uint64_t BatchRollbackFailureCount = 0;
+	};
+
+	struct D2DLayerCreationTimings final
+	{
+		double SwapChainMicroseconds = 0.0;
+		double SurfaceMicroseconds = 0.0;
+		double VisualCreationMicroseconds = 0.0;
+		double VisualBindingMicroseconds = 0.0;
+	};
+
     DCompLayeredHost();
     ~DCompLayeredHost();
 
@@ -149,13 +169,40 @@ public:
     void Cleanup();
 
     IDCompositionDevice* GetDCompDevice() const;
+	ID2D1Device* GetD2DDevice() const;
+	/** True when BeginDraw can return a pre-targeted ID2D1DeviceContext. */
+	bool SupportsD2DSurfaceDeviceContexts() const noexcept;
     IDCompositionVisual* GetRootVisual() const;
     IDCompositionVisual* GetWebContainerVisual() const;
-    bool CreateD2DLayer(void** outSwapChain, IDCompositionVisual** outVisual, int layer, int order);
+    bool CreateD2DLayer(
+        void** outSwapChain,
+        IDCompositionVisual** outRootVisual,
+        IDCompositionVisual** outContentVisual,
+        UINT width,
+        UINT height,
+        int layer,
+        int order,
+		D2DLayerCreationTimings* timings = nullptr);
+	bool CreateD2DSurfaceLayer(
+		IDCompositionSurface** outSurface,
+		IDCompositionVisual** outRootVisual,
+		IDCompositionVisual** outContentVisual,
+		UINT width,
+		UINT height,
+		int layer,
+		int order,
+		D2DLayerCreationTimings* timings = nullptr);
     void DestroyD2DLayer(IDCompositionVisual* visual);
     bool RegisterVisual(IDCompositionVisual* visual, int layer, int order);
     void UpdateVisualOrder(IDCompositionVisual* visual, int layer, int order);
     void UnregisterVisual(IDCompositionVisual* visual);
+	bool BeginVisualTopologyBatch() noexcept;
+	bool CommitVisualTopologyBatch() noexcept;
+	void RollbackVisualTopologyBatch() noexcept;
+	bool IsVisualTopologyBatchHealthy() const noexcept;
+	static void FailNextVisualTopologyBatchCommitForTesting() noexcept;
+	static void ClearVisualTopologyBatchCommitFailureForTesting() noexcept;
+	VisualTopologyStatistics GetVisualTopologyStatistics() const noexcept;
     void* GetSwapChain() const; // 实际类型为 IDXGISwapChain1*
     void* GetOverlaySwapChain() const; // 实际类型为 IDXGISwapChain1*
 

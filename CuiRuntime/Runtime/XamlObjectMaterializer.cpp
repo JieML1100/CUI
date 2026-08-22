@@ -1536,6 +1536,15 @@ namespace
 					? DeclarativeAnimationKind::Matrix
 				: source.Kind == DesignerAnimationKind::Object
 					? DeclarativeAnimationKind::Object
+				: source.Kind == DesignerAnimationKind::Boolean
+					|| source.Kind == DesignerAnimationKind::String
+					? DeclarativeAnimationKind::Object
+				: source.Kind == DesignerAnimationKind::Int32
+					? DeclarativeAnimationKind::Int32
+				: source.Kind == DesignerAnimationKind::Int64
+					? DeclarativeAnimationKind::Int64
+				: source.Kind == DesignerAnimationKind::Single
+					? DeclarativeAnimationKind::Single
 					: DeclarativeAnimationKind::Double;
 			animation.TargetName = source.TargetName;
 			assignAnimationProperty(source.PropertyName, animation);
@@ -1601,21 +1610,16 @@ namespace
 						keyFrame.Kind = DeclarativeKeyFrameKind::Linear; break;
 					}
 					keyFrame.KeyTimeMilliseconds = sourceKeyFrame.KeyTimeMilliseconds;
+					keyFrame.KeyTimeSubMillisecondTicks =
+						sourceKeyFrame.KeyTimeSubMillisecondTicks;
 					if (!resolveValue(sourceKeyFrame.Value,
 						sourceKeyFrame.UsesResource, sourceKeyFrame.ResourceKey,
 						keyFrame.Value, L"KeyFrame")) return false;
-					switch (sourceKeyFrame.Easing)
-					{
-					case DesignerEasingKind::Quadratic:
-						keyFrame.Easing = DeclarativeEasingKind::Quadratic; break;
-					case DesignerEasingKind::Cubic:
-						keyFrame.Easing = DeclarativeEasingKind::Cubic; break;
-					case DesignerEasingKind::Sine:
-						keyFrame.Easing = DeclarativeEasingKind::Sine; break;
-					case DesignerEasingKind::Linear:
-					default:
-						keyFrame.Easing = DeclarativeEasingKind::Linear; break;
-					}
+					keyFrame.Easing = static_cast<DeclarativeEasingKind>(
+						sourceKeyFrame.Easing);
+					keyFrame.EasingParameters = {
+						sourceKeyFrame.EasingParameters.Primary,
+						sourceKeyFrame.EasingParameters.Secondary };
 					keyFrame.EasingMode = sourceKeyFrame.EasingMode
 						== DesignerEasingMode::EaseIn
 						? DeclarativeEasingMode::EaseIn
@@ -1642,6 +1646,8 @@ namespace
 				source.RepeatDurationMilliseconds;
 			animation.IsAdditive = source.IsAdditive;
 			animation.IsCumulative = source.IsCumulative;
+			animation.Path = source.Path;
+			animation.PathSegments = source.PathSegments;
 			animation.AutoReverse = source.AutoReverse;
 			animation.FillBehavior = source.FillBehavior
 				== DesignerTimelineFillBehavior::Stop
@@ -1650,23 +1656,63 @@ namespace
 			animation.SpeedRatio = source.SpeedRatio;
 			animation.AccelerationRatio = source.AccelerationRatio;
 			animation.DecelerationRatio = source.DecelerationRatio;
-			switch (source.Easing)
-			{
-			case DesignerEasingKind::Quadratic:
-				animation.Easing = DeclarativeEasingKind::Quadratic; break;
-			case DesignerEasingKind::Cubic:
-				animation.Easing = DeclarativeEasingKind::Cubic; break;
-			case DesignerEasingKind::Sine:
-				animation.Easing = DeclarativeEasingKind::Sine; break;
-			case DesignerEasingKind::Linear:
-			default:
-				animation.Easing = DeclarativeEasingKind::Linear; break;
-			}
+			animation.Easing = static_cast<DeclarativeEasingKind>(source.Easing);
+			animation.EasingParameters = {
+				source.EasingParameters.Primary,
+				source.EasingParameters.Secondary };
 			animation.EasingMode = source.EasingMode == DesignerEasingMode::EaseIn
 				? DeclarativeEasingMode::EaseIn
 				: source.EasingMode == DesignerEasingMode::EaseInOut
 					? DeclarativeEasingMode::EaseInOut
 					: DeclarativeEasingMode::EaseOut;
+			return true;
+		};
+		std::function<bool(const DesignerTimelineGroup&,
+			const std::wstring&, DeclarativeTimelineGroupDefinition&)>
+			materializeTimelineGroup;
+		materializeTimelineGroup = [&](const DesignerTimelineGroup& source,
+			const std::wstring& context,
+			DeclarativeTimelineGroupDefinition& group)
+		{
+			group.Timing.BeginTimeMilliseconds =
+				source.Timing.BeginTimeMilliseconds;
+			group.Timing.DurationAutomatic = source.Timing.DurationAutomatic;
+			group.Timing.DurationMilliseconds =
+				source.Timing.DurationMilliseconds;
+			group.Timing.RepeatBehavior = source.Timing.RepeatBehavior
+				== DesignerRepeatBehaviorKind::Duration
+				? DeclarativeRepeatBehaviorKind::Duration
+				: source.Timing.RepeatBehavior
+					== DesignerRepeatBehaviorKind::Forever
+					? DeclarativeRepeatBehaviorKind::Forever
+					: DeclarativeRepeatBehaviorKind::Count;
+			group.Timing.RepeatCount = source.Timing.RepeatCount;
+			group.Timing.RepeatDurationMilliseconds =
+				source.Timing.RepeatDurationMilliseconds;
+			group.Timing.AutoReverse = source.Timing.AutoReverse;
+			group.Timing.FillBehavior = source.Timing.FillBehavior
+				== DesignerTimelineFillBehavior::Stop
+				? DeclarativeTimelineFillBehavior::Stop
+				: DeclarativeTimelineFillBehavior::HoldEnd;
+			group.Timing.SpeedRatio = source.Timing.SpeedRatio;
+			group.Timing.AccelerationRatio = source.Timing.AccelerationRatio;
+			group.Timing.DecelerationRatio = source.Timing.DecelerationRatio;
+			group.Animations.reserve(source.Animations.size());
+			for (const auto& sourceAnimation : source.Animations)
+			{
+				DeclarativeVisualStateAnimation animation;
+				if (!materializeAnimation(sourceAnimation, context, animation))
+					return false;
+				group.Animations.push_back(std::move(animation));
+			}
+			group.Children.reserve(source.Children.size());
+			for (const auto& sourceChild : source.Children)
+			{
+				DeclarativeTimelineGroupDefinition child;
+				if (!materializeTimelineGroup(sourceChild, context, child))
+					return false;
+				group.Children.push_back(std::move(child));
+			}
 			return true;
 		};
 		for (const auto& sourceGroup : sourceGroups)
@@ -1678,6 +1724,37 @@ namespace
 			{
 				DeclarativeVisualStateDefinition state;
 				state.Name = sourceState.Name;
+				state.StoryboardTiming.BeginTimeMilliseconds =
+					sourceState.StoryboardTiming.BeginTimeMilliseconds;
+				state.StoryboardTiming.DurationAutomatic =
+					sourceState.StoryboardTiming.DurationAutomatic;
+				state.StoryboardTiming.DurationMilliseconds =
+					sourceState.StoryboardTiming.DurationMilliseconds;
+				state.StoryboardTiming.RepeatBehavior =
+					sourceState.StoryboardTiming.RepeatBehavior
+						== DesignerRepeatBehaviorKind::Duration
+					? DeclarativeRepeatBehaviorKind::Duration
+					: sourceState.StoryboardTiming.RepeatBehavior
+						== DesignerRepeatBehaviorKind::Forever
+						? DeclarativeRepeatBehaviorKind::Forever
+						: DeclarativeRepeatBehaviorKind::Count;
+				state.StoryboardTiming.RepeatCount =
+					sourceState.StoryboardTiming.RepeatCount;
+				state.StoryboardTiming.RepeatDurationMilliseconds =
+					sourceState.StoryboardTiming.RepeatDurationMilliseconds;
+				state.StoryboardTiming.AutoReverse =
+					sourceState.StoryboardTiming.AutoReverse;
+				state.StoryboardTiming.FillBehavior =
+					sourceState.StoryboardTiming.FillBehavior
+						== DesignerTimelineFillBehavior::Stop
+					? DeclarativeTimelineFillBehavior::Stop
+					: DeclarativeTimelineFillBehavior::HoldEnd;
+				state.StoryboardTiming.SpeedRatio =
+					sourceState.StoryboardTiming.SpeedRatio;
+				state.StoryboardTiming.AccelerationRatio =
+					sourceState.StoryboardTiming.AccelerationRatio;
+				state.StoryboardTiming.DecelerationRatio =
+					sourceState.StoryboardTiming.DecelerationRatio;
 				state.EventNames = sourceState.EventNames;
 				for (const auto& sourceCondition : sourceState.Conditions)
 				{
@@ -1734,6 +1811,15 @@ namespace
 							? DeclarativeAnimationKind::Matrix
 						: sourceAnimation.Kind == DesignerAnimationKind::Object
 							? DeclarativeAnimationKind::Object
+						: sourceAnimation.Kind == DesignerAnimationKind::Boolean
+							|| sourceAnimation.Kind == DesignerAnimationKind::String
+							? DeclarativeAnimationKind::Object
+						: sourceAnimation.Kind == DesignerAnimationKind::Int32
+							? DeclarativeAnimationKind::Int32
+						: sourceAnimation.Kind == DesignerAnimationKind::Int64
+							? DeclarativeAnimationKind::Int64
+						: sourceAnimation.Kind == DesignerAnimationKind::Single
+							? DeclarativeAnimationKind::Single
 							: DeclarativeAnimationKind::Double;
 					animation.TargetName = sourceAnimation.TargetName;
 					assignAnimationProperty(
@@ -1813,22 +1899,17 @@ namespace
 							}
 							keyFrame.KeyTimeMilliseconds =
 								sourceKeyFrame.KeyTimeMilliseconds;
+							keyFrame.KeyTimeSubMillisecondTicks =
+								sourceKeyFrame.KeyTimeSubMillisecondTicks;
 							if (!resolveValue(sourceKeyFrame.Value,
 								sourceKeyFrame.UsesResource,
 								sourceKeyFrame.ResourceKey,
 								keyFrame.Value, L"KeyFrame")) return false;
-							switch (sourceKeyFrame.Easing)
-							{
-							case DesignerEasingKind::Quadratic:
-								keyFrame.Easing = DeclarativeEasingKind::Quadratic; break;
-							case DesignerEasingKind::Cubic:
-								keyFrame.Easing = DeclarativeEasingKind::Cubic; break;
-							case DesignerEasingKind::Sine:
-								keyFrame.Easing = DeclarativeEasingKind::Sine; break;
-							case DesignerEasingKind::Linear:
-							default:
-								keyFrame.Easing = DeclarativeEasingKind::Linear; break;
-							}
+							keyFrame.Easing = static_cast<DeclarativeEasingKind>(
+								sourceKeyFrame.Easing);
+							keyFrame.EasingParameters = {
+								sourceKeyFrame.EasingParameters.Primary,
+								sourceKeyFrame.EasingParameters.Secondary };
 							keyFrame.EasingMode = sourceKeyFrame.EasingMode
 								== DesignerEasingMode::EaseIn
 								? DeclarativeEasingMode::EaseIn
@@ -1859,6 +1940,8 @@ namespace
 						sourceAnimation.RepeatDurationMilliseconds;
 					animation.IsAdditive = sourceAnimation.IsAdditive;
 					animation.IsCumulative = sourceAnimation.IsCumulative;
+					animation.Path = sourceAnimation.Path;
+					animation.PathSegments = sourceAnimation.PathSegments;
 					animation.AutoReverse = sourceAnimation.AutoReverse;
 					animation.FillBehavior = sourceAnimation.FillBehavior
 						== DesignerTimelineFillBehavior::Stop
@@ -1869,18 +1952,11 @@ namespace
 						sourceAnimation.AccelerationRatio;
 					animation.DecelerationRatio =
 						sourceAnimation.DecelerationRatio;
-					switch (sourceAnimation.Easing)
-					{
-					case DesignerEasingKind::Quadratic:
-						animation.Easing = DeclarativeEasingKind::Quadratic; break;
-					case DesignerEasingKind::Cubic:
-						animation.Easing = DeclarativeEasingKind::Cubic; break;
-					case DesignerEasingKind::Sine:
-						animation.Easing = DeclarativeEasingKind::Sine; break;
-					case DesignerEasingKind::Linear:
-					default:
-						animation.Easing = DeclarativeEasingKind::Linear; break;
-					}
+					animation.Easing = static_cast<DeclarativeEasingKind>(
+						sourceAnimation.Easing);
+					animation.EasingParameters = {
+						sourceAnimation.EasingParameters.Primary,
+						sourceAnimation.EasingParameters.Secondary };
 					switch (sourceAnimation.EasingMode)
 					{
 					case DesignerEasingMode::EaseIn:
@@ -1893,6 +1969,15 @@ namespace
 					}
 					state.Animations.push_back(std::move(animation));
 				}
+				state.TimelineGroups.reserve(sourceState.TimelineGroups.size());
+				for (const auto& sourceTimelineGroup : sourceState.TimelineGroups)
+				{
+					DeclarativeTimelineGroupDefinition timelineGroup;
+					if (!materializeTimelineGroup(sourceTimelineGroup,
+						L"VisualState " + sourceState.Name, timelineGroup))
+						return false;
+					state.TimelineGroups.push_back(std::move(timelineGroup));
+				}
 				group.States.push_back(std::move(state));
 			}
 			group.Transitions.reserve(sourceGroup.Transitions.size());
@@ -1903,22 +1988,42 @@ namespace
 				transition.ToState = sourceTransition.ToState;
 				transition.GeneratedDurationMilliseconds =
 					sourceTransition.GeneratedDurationMilliseconds;
-				switch (sourceTransition.GeneratedEasing)
-				{
-				case DesignerEasingKind::Quadratic:
-					transition.GeneratedEasing =
-						DeclarativeEasingKind::Quadratic; break;
-				case DesignerEasingKind::Cubic:
-					transition.GeneratedEasing =
-						DeclarativeEasingKind::Cubic; break;
-				case DesignerEasingKind::Sine:
-					transition.GeneratedEasing =
-						DeclarativeEasingKind::Sine; break;
-				case DesignerEasingKind::Linear:
-				default:
-					transition.GeneratedEasing =
-						DeclarativeEasingKind::Linear; break;
-				}
+				transition.StoryboardTiming.BeginTimeMilliseconds =
+					sourceTransition.StoryboardTiming.BeginTimeMilliseconds;
+				transition.StoryboardTiming.DurationAutomatic =
+					sourceTransition.StoryboardTiming.DurationAutomatic;
+				transition.StoryboardTiming.DurationMilliseconds =
+					sourceTransition.StoryboardTiming.DurationMilliseconds;
+				transition.StoryboardTiming.RepeatBehavior =
+					sourceTransition.StoryboardTiming.RepeatBehavior
+						== DesignerRepeatBehaviorKind::Duration
+					? DeclarativeRepeatBehaviorKind::Duration
+					: sourceTransition.StoryboardTiming.RepeatBehavior
+						== DesignerRepeatBehaviorKind::Forever
+						? DeclarativeRepeatBehaviorKind::Forever
+						: DeclarativeRepeatBehaviorKind::Count;
+				transition.StoryboardTiming.RepeatCount =
+					sourceTransition.StoryboardTiming.RepeatCount;
+				transition.StoryboardTiming.RepeatDurationMilliseconds =
+					sourceTransition.StoryboardTiming.RepeatDurationMilliseconds;
+				transition.StoryboardTiming.AutoReverse =
+					sourceTransition.StoryboardTiming.AutoReverse;
+				transition.StoryboardTiming.FillBehavior =
+					sourceTransition.StoryboardTiming.FillBehavior
+						== DesignerTimelineFillBehavior::Stop
+					? DeclarativeTimelineFillBehavior::Stop
+					: DeclarativeTimelineFillBehavior::HoldEnd;
+				transition.StoryboardTiming.SpeedRatio =
+					sourceTransition.StoryboardTiming.SpeedRatio;
+				transition.StoryboardTiming.AccelerationRatio =
+					sourceTransition.StoryboardTiming.AccelerationRatio;
+				transition.StoryboardTiming.DecelerationRatio =
+					sourceTransition.StoryboardTiming.DecelerationRatio;
+				transition.GeneratedEasing = static_cast<DeclarativeEasingKind>(
+					sourceTransition.GeneratedEasing);
+				transition.GeneratedEasingParameters = {
+					sourceTransition.GeneratedEasingParameters.Primary,
+					sourceTransition.GeneratedEasingParameters.Secondary };
 				transition.GeneratedEasingMode =
 					sourceTransition.GeneratedEasingMode
 						== DesignerEasingMode::EaseIn
@@ -1936,6 +2041,19 @@ namespace
 							+ L" -> " + sourceTransition.ToState,
 						animation)) return false;
 					transition.Animations.push_back(std::move(animation));
+				}
+				transition.TimelineGroups.reserve(
+					sourceTransition.TimelineGroups.size());
+				for (const auto& sourceTimelineGroup :
+					sourceTransition.TimelineGroups)
+				{
+					DeclarativeTimelineGroupDefinition timelineGroup;
+					if (!materializeTimelineGroup(sourceTimelineGroup,
+						L"VisualTransition " + sourceTransition.FromState
+							+ L" -> " + sourceTransition.ToState,
+						timelineGroup)) return false;
+					transition.TimelineGroups.push_back(
+						std::move(timelineGroup));
 				}
 				group.Transitions.push_back(std::move(transition));
 			}

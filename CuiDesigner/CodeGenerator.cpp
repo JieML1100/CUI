@@ -568,7 +568,10 @@ namespace
 			output.ExpectedObjectKind = CompiledTransformKindExpression(
 				leaf.OwnerType);
 			output.Member = CompiledTransformMemberExpression(leaf.Name);
-			if (grouped)
+			if (direct)
+				output.Flags =
+					"CompiledStoryboardObjectPathFlags::DirectTransform";
+			else
 				output.Index0 = checkedPathIndex(path.Segments[2].Index,
 					"Storyboard Transform operation index");
 			break;
@@ -635,18 +638,25 @@ namespace
 				"CompiledStoryboardObjectPathKind::GeometryTransform";
 			size_t cursor = 1;
 			appendGeometryChildren(cursor);
-			if (cursor + 4 != path.Segments.size()
-				|| path.Segments[cursor].Name != L"Transform"
-				|| path.Segments[cursor + 1].Kind != SegmentKind::Property
-				|| DesignerModel::StoryboardPathLocalType(
-					path.Segments[cursor + 1].OwnerType) != L"TransformGroup"
-				|| path.Segments[cursor + 1].Name != L"Children"
-				|| path.Segments[cursor + 2].Kind != SegmentKind::Index)
+			const bool direct = cursor + 2 == path.Segments.size()
+				&& path.Segments[cursor + 1].Kind == SegmentKind::Property;
+			const bool grouped = cursor + 4 == path.Segments.size()
+				&& path.Segments[cursor + 1].Kind == SegmentKind::Property
+				&& DesignerModel::StoryboardPathLocalType(
+					path.Segments[cursor + 1].OwnerType) == L"TransformGroup"
+				&& path.Segments[cursor + 1].Name == L"Children"
+				&& path.Segments[cursor + 2].Kind == SegmentKind::Index;
+			if ((!direct && !grouped)
+				|| path.Segments[cursor].Name != L"Transform")
 				throw std::invalid_argument(
 					"Compiled GeometryTransform path has an invalid shape");
-			output.Index0 = checkedPathIndex(path.Segments[cursor + 2].Index,
-				"Storyboard Geometry Transform operation index");
-			const auto& leaf = path.Segments[cursor + 3];
+			if (direct)
+				output.Flags =
+					"CompiledStoryboardObjectPathFlags::DirectTransform";
+			else
+				output.Index0 = checkedPathIndex(path.Segments[cursor + 2].Index,
+					"Storyboard Geometry Transform operation index");
+			const auto& leaf = path.Segments[direct ? cursor + 1 : cursor + 3];
 			output.ExpectedAuxiliaryKind = CompiledTransformKindExpression(
 				leaf.OwnerType);
 			output.Member = CompiledTransformMemberExpression(leaf.Name);
@@ -685,26 +695,39 @@ namespace
 		{
 			output.Kind =
 				"CompiledStoryboardObjectPathKind::BrushTransform";
-			if (path.Segments.size() != 5
+			const bool direct = path.Segments.size() == 3
+				&& path.Segments[2].Kind == SegmentKind::Property;
+			const bool grouped = path.Segments.size() == 5
+				&& path.Segments[2].Kind == SegmentKind::Property
+				&& DesignerModel::StoryboardPathLocalType(
+					path.Segments[2].OwnerType) == L"TransformGroup"
+				&& path.Segments[2].Name == L"Children"
+				&& path.Segments[3].Kind == SegmentKind::Index;
+			if ((!direct && !grouped)
 				|| path.Segments[1].Kind != SegmentKind::Property
 				|| (path.Segments[1].Name != L"Transform"
-					&& path.Segments[1].Name != L"RelativeTransform")
-				|| path.Segments[2].Kind != SegmentKind::Property
-				|| DesignerModel::StoryboardPathLocalType(
-					path.Segments[2].OwnerType) != L"TransformGroup"
-				|| path.Segments[2].Name != L"Children"
-				|| path.Segments[3].Kind != SegmentKind::Index)
+					&& path.Segments[1].Name != L"RelativeTransform"))
 				throw std::invalid_argument(
 					"Compiled BrushTransform path has an invalid shape");
 			output.ExpectedObjectKind = CompiledBrushKindExpression(
 				path.Segments[1].OwnerType);
-			output.Index0 = checkedPathIndex(path.Segments[3].Index,
-				"Storyboard Brush Transform operation index");
-			const auto& leaf = path.Segments[4];
+			if (grouped)
+				output.Index0 = checkedPathIndex(path.Segments[3].Index,
+					"Storyboard Brush Transform operation index");
+			const auto& leaf = path.Segments[direct ? 2 : 4];
 			output.ExpectedAuxiliaryKind = CompiledTransformKindExpression(
 				leaf.OwnerType);
 			output.Member = CompiledTransformMemberExpression(leaf.Name);
-			if (path.Segments[1].Name == L"RelativeTransform")
+			const bool relative =
+				path.Segments[1].Name == L"RelativeTransform";
+			if (direct && relative)
+				output.Flags =
+					"CompiledStoryboardObjectPathFlags::DirectTransform | "
+					"CompiledStoryboardObjectPathFlags::RelativeTransform";
+			else if (direct)
+				output.Flags =
+					"CompiledStoryboardObjectPathFlags::DirectTransform";
+			else if (relative)
 				output.Flags =
 					"CompiledStoryboardObjectPathFlags::RelativeTransform";
 			break;
@@ -769,6 +792,12 @@ namespace
 			return "DeclarativeAnimationKind::Matrix";
 		case DeclarativeAnimationKind::Object:
 			return "DeclarativeAnimationKind::Object";
+		case DeclarativeAnimationKind::Int32:
+			return "DeclarativeAnimationKind::Int32";
+		case DeclarativeAnimationKind::Int64:
+			return "DeclarativeAnimationKind::Int64";
+		case DeclarativeAnimationKind::Single:
+			return "DeclarativeAnimationKind::Single";
 		case DeclarativeAnimationKind::Double:
 		default:
 			return "DeclarativeAnimationKind::Double";
@@ -786,6 +815,22 @@ namespace
 			return "DeclarativeEasingKind::Cubic";
 		case DeclarativeEasingKind::Sine:
 			return "DeclarativeEasingKind::Sine";
+		case DeclarativeEasingKind::Back:
+			return "DeclarativeEasingKind::Back";
+		case DeclarativeEasingKind::Bounce:
+			return "DeclarativeEasingKind::Bounce";
+		case DeclarativeEasingKind::Circle:
+			return "DeclarativeEasingKind::Circle";
+		case DeclarativeEasingKind::Elastic:
+			return "DeclarativeEasingKind::Elastic";
+		case DeclarativeEasingKind::Exponential:
+			return "DeclarativeEasingKind::Exponential";
+		case DeclarativeEasingKind::Power:
+			return "DeclarativeEasingKind::Power";
+		case DeclarativeEasingKind::Quartic:
+			return "DeclarativeEasingKind::Quartic";
+		case DeclarativeEasingKind::Quintic:
+			return "DeclarativeEasingKind::Quintic";
 		case DeclarativeEasingKind::Linear:
 		default:
 			return "DeclarativeEasingKind::Linear";
@@ -858,6 +903,14 @@ namespace
 			return "DeclarativeStoryboardActionKind::Resume";
 		case DeclarativeStoryboardActionKind::Stop:
 			return "DeclarativeStoryboardActionKind::Stop";
+		case DeclarativeStoryboardActionKind::Remove:
+			return "DeclarativeStoryboardActionKind::Remove";
+		case DeclarativeStoryboardActionKind::Seek:
+			return "DeclarativeStoryboardActionKind::Seek";
+		case DeclarativeStoryboardActionKind::SetSpeedRatio:
+			return "DeclarativeStoryboardActionKind::SetSpeedRatio";
+		case DeclarativeStoryboardActionKind::SkipToFill:
+			return "DeclarativeStoryboardActionKind::SkipToFill";
 		case DeclarativeStoryboardActionKind::Begin:
 		default:
 			return "DeclarativeStoryboardActionKind::Begin";
@@ -902,8 +955,16 @@ namespace
 		std::unordered_map<std::wstring, size_t> ObjectPathIndexes;
 		std::map<std::uint64_t, std::wstring> ObjectPathIdentities;
 		std::vector<std::string> KeyFrames;
+		std::vector<std::string> PathSegments;
 		std::vector<std::string> Animations;
-		std::vector<GeneratedCompiledRange> Storyboards;
+		std::vector<std::string> TimelineGroups;
+		struct StoryboardRanges final
+		{
+			GeneratedCompiledRange Animations;
+			GeneratedCompiledRange TimelineGroups;
+		};
+		std::vector<StoryboardRanges> Storyboards;
+		std::vector<DeclarativeStoryboardTimingDefinition> StoryboardTimings;
 		std::vector<std::string> Actions;
 
 		size_t ResolveTarget(const std::wstring& targetName)
@@ -1022,8 +1083,26 @@ namespace
 					+ FloatExpression(frame.KeySplineX1) + ", "
 					+ FloatExpression(frame.KeySplineY1) + ", "
 					+ FloatExpression(frame.KeySplineX2) + ", "
-					+ FloatExpression(frame.KeySplineY2) + " }");
+					+ FloatExpression(frame.KeySplineY2) + ", "
+					+ std::to_string(frame.KeyTimeSubMillisecondTicks) + "u, { "
+					+ DoubleExpression(frame.EasingParameters.Primary) + ", "
+					+ DoubleExpression(frame.EasingParameters.Secondary) + " } }");
 			}
+			const GeneratedCompiledRange pathSegments{
+				PathSegments.size(), animation.PathSegments.size() };
+			for (const auto& segment : animation.PathSegments)
+				PathSegments.push_back("{ "
+					+ std::string(segment.Kind == DeclarativePathSegmentKind::Move
+						? "DeclarativePathSegmentKind::Move"
+						: segment.Kind == DeclarativePathSegmentKind::CubicBezier
+							? "DeclarativePathSegmentKind::CubicBezier"
+							: "DeclarativePathSegmentKind::Line") + ", { "
+					+ FloatExpression(segment.Point1.x) + ", "
+					+ FloatExpression(segment.Point1.y) + " }, { "
+					+ FloatExpression(segment.Point2.x) + ", "
+					+ FloatExpression(segment.Point2.y) + " }, { "
+					+ FloatExpression(segment.Point3.x) + ", "
+					+ FloatExpression(segment.Point3.y) + " } }");
 			const size_t index = Animations.size();
 			(void)CheckedCompiledInteractionIndex(index,
 				"Compiled interaction animation index");
@@ -1042,6 +1121,18 @@ namespace
 				+ GeneratedCompiledRangeExpression(keyFrames) + ", "
 				+ (animation.IsAdditive ? "true" : "false") + ", "
 				+ (animation.IsCumulative ? "true" : "false") + ", "
+				+ "{ " + (animation.Path.Enabled ? "true" : "false") + ", { "
+				+ FloatExpression(animation.Path.Start.x) + ", "
+				+ FloatExpression(animation.Path.Start.y) + " }, "
+				+ (animation.Path.Source == DeclarativePathAnimationSource::Y
+					? "DeclarativePathAnimationSource::Y"
+					: animation.Path.Source == DeclarativePathAnimationSource::Angle
+						? "DeclarativePathAnimationSource::Angle"
+						: "DeclarativePathAnimationSource::X") + ", "
+				+ (animation.Path.DoesRotateWithTangent ? "true" : "false") + ", "
+				+ (animation.Path.IsOffsetCumulative ? "true" : "false") + ", "
+				+ (animation.Path.IsAngleCumulative ? "true" : "false") + " }, "
+				+ GeneratedCompiledRangeExpression(pathSegments) + ", "
 				+ std::to_string(animation.BeginTimeMilliseconds) + "ULL, "
 				+ std::to_string(animation.DurationMilliseconds) + "ULL, "
 				+ GeneratedRepeatBehaviorExpression(animation.RepeatBehavior) + ", "
@@ -1053,7 +1144,9 @@ namespace
 				+ DoubleExpression(animation.AccelerationRatio) + ", "
 				+ DoubleExpression(animation.DecelerationRatio) + ", "
 				+ GeneratedEasingExpression(animation.Easing) + ", "
-				+ GeneratedEasingModeExpression(animation.EasingMode) + " }");
+				+ GeneratedEasingModeExpression(animation.EasingMode) + ", { "
+				+ DoubleExpression(animation.EasingParameters.Primary) + ", "
+				+ DoubleExpression(animation.EasingParameters.Secondary) + " } }");
 			return index;
 		}
 
@@ -1064,6 +1157,42 @@ namespace
 				Animations.size(), animations.size() };
 			for (const auto& animation : animations)
 				(void)AppendAnimation(animation);
+			return range;
+		}
+
+		std::string TimingExpression(
+			const DeclarativeStoryboardTimingDefinition& timing) const
+		{
+			return "{ "
+				+ std::to_string(timing.BeginTimeMilliseconds) + "ULL, "
+				+ (timing.DurationAutomatic ? "true" : "false") + ", "
+				+ std::to_string(timing.DurationMilliseconds) + "ULL, "
+				+ GeneratedRepeatBehaviorExpression(timing.RepeatBehavior) + ", "
+				+ DoubleExpression(timing.RepeatCount) + ", "
+				+ std::to_string(timing.RepeatDurationMilliseconds) + "ULL, "
+				+ (timing.AutoReverse ? "true" : "false") + ", "
+				+ GeneratedFillBehaviorExpression(timing.FillBehavior) + ", "
+				+ DoubleExpression(timing.SpeedRatio) + ", "
+				+ DoubleExpression(timing.AccelerationRatio) + ", "
+				+ DoubleExpression(timing.DecelerationRatio) + " }";
+		}
+
+		GeneratedCompiledRange AppendTimelineGroups(
+			const std::vector<DeclarativeTimelineGroupDefinition>& groups)
+		{
+			const GeneratedCompiledRange range{
+				TimelineGroups.size(), groups.size() };
+			TimelineGroups.resize(TimelineGroups.size() + groups.size());
+			for (size_t index = 0; index < groups.size(); ++index)
+			{
+				const auto& group = groups[index];
+				const auto animations = AppendAnimations(group.Animations);
+				const auto children = AppendTimelineGroups(group.Children);
+				TimelineGroups[range.Offset + index] = "{ "
+					+ GeneratedCompiledRangeExpression(animations) + ", "
+					+ GeneratedCompiledRangeExpression(children) + ", "
+					+ TimingExpression(group.Timing) + " }";
+			}
 			return range;
 		}
 
@@ -1083,6 +1212,7 @@ namespace
 					(void)CheckedCompiledInteractionIndex(storyboardIndex,
 						"Compiled interaction storyboard index");
 					Storyboards.push_back({});
+					StoryboardTimings.push_back(action.StoryboardTiming);
 					scope.BeginIndexes.emplace(&action, storyboardIndex);
 					if (!action.StoryboardName.empty()
 						&& !scope.NamedBeginIndexes.emplace(
@@ -1105,15 +1235,21 @@ namespace
 				if (action.Kind == DeclarativeStoryboardActionKind::Begin)
 				{
 					const auto found = scope.BeginIndexes.find(&action);
-					if (found == scope.BeginIndexes.end() || action.Animations.empty())
+					if (found == scope.BeginIndexes.end()
+						|| (action.Animations.empty()
+							&& action.TimelineGroups.empty()))
 						throw std::invalid_argument(
 							"Compiled BeginStoryboard has no storyboard slot");
 					storyboardIndex = found->second;
-					Storyboards[storyboardIndex] = AppendAnimations(action.Animations);
+					Storyboards[storyboardIndex].Animations =
+						AppendAnimations(action.Animations);
+					Storyboards[storyboardIndex].TimelineGroups =
+						AppendTimelineGroups(action.TimelineGroups);
 				}
 				else
 				{
-					if (!action.Animations.empty())
+					if (!action.Animations.empty()
+						|| !action.TimelineGroups.empty())
 						throw std::invalid_argument(
 							"Compiled Storyboard control action has animations");
 					if (action.StoryboardName.empty())
@@ -1126,10 +1262,22 @@ namespace
 							"Compiled Storyboard control action has no Begin slot");
 					storyboardIndex = found->second;
 				}
-				Actions.push_back("{ "
+				auto compiledAction = "{ "
 					+ std::string(GeneratedActionKindExpression(action.Kind)) + ", "
 					+ GeneratedCompiledIndexExpression(storyboardIndex,
-						"Compiled interaction storyboard action index") + " }");
+						"Compiled interaction storyboard action index") + ", "
+					+ (action.Handoff == DeclarativeHandoffBehavior::Compose
+						? "DeclarativeHandoffBehavior::Compose"
+						: "DeclarativeHandoffBehavior::SnapshotAndReplace");
+				if (action.Kind == DeclarativeStoryboardActionKind::Seek)
+					compiledAction += ", "
+						+ std::to_string(action.SeekOffsetMilliseconds) + "ull";
+				else if (action.Kind
+					== DeclarativeStoryboardActionKind::SetSpeedRatio)
+					compiledAction += ", 0ull, "
+						+ std::to_string(action.SpeedRatio);
+				compiledAction += " }";
+				Actions.push_back(std::move(compiledAction));
 			}
 			return range;
 		}
@@ -1138,9 +1286,15 @@ namespace
 		{
 			std::vector<std::string> elements;
 			elements.reserve(Storyboards.size());
-			for (const auto& range : Storyboards)
+			for (size_t index = 0; index < Storyboards.size(); ++index)
+			{
+				const auto& ranges = Storyboards[index];
+				const auto& timing = StoryboardTimings[index];
 				elements.push_back("{ "
-					+ GeneratedCompiledRangeExpression(range) + " }");
+					+ GeneratedCompiledRangeExpression(ranges.Animations) + ", "
+					+ GeneratedCompiledRangeExpression(ranges.TimelineGroups) + ", "
+					+ TimingExpression(timing) + " }");
+			}
 			return elements;
 		}
 	};
@@ -1660,6 +1814,7 @@ CodeGenerator::GetKnownProperties()
 		{ L"BorderBrush",
 			{ "SetBorderBrush", false, {}, {}, false,
 				"cui::drawing::Brush" } },
+		{ L"Opacity", { "SetOpacity" } },
 		{ L"ClipToBounds", { "SetClipToBounds" } },
 		{ L"Clip",
 			{ "SetClip", false, {}, {}, false,
@@ -4403,6 +4558,11 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 			<< (parsed.MappingMode == cui::drawing::BrushMappingMode::Absolute
 				? "cui::drawing::BrushMappingMode::Absolute"
 				: "cui::drawing::BrushMappingMode::RelativeToBoundingBox")
+			<< "; value.ColorInterpolationMode = "
+			<< (parsed.ColorInterpolationMode
+					== cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation
+				? "cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation"
+				: "cui::drawing::GradientColorInterpolationMode::SRgbLinearInterpolation")
 			<< "; value.Opacity = " << FloatLiteral(parsed.Opacity) << "; ";
 		if (parsed.Kind == cui::drawing::BrushKind::Solid)
 			expression << "value.Color = " << ColorToString(parsed.Color) << "; ";
@@ -4606,6 +4766,11 @@ std::string CodeGenerator::GenerateBindingValueExpression(
 					== cui::drawing::BrushMappingMode::Absolute
 				? "cui::drawing::BrushMappingMode::Absolute"
 				: "cui::drawing::BrushMappingMode::RelativeToBoundingBox")
+			<< "; value.ColorInterpolationMode = "
+			<< (brush.ColorInterpolationMode
+					== cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation
+				? "cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation"
+				: "cui::drawing::GradientColorInterpolationMode::SRgbLinearInterpolation")
 			<< "; value.Opacity = " << FloatLiteral(brush.Opacity) << "; ";
 		if (brush.Kind == cui::drawing::BrushKind::Solid)
 			expression << "value.Color = "
@@ -4745,6 +4910,12 @@ std::string CodeGenerator::GenerateDeclarativeAnimationCode(
 			return "DeclarativeAnimationKind::Matrix";
 		case DeclarativeAnimationKind::Object:
 			return "DeclarativeAnimationKind::Object";
+		case DeclarativeAnimationKind::Int32:
+			return "DeclarativeAnimationKind::Int32";
+		case DeclarativeAnimationKind::Int64:
+			return "DeclarativeAnimationKind::Int64";
+		case DeclarativeAnimationKind::Single:
+			return "DeclarativeAnimationKind::Single";
 		case DeclarativeAnimationKind::Double:
 		default:
 			return "DeclarativeAnimationKind::Double";
@@ -4760,6 +4931,22 @@ std::string CodeGenerator::GenerateDeclarativeAnimationCode(
 			return "DeclarativeEasingKind::Cubic";
 		case DeclarativeEasingKind::Sine:
 			return "DeclarativeEasingKind::Sine";
+		case DeclarativeEasingKind::Back:
+			return "DeclarativeEasingKind::Back";
+		case DeclarativeEasingKind::Bounce:
+			return "DeclarativeEasingKind::Bounce";
+		case DeclarativeEasingKind::Circle:
+			return "DeclarativeEasingKind::Circle";
+		case DeclarativeEasingKind::Elastic:
+			return "DeclarativeEasingKind::Elastic";
+		case DeclarativeEasingKind::Exponential:
+			return "DeclarativeEasingKind::Exponential";
+		case DeclarativeEasingKind::Power:
+			return "DeclarativeEasingKind::Power";
+		case DeclarativeEasingKind::Quartic:
+			return "DeclarativeEasingKind::Quartic";
+		case DeclarativeEasingKind::Quintic:
+			return "DeclarativeEasingKind::Quintic";
 		case DeclarativeEasingKind::Linear:
 		default:
 			return "DeclarativeEasingKind::Linear";
@@ -4816,6 +5003,32 @@ std::string CodeGenerator::GenerateDeclarativeAnimationCode(
 		<< (animation.IsAdditive ? "true" : "false") << ";\n";
 	code << body << "animation.IsCumulative = "
 		<< (animation.IsCumulative ? "true" : "false") << ";\n";
+	code << body << "animation.Path = { "
+		<< (animation.Path.Enabled ? "true" : "false") << ", { "
+		<< FloatLiteral(animation.Path.Start.x) << ", "
+		<< FloatLiteral(animation.Path.Start.y) << " }, "
+		<< (animation.Path.Source == DeclarativePathAnimationSource::Y
+			? "DeclarativePathAnimationSource::Y"
+			: animation.Path.Source == DeclarativePathAnimationSource::Angle
+				? "DeclarativePathAnimationSource::Angle"
+				: "DeclarativePathAnimationSource::X") << ", "
+		<< (animation.Path.DoesRotateWithTangent ? "true" : "false") << ", "
+		<< (animation.Path.IsOffsetCumulative ? "true" : "false") << ", "
+		<< (animation.Path.IsAngleCumulative ? "true" : "false")
+		<< " };\n";
+	for (const auto& segment : animation.PathSegments)
+		code << body << "animation.PathSegments.push_back({ "
+			<< (segment.Kind == DeclarativePathSegmentKind::Move
+				? "DeclarativePathSegmentKind::Move"
+				: segment.Kind == DeclarativePathSegmentKind::CubicBezier
+				? "DeclarativePathSegmentKind::CubicBezier"
+				: "DeclarativePathSegmentKind::Line") << ", { "
+			<< FloatLiteral(segment.Point1.x) << ", "
+			<< FloatLiteral(segment.Point1.y) << " }, { "
+			<< FloatLiteral(segment.Point2.x) << ", "
+			<< FloatLiteral(segment.Point2.y) << " }, { "
+			<< FloatLiteral(segment.Point3.x) << ", "
+			<< FloatLiteral(segment.Point3.y) << " } });\n";
 	code << body << "animation.BeginTimeMilliseconds = "
 		<< animation.BeginTimeMilliseconds << "ULL;\n";
 	code << body << "animation.DurationMilliseconds = "
@@ -4848,6 +5061,9 @@ std::string CodeGenerator::GenerateDeclarativeAnimationCode(
 		<< easing(animation.Easing) << ";\n";
 	code << body << "animation.EasingMode = "
 		<< easingMode(animation.EasingMode) << ";\n";
+	code << body << "animation.EasingParameters = { "
+		<< DoubleLiteral(animation.EasingParameters.Primary) << ", "
+		<< DoubleLiteral(animation.EasingParameters.Secondary) << " };\n";
 	for (const auto& keyFrame : animation.KeyFrames)
 	{
 		code << body << "{\n";
@@ -4863,12 +5079,17 @@ std::string CodeGenerator::GenerateDeclarativeAnimationCode(
 			<< ";\n";
 		code << body << "\tkeyFrame.KeyTimeMilliseconds = "
 			<< keyFrame.KeyTimeMilliseconds << "ULL;\n";
+		code << body << "\tkeyFrame.KeyTimeSubMillisecondTicks = "
+			<< keyFrame.KeyTimeSubMillisecondTicks << "u;\n";
 		code << body << "\tkeyFrame.Value = "
 			<< GenerateBindingValueExpression(keyFrame.Value) << ";\n";
 		code << body << "\tkeyFrame.Easing = "
 			<< easing(keyFrame.Easing) << ";\n";
 		code << body << "\tkeyFrame.EasingMode = "
 			<< easingMode(keyFrame.EasingMode) << ";\n";
+		code << body << "\tkeyFrame.EasingParameters = { "
+			<< DoubleLiteral(keyFrame.EasingParameters.Primary) << ", "
+			<< DoubleLiteral(keyFrame.EasingParameters.Secondary) << " };\n";
 		code << body << "\tkeyFrame.KeySplineX1 = "
 			<< FloatLiteral(keyFrame.KeySplineX1) << ";\n";
 		code << body << "\tkeyFrame.KeySplineY1 = "
@@ -4897,6 +5118,53 @@ std::string CodeGenerator::GenerateDeclarativeStoryboardActionsCode(
 	const std::string base(indent, '\t');
 	const std::string body(indent + 1, '\t');
 	std::ostringstream code;
+	std::function<std::string(const DeclarativeTimelineGroupDefinition&,
+		const std::string&, int)> generateTimelineGroup;
+	generateTimelineGroup = [&](const DeclarativeTimelineGroupDefinition& group,
+		const std::string& targetCollection, int groupIndent)
+	{
+		const std::string groupBase(groupIndent, '\t');
+		const std::string groupBody(groupIndent + 1, '\t');
+		std::ostringstream generated;
+		generated << groupBase << "{\n";
+		generated << groupBody
+			<< "DeclarativeTimelineGroupDefinition timelineGroup;\n";
+		generated << groupBody << "timelineGroup.Timing.BeginTimeMilliseconds = "
+			<< group.Timing.BeginTimeMilliseconds << "ULL;\n";
+		generated << groupBody << "timelineGroup.Timing.DurationAutomatic = "
+			<< (group.Timing.DurationAutomatic ? "true" : "false") << ";\n";
+		generated << groupBody << "timelineGroup.Timing.DurationMilliseconds = "
+			<< group.Timing.DurationMilliseconds << "ULL;\n";
+		generated << groupBody << "timelineGroup.Timing.RepeatBehavior = "
+			<< GeneratedRepeatBehaviorExpression(group.Timing.RepeatBehavior)
+			<< ";\n";
+		generated << groupBody << "timelineGroup.Timing.RepeatCount = "
+			<< DoubleLiteral(group.Timing.RepeatCount) << ";\n";
+		generated << groupBody
+			<< "timelineGroup.Timing.RepeatDurationMilliseconds = "
+			<< group.Timing.RepeatDurationMilliseconds << "ULL;\n";
+		generated << groupBody << "timelineGroup.Timing.AutoReverse = "
+			<< (group.Timing.AutoReverse ? "true" : "false") << ";\n";
+		generated << groupBody << "timelineGroup.Timing.FillBehavior = "
+			<< GeneratedFillBehaviorExpression(group.Timing.FillBehavior) << ";\n";
+		generated << groupBody << "timelineGroup.Timing.SpeedRatio = "
+			<< DoubleLiteral(group.Timing.SpeedRatio) << ";\n";
+		generated << groupBody << "timelineGroup.Timing.AccelerationRatio = "
+			<< DoubleLiteral(group.Timing.AccelerationRatio) << ";\n";
+		generated << groupBody << "timelineGroup.Timing.DecelerationRatio = "
+			<< DoubleLiteral(group.Timing.DecelerationRatio) << ";\n";
+		for (const auto& animation : group.Animations)
+			generated << GenerateDeclarativeAnimationCode(animation,
+				"timelineGroup.Animations", resolver, targetResolver,
+				groupIndent + 1);
+		for (const auto& child : group.Children)
+			generated << generateTimelineGroup(child,
+				"timelineGroup.Children", groupIndent + 1);
+		generated << groupBody << targetCollection
+			<< ".push_back(std::move(timelineGroup));\n";
+		generated << groupBase << "}\n";
+		return generated.str();
+	};
 	for (const auto& action : actions)
 	{
 		code << base << "{\n";
@@ -4907,16 +5175,65 @@ std::string CodeGenerator::GenerateDeclarativeStoryboardActionsCode(
 				? "DeclarativeStoryboardActionKind::Begin"
 				: action.Kind == DeclarativeStoryboardActionKind::Pause
 					? "DeclarativeStoryboardActionKind::Pause"
-					: action.Kind == DeclarativeStoryboardActionKind::Resume
-						? "DeclarativeStoryboardActionKind::Resume"
-						: "DeclarativeStoryboardActionKind::Stop")
+				: action.Kind == DeclarativeStoryboardActionKind::Resume
+					? "DeclarativeStoryboardActionKind::Resume"
+				: action.Kind == DeclarativeStoryboardActionKind::Stop
+					? "DeclarativeStoryboardActionKind::Stop"
+				: action.Kind == DeclarativeStoryboardActionKind::Remove
+					? "DeclarativeStoryboardActionKind::Remove"
+				: action.Kind == DeclarativeStoryboardActionKind::Seek
+					? "DeclarativeStoryboardActionKind::Seek"
+				: action.Kind == DeclarativeStoryboardActionKind::SetSpeedRatio
+					? "DeclarativeStoryboardActionKind::SetSpeedRatio"
+					: "DeclarativeStoryboardActionKind::SkipToFill")
 			<< ";\n";
 		code << body << "action.StoryboardName = L\""
 			<< EscapeWStringLiteral(action.StoryboardName) << "\";\n";
+		code << body << "action.Handoff = "
+			<< (action.Handoff == DeclarativeHandoffBehavior::Compose
+				? "DeclarativeHandoffBehavior::Compose"
+				: "DeclarativeHandoffBehavior::SnapshotAndReplace")
+			<< ";\n";
+		code << body << "action.StoryboardTiming.BeginTimeMilliseconds = "
+			<< action.StoryboardTiming.BeginTimeMilliseconds << "ULL;\n";
+		code << body << "action.StoryboardTiming.DurationAutomatic = "
+			<< (action.StoryboardTiming.DurationAutomatic ? "true" : "false")
+			<< ";\n";
+		code << body << "action.StoryboardTiming.DurationMilliseconds = "
+			<< action.StoryboardTiming.DurationMilliseconds << "ULL;\n";
+		code << body << "action.StoryboardTiming.RepeatBehavior = "
+			<< GeneratedRepeatBehaviorExpression(
+				action.StoryboardTiming.RepeatBehavior) << ";\n";
+		code << body << "action.StoryboardTiming.RepeatCount = "
+			<< DoubleLiteral(action.StoryboardTiming.RepeatCount) << ";\n";
+		code << body << "action.StoryboardTiming.RepeatDurationMilliseconds = "
+			<< action.StoryboardTiming.RepeatDurationMilliseconds << "ULL;\n";
+		code << body << "action.StoryboardTiming.AutoReverse = "
+			<< (action.StoryboardTiming.AutoReverse ? "true" : "false") << ";\n";
+		code << body << "action.StoryboardTiming.FillBehavior = "
+			<< GeneratedFillBehaviorExpression(
+				action.StoryboardTiming.FillBehavior) << ";\n";
+		code << body << "action.StoryboardTiming.SpeedRatio = "
+			<< DoubleLiteral(action.StoryboardTiming.SpeedRatio) << ";\n";
+		code << body << "action.StoryboardTiming.AccelerationRatio = "
+			<< DoubleLiteral(action.StoryboardTiming.AccelerationRatio) << ";\n";
+		code << body << "action.StoryboardTiming.DecelerationRatio = "
+			<< DoubleLiteral(action.StoryboardTiming.DecelerationRatio) << ";\n";
+		if (action.Kind == DeclarativeStoryboardActionKind::Seek)
+			code << body << "action.SeekOffsetMilliseconds = "
+				<< action.SeekOffsetMilliseconds << "ull;\n";
+		else if (action.Kind
+			== DeclarativeStoryboardActionKind::SetSpeedRatio)
+			code << body << "action.SpeedRatio = "
+				<< std::setprecision(std::numeric_limits<double>::max_digits10)
+				<< action.SpeedRatio << ";\n";
 		for (const auto& animation : action.Animations)
 			code << GenerateDeclarativeAnimationCode(
 				animation, "action.Animations", resolver,
 				targetResolver, indent + 1);
+		for (const auto& timelineGroup : action.TimelineGroups)
+			code << generateTimelineGroup(
+				timelineGroup, "action.TimelineGroups", indent + 1);
 		code << body << collectionExpression
 			<< ".push_back(std::move(action));\n";
 		code << base << "}\n";
@@ -5073,13 +5390,37 @@ std::string CodeGenerator::GenerateDeclarativeInteractionsCode(
 			}
 			const auto animations = storyboardTables.AppendAnimations(
 				sourceState.Animations);
+			const auto timelineGroups = storyboardTables.AppendTimelineGroups(
+				sourceState.TimelineGroups);
 			stateElements.push_back("{ VisualStateToken{ "
 				+ std::to_string(GeneratedInteractionNameTokenValue(
 					sourceState.Name)) + "ULL }, "
 				+ rangeExpression(conditions) + ", "
 				+ rangeExpression(events) + ", "
 				+ rangeExpression(setters) + ", "
-				+ rangeExpression(animations) + " }");
+				+ rangeExpression(animations) + ", "
+				+ rangeExpression(timelineGroups) + ", { "
+				+ std::to_string(sourceState.StoryboardTiming.BeginTimeMilliseconds)
+				+ "ULL, "
+				+ (sourceState.StoryboardTiming.DurationAutomatic ? "true" : "false")
+				+ ", " + std::to_string(
+					sourceState.StoryboardTiming.DurationMilliseconds) + "ULL, "
+				+ GeneratedRepeatBehaviorExpression(
+					sourceState.StoryboardTiming.RepeatBehavior) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceState.StoryboardTiming.RepeatCount) + ", "
+				+ std::to_string(
+					sourceState.StoryboardTiming.RepeatDurationMilliseconds) + "ULL, "
+				+ (sourceState.StoryboardTiming.AutoReverse ? "true" : "false") + ", "
+				+ GeneratedFillBehaviorExpression(
+					sourceState.StoryboardTiming.FillBehavior) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceState.StoryboardTiming.SpeedRatio) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceState.StoryboardTiming.AccelerationRatio) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceState.StoryboardTiming.DecelerationRatio)
+				+ " } }");
 		}
 		if (!fallbackState)
 			throw std::invalid_argument(
@@ -5109,6 +5450,8 @@ std::string CodeGenerator::GenerateDeclarativeInteractionsCode(
 					"Compiled VisualTransition selector is duplicated");
 			const auto animations = storyboardTables.AppendAnimations(
 				sourceTransition.Animations);
+			const auto timelineGroups = storyboardTables.AppendTimelineGroups(
+				sourceTransition.TimelineGroups);
 			transitionElements.push_back("{ "
 				+ optionalIndexExpression(from,
 					"Compiled transition From state") + ", "
@@ -5119,8 +5462,34 @@ std::string CodeGenerator::GenerateDeclarativeInteractionsCode(
 				+ GeneratedEasingExpression(
 					sourceTransition.GeneratedEasing) + ", "
 				+ GeneratedEasingModeExpression(
-					sourceTransition.GeneratedEasingMode) + ", "
-				+ rangeExpression(animations) + " }");
+					sourceTransition.GeneratedEasingMode) + ", { "
+				+ storyboardTables.DoubleExpression(
+					sourceTransition.GeneratedEasingParameters.Primary) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceTransition.GeneratedEasingParameters.Secondary) + " }, "
+				+ rangeExpression(animations) + ", "
+				+ rangeExpression(timelineGroups) + ", { "
+				+ std::to_string(
+					sourceTransition.StoryboardTiming.BeginTimeMilliseconds) + "ULL, "
+				+ (sourceTransition.StoryboardTiming.DurationAutomatic
+					? "true" : "false") + ", "
+				+ std::to_string(
+					sourceTransition.StoryboardTiming.DurationMilliseconds) + "ULL, "
+				+ GeneratedRepeatBehaviorExpression(
+					sourceTransition.StoryboardTiming.RepeatBehavior) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceTransition.StoryboardTiming.RepeatCount) + ", "
+				+ std::to_string(
+					sourceTransition.StoryboardTiming.RepeatDurationMilliseconds) + "ULL, "
+				+ (sourceTransition.StoryboardTiming.AutoReverse ? "true" : "false")
+				+ ", " + GeneratedFillBehaviorExpression(
+					sourceTransition.StoryboardTiming.FillBehavior) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceTransition.StoryboardTiming.SpeedRatio) + ", "
+				+ storyboardTables.DoubleExpression(
+					sourceTransition.StoryboardTiming.AccelerationRatio)
+				+ ", " + storyboardTables.DoubleExpression(
+					sourceTransition.StoryboardTiming.DecelerationRatio) + " } }");
 		}
 		const EmissionRange conditionOperands{
 			groupConditionOperandElements.size(), groupConditionOperands.size() };
@@ -5226,9 +5595,15 @@ std::string CodeGenerator::GenerateDeclarativeInteractionsCode(
 	const auto keyFramesView = emitStaticPool(
 		"key_frames", "CompiledInteractionKeyFrameOp",
 		storyboardTables.KeyFrames, true);
+	const auto pathSegmentsView = emitStaticPool(
+		"path_segments", "DeclarativePathAnimationSegment",
+		storyboardTables.PathSegments, true);
 	const auto animationsView = emitStaticPool(
 		"animations", "CompiledInteractionAnimationOp",
 		storyboardTables.Animations, true);
+	const auto timelineGroupsView = emitStaticPool(
+		"timeline_groups", "CompiledInteractionTimelineGroupOp",
+		storyboardTables.TimelineGroups, true);
 	const auto stateEventsView = emitStateEvents();
 	const auto statesView = emitStaticPool(
 		"states", "CompiledInteractionStateOp", stateElements, true);
@@ -5262,7 +5637,9 @@ std::string CodeGenerator::GenerateDeclarativeInteractionsCode(
 		{ "Conditions", &conditionsView },
 		{ "Setters", &settersView },
 		{ "KeyFrames", &keyFramesView },
+		{ "PathSegments", &pathSegmentsView },
 		{ "Animations", &animationsView },
+		{ "TimelineGroups", &timelineGroupsView },
 		{ "StateEvents", &stateEventsView },
 		{ "States", &statesView },
 		{ "Transitions", &transitionsView },
@@ -6060,9 +6437,15 @@ std::string CodeGenerator::GenerateStyleSheetCode(
 		const auto keyFramesView = emitStaticPool(
 			"key_frames", "CompiledInteractionKeyFrameOp",
 			styleStoryboardTables.KeyFrames, true);
+		const auto pathSegmentsView = emitStaticPool(
+			"path_segments", "DeclarativePathAnimationSegment",
+			styleStoryboardTables.PathSegments, true);
 		const auto animationsView = emitStaticPool(
 			"animations", "CompiledInteractionAnimationOp",
 			styleStoryboardTables.Animations, true);
+		const auto timelineGroupsView = emitStaticPool(
+			"timeline_groups", "CompiledInteractionTimelineGroupOp",
+			styleStoryboardTables.TimelineGroups, true);
 		const auto storyboardsView = emitStaticPool(
 			"storyboards", "CompiledInteractionStoryboardOp",
 			styleStoryboardElements, true);
@@ -6104,7 +6487,9 @@ std::string CodeGenerator::GenerateStyleSheetCode(
 			{ "ObjectPathChildIndices", &objectPathChildIndicesView },
 			{ "ObjectPaths", &objectPathsView },
 			{ "KeyFrames", &keyFramesView },
+			{ "PathSegments", &pathSegmentsView },
 			{ "Animations", &animationsView },
+			{ "TimelineGroups", &timelineGroupsView },
 			{ "Storyboards", &storyboardsView },
 			{ "Actions", &actionsView },
 			{ "Rules", &rulesView },

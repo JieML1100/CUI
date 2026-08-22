@@ -318,6 +318,9 @@ namespace
 		}
 		else
 		{
+			value["colorInterpolation"] = brush.ColorInterpolationMode
+				== cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation
+				? "scrgb" : "srgb";
 			if (brush.Kind == cui::drawing::BrushKind::LinearGradient)
 			{
 				value["startX"] = brush.StartPoint.x;

@@ -3277,7 +3277,8 @@ void RegisterRichTextBoxDocumentTests(cui::test::Runner& runner)
 		CUI_EXPECT_EQ(decoded->StructureMarkers[0].Path[1].Id,
 			decoded->StructureMarkers[1].Path[1].Id);
 
-		// v7 adds Language and v6 adds FontStretch as optional style-mask fields.
+		// v8 preserves GradientBrush.ColorInterpolationMode, v7 adds Language,
+		// and v6 adds FontStretch as optional style-mask fields.
 		// A payload that does not use either is byte-compatible with v5; v5 appends a direction
 		// table after v4's alignment table.
 		// This plain fixture has empty eight-byte extension counts, so removing
@@ -3311,7 +3312,13 @@ void RegisterRichTextBoxDocumentTests(cui::test::Runner& runner)
 			}
 			writeU32(bytes, 20, checksum);
 		};
-		auto legacyV6 = *plainEncoded;
+		auto legacyV7 = *plainEncoded;
+		rewriteHeader(legacyV7, 7);
+		const auto version7Decoded =
+			cui::richtext::clipboard::Decode(legacyV7);
+		CUI_EXPECT_TRUE(version7Decoded.has_value());
+		CUI_EXPECT_EQ(std::wstring(L"legacy"), version7Decoded->Text);
+		auto legacyV6 = legacyV7;
 		rewriteHeader(legacyV6, 6);
 		const auto version6Decoded =
 			cui::richtext::clipboard::Decode(legacyV6);
@@ -3321,6 +3328,39 @@ void RegisterRichTextBoxDocumentTests(cui::test::Runner& runner)
 		rewriteHeader(languageAsV6, 6);
 		CUI_EXPECT_FALSE(cui::richtext::clipboard::Decode(
 			languageAsV6).has_value());
+
+		RichTextCharacterStyle gradientStyle;
+		cui::drawing::Brush gradient;
+		gradient.Kind = cui::drawing::BrushKind::LinearGradient;
+		gradient.ColorInterpolationMode =
+			cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation;
+		gradient.GradientStops = {
+			{ 0.0f, D2D1::ColorF(D2D1::ColorF::Black) },
+			{ 1.0f, D2D1::ColorF(D2D1::ColorF::White) } };
+		gradientStyle.Foreground = gradient;
+		const auto gradientEncoded = cui::richtext::clipboard::Encode(
+			RichTextDocumentFragment::FromPlainText(L"gradient", gradientStyle));
+		CUI_EXPECT_TRUE(gradientEncoded.has_value());
+		const auto gradientDecoded = gradientEncoded
+			? cui::richtext::clipboard::Decode(*gradientEncoded) : std::nullopt;
+		CUI_EXPECT_TRUE(gradientDecoded.has_value());
+		if (gradientDecoded)
+		{
+			const auto foreground = RichTextDocument(*gradientDecoded)
+				.StyleAt(0).Foreground;
+			CUI_EXPECT_TRUE(foreground.has_value());
+			if (foreground)
+				CUI_EXPECT_EQ(
+					cui::drawing::GradientColorInterpolationMode::ScRgbLinearInterpolation,
+					foreground->ColorInterpolationMode);
+		}
+		if (gradientEncoded)
+		{
+			auto gradientAsV7 = *gradientEncoded;
+			rewriteHeader(gradientAsV7, 7);
+			CUI_EXPECT_FALSE(cui::richtext::clipboard::Decode(
+				gradientAsV7).has_value());
+		}
 
 		auto legacyV5 = legacyV6;
 		rewriteHeader(legacyV5, 5);
@@ -3403,7 +3443,7 @@ void RegisterRichTextBoxDocumentTests(cui::test::Runner& runner)
 
 		auto unknownVersion = *encoded;
 		CUI_EXPECT_TRUE(unknownVersion.size() > 8);
-		unknownVersion[8] = 8;
+		rewriteHeader(unknownVersion, 9);
 		CUI_EXPECT_FALSE(cui::richtext::clipboard::Decode(
 			unknownVersion).has_value());
 
@@ -3898,7 +3938,7 @@ void RegisterRichTextBoxDocumentTests(cui::test::Runner& runner)
 	});
 
 	runner.Add(
-		"RichText clipboard v7 preserves empty Inline and Paragraph topology",
+		"RichText clipboard v8 preserves empty Inline and Paragraph topology",
 		[]
 	{
 		MemoryClipboardBackend clipboardBackend;
@@ -4012,7 +4052,7 @@ void RegisterRichTextBoxDocumentTests(cui::test::Runner& runner)
 	});
 
 	runner.Add(
-		"RichText clipboard v7 preserves effective paragraph formatting across roots",
+		"RichText clipboard v8 preserves effective paragraph formatting across roots",
 		[]
 	{
 		MemoryClipboardBackend clipboardBackend;

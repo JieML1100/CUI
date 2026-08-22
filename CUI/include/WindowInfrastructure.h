@@ -95,6 +95,12 @@ namespace cui::framework
 			return target.GetAccessibleControls();
 		}
 
+		static Control* ResolveAccessibleControlForTesting(
+			const Window& target, Control* candidate) noexcept
+		{
+			return target.ResolveAccessibleControl(candidate);
+		}
+
 		static bool TryGetAccessibilityVirtualFocusedNodeForTesting(
 			Window& target, Control*& owner, uint32_t& virtualId)
 		{
@@ -171,6 +177,12 @@ namespace cui::framework
 		static bool HasPendingRenderWork(const Window& target) noexcept
 		{
 			return target.HasPendingRenderWork();
+		}
+
+		/** Completes the normal Show-time DPI setup without activating a test HWND. */
+		static void EnsureInitialDpiForTesting(Window& target)
+		{
+			target.EnsureInitialDpiApplied();
 		}
 
 		static UINT PresentationDispatchMessageForTesting() noexcept
@@ -268,6 +280,76 @@ namespace cui::framework
 			return target.GetPresentationDeviceRecoveryCount();
 		}
 
+		static PresentationRenderHost::ResourceSnapshot
+			PresentationResourcesForTesting(const Window& target) noexcept
+		{
+			return target._renderHost
+				? target._renderHost->Resources()
+				: PresentationRenderHost::ResourceSnapshot{};
+		}
+
+		static void FailSceneLayerAllocationAfterForTesting(
+			size_t successfulCreates) noexcept
+		{
+			PresentationRenderHost::
+				FailSceneLayerAllocationAfterForTesting(successfulCreates);
+		}
+
+		static void ClearSceneLayerAllocationFailureForTesting() noexcept
+		{
+			PresentationRenderHost::
+				ClearSceneLayerAllocationFailureForTesting();
+		}
+
+		static void FailNextSceneLayerTopologyBatchCommitForTesting() noexcept
+		{
+			PresentationRenderHost::
+				FailNextSceneLayerTopologyBatchCommitForTesting();
+		}
+
+		static void ClearSceneLayerTopologyBatchCommitFailureForTesting() noexcept
+		{
+			PresentationRenderHost::
+				ClearSceneLayerTopologyBatchCommitFailureForTesting();
+		}
+
+		static void FailNextSceneLayerGroupTopologyStageForTesting() noexcept
+		{
+			PresentationRenderHost::
+				FailNextSceneLayerGroupTopologyStageForTesting();
+		}
+
+		static void ClearSceneLayerGroupTopologyStageFailureForTesting() noexcept
+		{
+			PresentationRenderHost::
+				ClearSceneLayerGroupTopologyStageFailureForTesting();
+		}
+
+		static bool TryGetPresentationSceneLayerPixelDigestForTesting(
+			const Window& target,
+			size_t index,
+			UINT& width,
+			UINT& height,
+			uint64_t& digest,
+			size_t& nonTransparentPixels) noexcept
+		{
+			return target.TryGetPresentationSceneLayerPixelDigestForTesting(
+				index, width, height, digest, nonTransparentPixels);
+		}
+
+		static bool AcquirePresentationSceneLayerPixelReadbackLeaseForTesting(
+			Window& target) noexcept
+		{
+			return target.
+				AcquirePresentationSceneLayerPixelReadbackLeaseForTesting();
+		}
+
+		static void ReleasePresentationSceneLayerPixelReadbackLeaseForTesting(
+			Window& target) noexcept
+		{
+			target.ReleasePresentationSceneLayerPixelReadbackLeaseForTesting();
+		}
+
 		static uint64_t PresentationLastSurfaceFailureSequence(
 			const Window& target) noexcept
 		{
@@ -303,6 +385,66 @@ namespace cui::framework
 			return target.GetPresentationDrawingLayerCount();
 		}
 
+		static size_t PresentationOpacityGroupCount(
+			const Window& target) noexcept
+		{
+			return target.GetPresentationOpacityGroupCount();
+		}
+
+		static size_t PresentationGroupedNativeVisualCount(
+			const Window& target) noexcept
+		{
+			return target.GetPresentationGroupedNativeVisualCount();
+		}
+
+		static int TitleBarHeightPixelsForTesting(
+			const Window& target) noexcept
+		{
+			return target.GetTitleBarHeightPixels();
+		}
+
+		static IDCompositionDevice* CompositionDevice(Window& target)
+		{
+			return target.GetDCompDevice();
+		}
+
+		static bool RegisterCompositionVisual(
+			Window& target,
+			IDCompositionVisual* visual,
+			int layer,
+			int order)
+		{
+			return target.RegisterDCompVisual(visual, layer, order);
+		}
+
+		static void UpdateCompositionVisualOrder(
+			Window& target,
+			IDCompositionVisual* visual,
+			int layer,
+			int order)
+		{
+			target.UpdateDCompVisualOrder(visual, layer, order);
+		}
+
+		static void UnregisterCompositionVisual(
+			Window& target,
+			IDCompositionVisual* visual)
+		{
+			target.UnregisterDCompVisual(visual);
+		}
+
+		static bool CommitComposition(Window& target)
+		{
+			return target.CommitComposition();
+		}
+
+		static bool PresentationRequiresComposition(
+			const Window& target) noexcept
+		{
+			return target._presentationScene
+				&& target._presentationScene->RequiresComposition();
+		}
+
 		static PresentationFrameStatistics PresentationFrame(
 			const Window& target) noexcept
 		{
@@ -325,11 +467,64 @@ namespace cui::framework
 			target.InvalidateAnimatedControls(false);
 		}
 
+		static void TickPresentationAnimationsForTesting(
+			Window& target,
+			unsigned long long nowMilliseconds)
+		{
+			target.InvalidateAnimatedControlsAt(nowMilliseconds, false);
+		}
+
 		/** Test seam for the window-owned native/declarative animation scheduler. */
 		static UINT AnimationTimerIntervalForTesting(
 			const Window& target) noexcept
 		{
 			return target._animIntervalMs;
+		}
+
+		static bool AnimationFrameSchedulerRunningForTesting(
+			const Window& target) noexcept
+		{
+			return target.IsAnimationFrameSchedulerRunningForTesting();
+		}
+
+		static bool AnimationUsesLegacyTimerForTesting(
+			const Window& target) noexcept
+		{
+			return target._animationUsesLegacyTimer;
+		}
+
+		static size_t RegisteredDeclarativeAnimationControlCountForTesting(
+			Window& target)
+		{
+			return target.GetRegisteredDeclarativeAnimationControls().size();
+		}
+
+		static size_t RegisteredNativeAnimationControlCountForTesting(
+			Window& target)
+		{
+			return target.GetRegisteredNativeAnimationControls().size();
+		}
+
+		static size_t ActiveNativeAnimationControlCountForTesting(
+			Window& target)
+		{
+			return target.GetActiveRegisteredNativeAnimationControls().size();
+		}
+
+		static bool AnimationRegistryDegradedForTesting(
+			const Window& target) noexcept
+		{
+			return target._animationRegistryDegraded;
+		}
+
+		static void TickRegisteredDeclarativeAnimationsForTesting(
+			Window& target,
+			unsigned long long nowMilliseconds)
+		{
+			auto controls =
+				target.GetActiveRegisteredDeclarativeAnimationControls();
+			target.AdvanceRegisteredDeclarativeAnimationControls(
+				controls, nowMilliseconds, false);
 		}
 
 		static bool TryGetCloseCaptionRectForTesting(

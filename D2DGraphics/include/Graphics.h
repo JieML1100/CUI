@@ -24,6 +24,8 @@
 
 EXTERN_C Font* DefaultFontObject;
 
+struct ID3D11Texture2D;
+
 class D2DGraphics {
 public:
 	enum class SurfaceKind {
@@ -33,6 +35,7 @@ public:
 		Hwnd,
 		ExternalBitmap,
 		DxgiSwapChain,
+		CompositionSurface,
 		CommandRecorder
 	};
 
@@ -68,7 +71,7 @@ public:
 	 * a partially redrawn back buffer as a complete frame lets stale pixels from
 	 * alternating buffers replace otherwise unchanged retained content.
 	 */
-	void SetPresentDirtyRect(const RECT& logicalDirty);
+	virtual void SetPresentDirtyRect(const RECT& logicalDirty);
 	/**
 	 * Returns true when this swap chain must receive a complete redraw.
 	 *
@@ -76,12 +79,32 @@ public:
 	 * and swap effects without Present1 dirty-region support can never accept a
 	 * partial retained redraw safely.
 	 */
-	bool RequiresFullPresentFrame() const noexcept;
+	virtual bool RequiresFullPresentFrame() const noexcept;
+	virtual ID3D11Texture2D* GetSubmittedTextureForReadback() const noexcept
+	{
+		return nullptr;
+	}
 
 	// 设备/交换链丢失（远程桌面重连、显卡切换、驱动重启等）时，渲染对象可能需要上层重建。
 	bool IsDeviceLost() const { return _deviceLost; }
 	HRESULT GetLastEndDrawHr() const { return _lastEndDrawHr; }
 	HRESULT GetLastPresentHr() const { return _lastPresentHr; }
+	double GetLastEndDrawMicroseconds() const noexcept
+	{
+		return _lastEndDrawMicroseconds;
+	}
+	double GetLastPresentMicroseconds() const noexcept
+	{
+		return _lastPresentMicroseconds;
+	}
+	virtual double GetLastSurfaceSubmitMicroseconds() const noexcept
+	{
+		return 0.0;
+	}
+	UINT GetPresentSyncInterval() const noexcept
+	{
+		return _presentSyncInterval;
+	}
 	bool IsCommandRecording() const noexcept { return _commandRecording; }
 
 	HRESULT EnsureDeviceContext();
@@ -198,8 +221,15 @@ public:
 
 	void PushDrawRect(float left, float top, float width, float height);
 	void PopDrawRect();
+	/** Composites all enclosed drawing as one WPF-style opacity group. */
+	bool PushOpacity(float opacity);
+	void PopOpacity();
 	/** Pushes an arbitrary filled geometry as an additional local clip. */
 	bool PushGeometryClip(ID2D1Geometry* geometry);
+	/** Pushes a rectangle transformed into the current control-local space. */
+	bool PushTransformedRectangleClip(
+		D2D1_RECT_F rect,
+		const D2D1_MATRIX_3X2_F& transform);
 	void PopGeometryClip();
 	bool PushRoundClip(float left, float top, float width, float height, float radius);
 	void PopRoundClip();
@@ -222,6 +252,8 @@ public:
 	ID2D1DeviceContext* GetDeviceContextRaw() const;
 	Microsoft::WRL::ComPtr<ID2D1DeviceContext> GetDeviceContext() const;
 	ID2D1Device* GetDeviceRaw() const { return pD2DDevice.Get(); }
+	/** Internal presentation diagnostics; the returned pointer is non-owning. */
+	IDXGISwapChain* GetSwapChainRaw() const noexcept { return pSwapChain.Get(); }
 
 	/** Records an immutable command list without changing a presentation target. */
 	bool BeginCommandRecording();
@@ -238,8 +270,15 @@ public:
 	ID2D1Bitmap* CreateBitmap(IWICFormatConverter* conv, D2D1_BITMAP_PROPERTIES* props = nullptr);
 	ID2D1Bitmap* CreateBitmap(const std::shared_ptr<BitmapSource>& bitmapSource);
 
-	ID2D1LinearGradientBrush* CreateLinearGradientBrush(D2D1_GRADIENT_STOP* stops, unsigned int stopcount);
-	ID2D1RadialGradientBrush* CreateRadialGradientBrush(D2D1_GRADIENT_STOP* stops, unsigned int stopcount, D2D1_POINT_2F center);
+	ID2D1LinearGradientBrush* CreateLinearGradientBrush(
+		D2D1_GRADIENT_STOP* stops,
+		unsigned int stopcount,
+		D2D1_GAMMA gamma = D2D1_GAMMA_2_2);
+	ID2D1RadialGradientBrush* CreateRadialGradientBrush(
+		D2D1_GRADIENT_STOP* stops,
+		unsigned int stopcount,
+		D2D1_POINT_2F center,
+		D2D1_GAMMA gamma = D2D1_GAMMA_2_2);
 	ID2D1BitmapBrush* CreateBitmapBrush(ID2D1Bitmap* bmp);
 	ID2D1SolidColorBrush* CreateSolidColorBrush(D2D1_COLOR_F color);
 	D2D1_SIZE_F Size();
@@ -255,6 +294,9 @@ protected:
 	HRESULT InitializeWithSize(UINT width, UINT height, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode);
 	HRESULT InitializeWithWicBitmap(IWICBitmap* bitmap, bool takeOwnership, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode);
 	HRESULT InitializeWithSwapChain(IDXGISwapChain* swapChain);
+	HRESULT InitializeWithSwapChain(
+		IDXGISwapChain* swapChain,
+		ID2D1Device* sharedDevice);
 	HRESULT InitializeCommandRecorder(ID2D1Device* device);
 
 	void ResetTarget();
@@ -269,6 +311,8 @@ protected:
 	Microsoft::WRL::ComPtr<ID2D1DeviceContext> pDeviceContext;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap1> pTargetBitmap;
 	Microsoft::WRL::ComPtr<IDXGISwapChain> pSwapChain;
+	D2D1_MATRIX_3X2_F _targetOriginTransform =
+		D2D1::Matrix3x2F::Identity();
 
 	struct SolidBrushKey
 	{
@@ -302,6 +346,9 @@ protected:
 
 	HRESULT _lastEndDrawHr = S_OK;
 	HRESULT _lastPresentHr = S_OK;
+	double _lastEndDrawMicroseconds = 0.0;
+	double _lastPresentMicroseconds = 0.0;
+	UINT _presentSyncInterval = 1u;
 	bool _deviceLost = false;
 	bool _commandRecording = false;
 	RECT _presentDirtyRect{};
@@ -309,7 +356,7 @@ protected:
 	bool _swapChainHasPresentedFrame = false;
 
 	std::vector<D2D1_MATRIX_3X2_F> _transformStack;
-	std::vector<Microsoft::WRL::ComPtr<ID2D1Layer>> _geometryClipLayerStack;
+	size_t _opacityLayerDepth = 0u;
 	std::vector<Microsoft::WRL::ComPtr<ID2D1Geometry>> _geometryClipGeometryStack;
 
 	ID2D1SolidColorBrush* GetImmutableSolidColorBrush(D2D1_COLOR_F color);
@@ -346,7 +393,10 @@ public:
 
 class CompositionSwapChainGraphics : public D2DGraphics {
 public:
-	explicit CompositionSwapChainGraphics(IDXGISwapChain1* swapChain);
+	explicit CompositionSwapChainGraphics(
+		IDXGISwapChain1* swapChain,
+		UINT presentSyncInterval = 1u,
+		ID2D1Device* sharedDevice = nullptr);
 	void ReSize(UINT width, UINT height) override;
 	void BeginRender() override;
 	void EndRender() override;
@@ -363,6 +413,17 @@ struct GraphicsSharedD3DDeviceInfo {
 	uint64_t Generation = 0;
 	bool SupportsVideo = false;
 	bool IsHardware = false;
+	bool IsSoftwareAdapter = false;
+	uint32_t FeatureLevel = 0;
+	uint32_t VendorId = 0;
+	uint32_t DeviceId = 0;
+	uint32_t SubSysId = 0;
+	uint32_t Revision = 0;
+	uint64_t AdapterLuid = 0;
+	uint64_t DedicatedVideoMemoryBytes = 0;
+	uint64_t DedicatedSystemMemoryBytes = 0;
+	uint64_t SharedSystemMemoryBytes = 0;
+	wchar_t AdapterDescription[128]{};
 };
 
 HRESULT Graphics_EnsureSharedD3DDevice();
@@ -377,6 +438,7 @@ uint64_t Graphics_GetSharedD3DDeviceGeneration() noexcept;
 /** Deterministically rotates the shared device registry for recovery tests. */
 HRESULT Graphics_RotateSharedD3DDeviceForTesting(
 	GraphicsSharedD3DDeviceInfo* info = nullptr);
+/** Test-only driver selection applied by the next shared-device rotation. */
+void Graphics_SetForceWarpSharedD3DDeviceForTesting(bool forceWarp) noexcept;
 ID3D11Device* Graphics_GetSharedD3DDevice();
 IDXGIDevice* Graphics_GetSharedDXGIDevice();
-

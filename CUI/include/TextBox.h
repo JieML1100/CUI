@@ -100,6 +100,8 @@ public:
 		int localX, int localY) const override;
 	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
+	bool HasRetainedNativeAnimation() override
+	{ return HasRetainedCaretBlinkAnimation(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	// ---- 公共选择/编辑 API（薄封装，复用内部编辑与 Undo 路径） ----
 	/** WPF-style normalized selection start; mutation goes through Select. */

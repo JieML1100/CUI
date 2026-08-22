@@ -76,6 +76,8 @@
 /XmlLite/x64/
 /XmlLite/XmlLite/
 /CuiStaticGeneratedSample/CuiStati.*/
+/AnimationConformance/WpfGoldenRunner/bin/
+/AnimationConformance/WpfGoldenRunner/obj/
 
 # Compiler and linker output
 *.obj
@@ -106,3 +108,5 @@ theme-*.v*.spec
 *.orig
 *.rej
 *~
+/CUI-Workplans/WPF-Animation-Alignment
+/AnimationConformance

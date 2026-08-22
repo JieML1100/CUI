@@ -141,6 +141,7 @@ namespace
 			if (!left.TryGet(a) || !right.TryGet(b)) return false;
 			return a.Kind == b.Kind
 				&& a.MappingMode == b.MappingMode
+				&& a.ColorInterpolationMode == b.ColorInterpolationMode
 				&& a.Color.r == b.Color.r && a.Color.g == b.Color.g
 				&& a.Color.b == b.Color.b && a.Color.a == b.Color.a
 				&& a.Opacity == b.Opacity

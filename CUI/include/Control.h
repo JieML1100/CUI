@@ -33,6 +33,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -44,6 +45,7 @@
 #include "Layout/LayoutDeferral.h"
 
 struct ID2D1Bitmap;
+struct IDCompositionVisual;
 
 namespace cui::framework
 {
@@ -620,6 +622,53 @@ enum class DeclarativeAnimationKind : unsigned char
 	Size,
 	Matrix,
 	Object,
+	Int32,
+	Int64,
+	Single,
+};
+
+enum class DeclarativePathAnimationSource : unsigned char
+{
+	X,
+	Y,
+	Angle,
+};
+
+enum class DeclarativePathSegmentKind : unsigned char
+{
+	Move,
+	Line,
+	CubicBezier,
+};
+
+/** One source-ordered segment in a WPF path-animation figure. */
+struct DeclarativePathAnimationSegment final
+{
+	DeclarativePathSegmentKind Kind = DeclarativePathSegmentKind::Line;
+	/** Move/Line use Point3 as destination/endpoint; cubic uses all three points. */
+	cui::core::Point Point1;
+	cui::core::Point Point2;
+	cui::core::Point Point3;
+
+	bool operator==(const DeclarativePathAnimationSegment&) const = default;
+};
+
+/**
+ * Output-kind-orthogonal WPF path metadata. Segment storage is owned by the
+ * dynamic definition or addressed through a compiled range, so this header
+ * stays fixed-size and trivially copyable.
+ */
+struct DeclarativePathAnimationHeader final
+{
+	bool Enabled = false;
+	cui::core::Point Start;
+	DeclarativePathAnimationSource Source =
+		DeclarativePathAnimationSource::X;
+	bool DoesRotateWithTangent = false;
+	bool IsOffsetCumulative = false;
+	bool IsAngleCumulative = false;
+
+	bool operator==(const DeclarativePathAnimationHeader&) const = default;
 };
 
 enum class DeclarativeEasingKind : unsigned char
@@ -628,6 +677,14 @@ enum class DeclarativeEasingKind : unsigned char
 	Quadratic,
 	Cubic,
 	Sine,
+	Back,
+	Bounce,
+	Circle,
+	Elastic,
+	Exponential,
+	Power,
+	Quartic,
+	Quintic,
 };
 
 enum class DeclarativeEasingMode : unsigned char
@@ -659,6 +716,35 @@ enum class DeclarativeTimelineFillBehavior : unsigned char
 	Stop,
 };
 
+/**
+ * Compact type-specific easing payload. Primary is Amplitude, Bounciness,
+ * Springiness, Exponent, or Power. Secondary is Bounces or Oscillations.
+ */
+struct DeclarativeEasingParameters final
+{
+	double Primary = 0.0;
+	double Secondary = 0.0;
+};
+
+/** Authored timing on a Storyboard/ParallelTimeline root. */
+struct DeclarativeStoryboardTimingDefinition final
+{
+	unsigned long long BeginTimeMilliseconds = 0;
+	/** True preserves WPF's ParallelTimeline natural-duration resolution. */
+	bool DurationAutomatic = true;
+	unsigned long long DurationMilliseconds = 0;
+	DeclarativeRepeatBehaviorKind RepeatBehavior =
+		DeclarativeRepeatBehaviorKind::Count;
+	double RepeatCount = 1.0;
+	unsigned long long RepeatDurationMilliseconds = 0;
+	bool AutoReverse = false;
+	DeclarativeTimelineFillBehavior FillBehavior =
+		DeclarativeTimelineFillBehavior::HoldEnd;
+	double SpeedRatio = 1.0;
+	double AccelerationRatio = 0.0;
+	double DecelerationRatio = 0.0;
+};
+
 #if CUI_ENABLE_DYNAMIC_XAML
 /** Design-only key-frame definition accepted by the dynamic-XAML adapter. */
 struct DeclarativeAnimationKeyFrame
@@ -673,6 +759,8 @@ struct DeclarativeAnimationKeyFrame
 	float KeySplineY1 = 0.0f;
 	float KeySplineX2 = 1.0f;
 	float KeySplineY2 = 1.0f;
+	uint16_t KeyTimeSubMillisecondTicks = 0;
+	DeclarativeEasingParameters EasingParameters;
 };
 
 /** One finite Timeline in a VisualState Storyboard. */
@@ -697,6 +785,8 @@ struct DeclarativeVisualStateAnimation
 	bool IsAdditive = false;
 	/** Accumulates the timeline's iteration delta across repeat cycles. */
 	bool IsCumulative = false;
+	DeclarativePathAnimationHeader Path;
+	std::vector<DeclarativePathAnimationSegment> PathSegments;
 	unsigned long long BeginTimeMilliseconds = 0;
 	unsigned long long DurationMilliseconds = 0;
 	DeclarativeRepeatBehaviorKind RepeatBehavior =
@@ -714,6 +804,7 @@ struct DeclarativeVisualStateAnimation
 	double DecelerationRatio = 0.0;
 	DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
 	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+	DeclarativeEasingParameters EasingParameters;
 	/** Non-empty selects the corresponding UsingKeyFrames timeline. */
 	std::vector<DeclarativeAnimationKeyFrame> KeyFrames;
 
@@ -721,6 +812,14 @@ struct DeclarativeVisualStateAnimation
 	{
 		return ObjectPath.empty() ? Property.Name() : ObjectPath;
 	}
+};
+
+/** Design-only nested ParallelTimeline definition. */
+struct DeclarativeTimelineGroupDefinition
+{
+	DeclarativeStoryboardTimingDefinition Timing;
+	std::vector<DeclarativeVisualStateAnimation> Animations;
+	std::vector<DeclarativeTimelineGroupDefinition> Children;
 };
 #endif
 
@@ -731,7 +830,66 @@ enum class DeclarativeStoryboardActionKind : unsigned char
 	Pause,
 	Resume,
 	Stop,
+	Remove,
+	Seek,
+	SetSpeedRatio,
+	SkipToFill,
 };
+
+enum class DeclarativeHandoffBehavior : unsigned char
+{
+	SnapshotAndReplace,
+	Compose,
+};
+
+enum class DeclarativeClockState : unsigned char
+{
+	Active,
+	Filling,
+	Stopped,
+};
+
+struct DeclarativeClockObservation final
+{
+	DeclarativeClockState State = DeclarativeClockState::Stopped;
+	std::optional<unsigned long long> CurrentTimeMilliseconds;
+	std::optional<double> Progress;
+	std::optional<double> GlobalSpeed;
+
+	bool operator==(const DeclarativeClockObservation&) const = default;
+};
+
+enum class DeclarativeClockTimingEventKind : unsigned char
+{
+	CurrentTimeInvalidated,
+	CurrentGlobalSpeedInvalidated,
+	CurrentStateInvalidated,
+	Completed,
+	RemoveRequested,
+};
+
+enum class DeclarativeClockOwnerKind : unsigned char
+{
+	VisualStateGroup,
+	ComponentStoryboard,
+	StyleTrigger,
+	CompiledInteractionStoryboard,
+};
+
+struct DeclarativeClockTimingEventArgs final
+{
+	DeclarativeClockTimingEventKind Kind =
+		DeclarativeClockTimingEventKind::CurrentTimeInvalidated;
+	/** Unique for one Begin/restart lifetime on this Control. */
+	uint64_t ClockInstanceId = 0;
+	DeclarativeClockOwnerKind OwnerKind =
+		DeclarativeClockOwnerKind::VisualStateGroup;
+	uint64_t OwnerScopeId = 0;
+	uint64_t StoryboardDefinitionId = 0;
+};
+
+typedef Event<void(class Control*, const DeclarativeClockTimingEventArgs&)>
+	DeclarativeClockTimingEvent;
 
 #if CUI_ENABLE_DYNAMIC_XAML
 struct DeclarativeEventTriggerActionDefinition
@@ -742,6 +900,13 @@ struct DeclarativeEventTriggerActionDefinition
 	std::wstring StoryboardName;
 	/** Populated only for BeginStoryboard. */
 	std::vector<DeclarativeVisualStateAnimation> Animations;
+	std::vector<DeclarativeTimelineGroupDefinition> TimelineGroups;
+	DeclarativeStoryboardTimingDefinition StoryboardTiming;
+	DeclarativeHandoffBehavior Handoff =
+		DeclarativeHandoffBehavior::SnapshotAndReplace;
+	/** SeekStoryboard offset relative to the controllable root BeginTime. */
+	unsigned long long SeekOffsetMilliseconds = 0;
+	double SpeedRatio = 1.0;
 };
 
 /** Design-only EventTrigger graph accepted by the dynamic-XAML adapter. */
@@ -770,6 +935,8 @@ struct DeclarativeVisualStateDefinition
 #endif
 	std::vector<DeclarativeVisualStateSetter> Setters;
 	std::vector<DeclarativeVisualStateAnimation> Animations;
+	std::vector<DeclarativeTimelineGroupDefinition> TimelineGroups;
+	DeclarativeStoryboardTimingDefinition StoryboardTiming;
 };
 
 /** One WPF-style route between states in the same visual-state group. */
@@ -781,8 +948,11 @@ struct DeclarativeVisualTransitionDefinition
 	unsigned long long GeneratedDurationMilliseconds = 0;
 	DeclarativeEasingKind GeneratedEasing = DeclarativeEasingKind::Linear;
 	DeclarativeEasingMode GeneratedEasingMode = DeclarativeEasingMode::EaseOut;
+	DeclarativeEasingParameters GeneratedEasingParameters;
 	/** Explicit transition timelines override generated timelines per target. */
 	std::vector<DeclarativeVisualStateAnimation> Animations;
+	std::vector<DeclarativeTimelineGroupDefinition> TimelineGroups;
+	DeclarativeStoryboardTimingDefinition StoryboardTiming;
 };
 
 struct DeclarativeVisualStateGroupDefinition
@@ -857,6 +1027,7 @@ enum class CompiledStoryboardObjectPathFlags : uint8_t
 	None = 0,
 	RelativeTransform = 1u << 0,
 	HasPathSegment = 1u << 1,
+	DirectTransform = 1u << 2,
 };
 
 constexpr CompiledStoryboardObjectPathFlags operator|(
@@ -925,6 +1096,8 @@ struct CompiledInteractionKeyFrameOp final
 	float KeySplineY1 = 0.0f;
 	float KeySplineX2 = 1.0f;
 	float KeySplineY2 = 1.0f;
+	uint16_t KeyTimeSubMillisecondTicks = 0;
+	DeclarativeEasingParameters EasingParameters;
 };
 
 struct CompiledInteractionAnimationOp final
@@ -938,6 +1111,8 @@ struct CompiledInteractionAnimationOp final
 	CompiledInteractionRange KeyFrames;
 	bool IsAdditive = false;
 	bool IsCumulative = false;
+	DeclarativePathAnimationHeader Path;
+	CompiledInteractionRange PathSegments;
 	unsigned long long BeginTimeMilliseconds = 0;
 	unsigned long long DurationMilliseconds = 0;
 	DeclarativeRepeatBehaviorKind RepeatBehavior =
@@ -952,6 +1127,7 @@ struct CompiledInteractionAnimationOp final
 	double DecelerationRatio = 0.0;
 	DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
 	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+	DeclarativeEasingParameters EasingParameters;
 };
 
 struct CompiledInteractionStateOp final
@@ -961,6 +1137,8 @@ struct CompiledInteractionStateOp final
 	CompiledInteractionRange Events;
 	CompiledInteractionRange Setters;
 	CompiledInteractionRange Animations;
+	CompiledInteractionRange TimelineGroups;
+	DeclarativeStoryboardTimingDefinition StoryboardTiming;
 };
 
 struct CompiledInteractionTransitionOp final
@@ -972,7 +1150,10 @@ struct CompiledInteractionTransitionOp final
 	DeclarativeEasingKind GeneratedEasing = DeclarativeEasingKind::Linear;
 	DeclarativeEasingMode GeneratedEasingMode =
 		DeclarativeEasingMode::EaseOut;
+	DeclarativeEasingParameters GeneratedEasingParameters;
 	CompiledInteractionRange Animations;
+	CompiledInteractionRange TimelineGroups;
+	DeclarativeStoryboardTimingDefinition StoryboardTiming;
 };
 
 struct CompiledInteractionGroupOp final
@@ -988,6 +1169,16 @@ struct CompiledInteractionGroupOp final
 struct CompiledInteractionStoryboardOp final
 {
 	CompiledInteractionRange Animations;
+	CompiledInteractionRange TimelineGroups;
+	DeclarativeStoryboardTimingDefinition Timing;
+};
+
+/** One flattened nested ParallelTimeline; child group ranges form a tree. */
+struct CompiledInteractionTimelineGroupOp final
+{
+	CompiledInteractionRange Animations;
+	CompiledInteractionRange Children;
+	DeclarativeStoryboardTimingDefinition Timing;
 };
 
 struct CompiledInteractionActionOp final
@@ -995,6 +1186,10 @@ struct CompiledInteractionActionOp final
 	DeclarativeStoryboardActionKind Kind =
 		DeclarativeStoryboardActionKind::Begin;
 	uint32_t StoryboardIndex = CompiledInteractionInvalidIndex;
+	DeclarativeHandoffBehavior Handoff =
+		DeclarativeHandoffBehavior::SnapshotAndReplace;
+	uint64_t SeekOffsetMilliseconds = 0;
+	double SpeedRatio = 1.0;
 };
 
 struct CompiledInteractionEventTriggerOp final
@@ -1004,7 +1199,7 @@ struct CompiledInteractionEventTriggerOp final
 	CompiledInteractionRange Actions;
 };
 
-inline constexpr uint32_t CompiledInteractionProgramViewVersion = 2;
+inline constexpr uint32_t CompiledInteractionProgramViewVersion = 16;
 
 /**
  * Immutable, non-owning AOT interaction program. Every referenced structural
@@ -1024,7 +1219,9 @@ struct CompiledInteractionProgramView final
 	std::span<const CompiledInteractionConditionOp> Conditions;
 	std::span<const CompiledInteractionSetterOp> Setters;
 	std::span<const CompiledInteractionKeyFrameOp> KeyFrames;
+	std::span<const DeclarativePathAnimationSegment> PathSegments;
 	std::span<const CompiledInteractionAnimationOp> Animations;
+	std::span<const CompiledInteractionTimelineGroupOp> TimelineGroups;
 	std::span<const DeclarativeEventDefinition* const> StateEvents;
 	std::span<const CompiledInteractionStateOp> States;
 	std::span<const CompiledInteractionTransitionOp> Transitions;
@@ -1243,6 +1440,11 @@ protected:
 	int _caretBlinkSelectionEnd = 0;
 	bool _caretBlinkFocused = false;
 	ULONGLONG _caretBlinkResetTick = 0;
+	// Window animation registries are sparse.  Ordinary transient controls
+	// (notably DataGrid editing elements) use these bits to avoid rescanning the
+	// complete registry while their visual subtrees are attached or detached.
+	bool _registeredDeclarativeAnimationWindow = false;
+	bool _registeredNativeAnimationWindow = false;
 	bool _validationHasError = false;
 	std::vector<BindingValidationResult> _validationErrors;
 	uint32_t _accessibilityRuntimeId = 0;
@@ -1442,6 +1644,7 @@ protected:
 
 	void UpdateCaretBlinkState(bool focused, int selectionStart, int selectionEnd, bool caretRectValid, const D2D1_RECT_F* caretRect = nullptr);
 	bool IsCaretBlinkVisible() const;
+	bool HasRetainedCaretBlinkAnimation() const noexcept;
 	bool IsCaretBlinkAnimating() const;
 	bool GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const;
 	virtual bool DefaultSelectOnLeftButtonDown() const
@@ -1523,11 +1726,7 @@ protected:
 	/** Called after this element and its visual descendants enter/leave a Window. */
 	virtual void OnPresentationWindowChanged(
 		PresentationWindow* previousWindow,
-		PresentationWindow* currentWindow)
-	{
-		(void)previousWindow;
-		(void)currentWindow;
-	}
+		PresentationWindow* currentWindow);
 	/** Stops input reverse inheritance after including this element. */
 	virtual bool BlocksReverseInheritance() const noexcept { return false; }
 	/** Effective IsEnabled transition hook; callers must revalidate lifetime after it. */
@@ -1649,7 +1848,20 @@ protected:
 	void MarkPresentationInvalidation(
 		PresentationInvalidationKind kind) noexcept;
 	void InvalidatePresentationGeometrySubtree() noexcept;
+	void InvalidatePresentationTransformSubtree() noexcept;
 	D2D1_MATRIX_3X2_F GetEffectiveDescendantRenderTransform() const;
+	D2D1_MATRIX_3X2_F GetInheritedRenderTransformForRecording() const;
+	D2D1_MATRIX_3X2_F GetEffectiveDescendantRenderTransformForRecording() const;
+	D2D1_MATRIX_3X2_F GetLocalToRenderTransformForRecording() const;
+	D2D1_RECT_F GetRenderedAbsoluteRectDipForRecording() const;
+	/** Appends retained composition animation targets by property lane. */
+	void CollectDeclarativeCompositionAnimationTargets(
+		std::vector<Control*>& transformTargets,
+		std::vector<Control*>& opacityTargets) const;
+	/** UI-thread recording override; returns the previous outer-to-inner chain. */
+	static std::span<Control* const>
+		ExchangeRenderTransformSuppressionsForRecording(
+			std::span<Control* const> roots) noexcept;
 	// 将内容区 DIP 矩形统一转换为窗口客户区物理像素，并与上次区域取并集。
 	void InvalidateVisualRect(const D2D1_RECT_F& contentRect);
 	void DispatchInvalidatedClientRect(const D2D1_RECT_F& clientRect);
@@ -1720,6 +1932,8 @@ public:
 	/** True while at least one VisualState Storyboard timeline is active. */
 	bool HasActiveVisualStateAnimations() const noexcept;
 	DeclarativeVisualStateChangedEvent OnVisualStateChanged;
+	/** Root Storyboard timing events, coalesced and dispatched after a committed tick. */
+	DeclarativeClockTimingEvent OnStoryboardTimingEvent;
 	/** Effective WPF-style IsEnabled value; assignments update the local value. */
 	PROPERTY(bool, IsEnabled);
 	virtual GET(bool, IsEnabled);
@@ -1788,6 +2002,54 @@ protected:
 		std::wstring* outError = nullptr);
 	/** Advances XAML-owned timelines from the Window presentation clock. */
 	bool AdvanceVisualStateAnimations(unsigned long long nowMilliseconds);
+	bool HasRetainedVisualStateAnimationRoots() const noexcept;
+	void SynchronizeDeclarativeAnimationWindowRegistration() noexcept;
+	void RefreshDeclarativeAnimationWindowScheduling() noexcept;
+	void SynchronizeNativeAnimationWindowRegistration() noexcept;
+	/** Testing-only clock exchange; state lives only on an installed runtime. */
+	std::optional<unsigned long long>
+		ExchangeVisualStateAnimationClockOverrideForTesting(
+			std::optional<unsigned long long> value) noexcept;
+	/** Distinguishes an advance failure from the ordinary no-active-clock result. */
+	bool VisualStateAnimationAdvanceFailedForTesting() const noexcept;
+	/** Testing-only: rejects the next staged animation frame before DP commit. */
+	void FailNextVisualStateAnimationFrameCommitForTesting() noexcept;
+	/** Testing-only count of retained declarative animation leaves. */
+	size_t VisualStateAnimationLeafCountForTesting() const noexcept;
+	/** Testing-only count of distinct declarative root ClockId values. */
+	size_t VisualStateAnimationRootClockCountForTesting() const noexcept;
+	/** Testing-only synchronous seek for a runtime with exactly one root clock. */
+	bool SeekSingleVisualStateAnimationRootAlignedForTesting(
+		unsigned long long offsetMilliseconds);
+	/** Testing-only ordinary seek; commits on the next explicit animation tick. */
+	bool SeekSingleVisualStateAnimationRootForTesting(
+		unsigned long long offsetMilliseconds);
+	/** Testing-only pending controls for a runtime with exactly one root clock. */
+	bool PauseSingleVisualStateAnimationRootForTesting();
+	bool ResumeSingleVisualStateAnimationRootForTesting();
+	bool SetSpeedRatioSingleVisualStateAnimationRootForTesting(double ratio);
+	bool SkipSingleVisualStateAnimationRootToFillForTesting();
+	bool StopSingleVisualStateAnimationRootForTesting();
+	bool RemoveSingleVisualStateAnimationRootForTesting();
+	std::optional<DeclarativeClockObservation>
+		QuerySingleVisualStateAnimationRootForTesting() const noexcept;
+	/** Testing-only count of occupied root + leaf ClockNode slots. */
+	size_t VisualStateAnimationClockNodeCountForTesting() const noexcept;
+	/** Testing-only count of explicit per-target-DP animation stacks. */
+	size_t VisualStateAnimationLayerStackCountForTesting() const noexcept;
+	/** Testing-only count of explicit animation layer owner records. */
+	size_t VisualStateAnimationLayerCountForTesting() const noexcept;
+	/** Testing-only maximum number of layers owned by one target DP. */
+	size_t VisualStateAnimationLayerMaxDepthForTesting() const noexcept;
+	/** Testing-only count of children in one committed root node range. */
+	size_t VisualStateAnimationRootClockChildCountForTesting(
+		size_t rootIndex) const noexcept;
+	/** Testing-only: returns the sole root ClockId, or zero for none/multiple. */
+	uint64_t VisualStateAnimationSingleRootClockIdForTesting() const noexcept;
+	/** Testing-only: generation-safe token for the sole root ClockNode. */
+	uint64_t VisualStateAnimationSingleRootClockNodeTokenForTesting() const noexcept;
+	/** Testing-only validation of leaf/root identity ownership invariants. */
+	bool VisualStateAnimationClockIdentityValidForTesting() const noexcept;
 	/** Retains one framework/template subscription for this object's lifetime. */
 	void RetainEventConnection(EventConnection connection)
 	{
@@ -1846,6 +2108,21 @@ protected:
 	virtual PresentationSurfaceKind GetPresentationSurfaceKind() const noexcept
 	{
 		return PresentationSurfaceKind::Drawing;
+	}
+	/**
+	 * Establishes the owner-retained root visual before scene group staging.
+	 * Native controls must register/unregister this visual through Window so the
+	 * render host can transfer grouped ownership atomically.
+	 */
+	virtual bool PrepareNativeCompositionVisual() { return false; }
+	virtual bool SupportsNativeCompositionVisualLease() const noexcept
+	{
+		return false;
+	}
+	/** Borrowed pointer valid until the owner calls Window::UnregisterDCompVisual. */
+	virtual IDCompositionVisual* GetNativeCompositionVisual() const noexcept
+	{
+		return nullptr;
 	}
 	/** Host DPI changed; device-independent controls normally need no work. */
 	virtual void NotifyDpiChanged(float dpiScale);
@@ -1945,6 +2222,10 @@ public:
 	ID2D1Brush* CreateBorderBrush(
 		D2DGraphics& graphics,
 		D2D1_SIZE_F bounds) const;
+	/** WPF UIElement.Opacity applied to this complete retained subtree. */
+	PROPERTY(double, Opacity);
+	GET(double, Opacity);
+	SET(double, Opacity);
 	/** Sets an additional local geometry clip that also applies to descendants. */
 	void SetClip(const cui::drawing::Geometry& geometry);
 	void ClearClip();
@@ -1988,8 +2269,10 @@ public:
 	void InvalidateComposition();
 	/** @brief 当前控件是否处于活动动画中。 */
 	virtual bool IsAnimationRunning() { return false; }
+	/** Retained native animation intent, independent of visibility/preferences. */
+	virtual bool HasRetainedNativeAnimation() { return IsAnimationRunning(); }
 	/** @brief 动画帧间隔（毫秒）。 */
-	virtual UINT GetAnimationIntervalMs() { return 16; }
+	virtual UINT GetAnimationIntervalMs();
 	/**
 	 * @brief 获取动画导致的额外无效区域。
 	 * @param outRect 输出需要重绘的区域。
@@ -2297,6 +2580,7 @@ public:
 	static const DependencyProperty& BackgroundProperty();
 	static const DependencyProperty& ForegroundProperty();
 	static const DependencyProperty& BorderBrushProperty();
+	static const DependencyProperty& OpacityProperty();
 	static const DependencyProperty& ClipToBoundsProperty();
 	static const DependencyProperty& ClipProperty();
 	static const DependencyProperty& RenderTransformProperty();
