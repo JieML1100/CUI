@@ -493,6 +493,24 @@ namespace cui::framework
 			return target._animationUsesLegacyTimer;
 		}
 
+		static bool AnimationFramePostedForTesting(
+			const Window& target) noexcept
+		{
+			return target.IsAnimationFramePostedForTesting();
+		}
+
+		using AnimationInputSliceHookForTesting =
+			bool(*)(void*) noexcept;
+
+		static void SetAnimationInputSliceHookForTesting(
+			Window& target,
+			AnimationInputSliceHookForTesting hook,
+			void* context = nullptr) noexcept
+		{
+			target._animationInputSliceHookForTesting = hook;
+			target._animationInputSliceHookContextForTesting = context;
+		}
+
 		static size_t RegisteredDeclarativeAnimationControlCountForTesting(
 			Window& target)
 		{

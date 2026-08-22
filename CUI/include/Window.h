@@ -156,6 +156,8 @@ private:
 	UINT _animIntervalMs = 0;
 	std::unique_ptr<AnimationFrameScheduler> _animationFrameScheduler;
 	bool _animationUsesLegacyTimer = false;
+	bool(*_animationInputSliceHookForTesting)(void*) noexcept = nullptr;
+	void* _animationInputSliceHookContextForTesting = nullptr;
 	std::vector<ControlWeakReference> _activeDeclarativeAnimationControls;
 	std::vector<ControlWeakReference> _retainedNativeAnimationControls;
 	bool _animationRegistryDegraded = false;
@@ -202,6 +204,8 @@ private:
 	void ClearCaptionStates();
 	void RefreshAnimationTimer() noexcept;
 	bool IsAnimationFrameSchedulerRunningForTesting() const noexcept;
+	bool IsAnimationFramePostedForTesting() const noexcept;
+	size_t DispatchPendingAnimationInputSlice();
 	void InvalidateControl(class Control* control, float inflateDip = 2.0f, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
 	void InvalidateAnimatedControlsAt(

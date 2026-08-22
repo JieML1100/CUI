@@ -54,6 +54,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <oleidl.h>
 #include <oleacc.h>
 #include <uiautomationcore.h>
@@ -220,6 +221,57 @@ private:
 	}
 
 public:
+	class DispatchLease final
+	{
+	private:
+		std::shared_ptr<State> _state;
+		UINT_PTR _generation = 0;
+
+		explicit DispatchLease(
+			std::shared_ptr<State> state,
+			UINT_PTR generation) noexcept
+			: _state(std::move(state)), _generation(generation)
+		{
+		}
+
+		void Release() noexcept
+		{
+			if (_state && _state->Generation == _generation)
+				_state->Posted.store(false);
+			_state.reset();
+			_generation = 0;
+		}
+
+		friend class AnimationFrameScheduler;
+
+	public:
+		DispatchLease() = default;
+		DispatchLease(const DispatchLease&) = delete;
+		DispatchLease& operator=(const DispatchLease&) = delete;
+
+		DispatchLease(DispatchLease&& other) noexcept
+			: _state(std::move(other._state)),
+			_generation(std::exchange(other._generation, 0))
+		{
+		}
+
+		DispatchLease& operator=(DispatchLease&& other) noexcept
+		{
+			if (this == &other) return *this;
+			Release();
+			_state = std::move(other._state);
+			_generation = std::exchange(other._generation, 0);
+			return *this;
+		}
+
+		~DispatchLease() { Release(); }
+
+		explicit operator bool() const noexcept
+		{
+			return _state != nullptr;
+		}
+	};
+
 	~AnimationFrameScheduler() { Stop(); }
 
 	bool Start(HWND window, UINT message, UINT intervalMilliseconds) noexcept
@@ -253,15 +305,21 @@ public:
 		}
 	}
 
-	void Acknowledge(UINT_PTR generation) noexcept
+	DispatchLease BeginDispatch(UINT_PTR generation) noexcept
 	{
-		if (_state && _state->Generation == generation)
-			_state->Posted.store(false);
+		if (!_state || _state->Generation != generation
+			|| !_state->Posted.load()) return {};
+		return DispatchLease(_state, generation);
 	}
 
 	bool IsRunning() const noexcept
 	{
 		return _state && _thread.joinable() && _state->Running.load();
+	}
+
+	bool IsFramePosted() const noexcept
+	{
+		return _state && _state->Posted.load();
 	}
 
 	void Stop() noexcept
@@ -6996,6 +7054,52 @@ bool Window::IsAnimationFrameSchedulerRunningForTesting() const noexcept
 		&& _animationFrameScheduler->IsRunning();
 }
 
+bool Window::IsAnimationFramePostedForTesting() const noexcept
+{
+	return _animationFrameScheduler
+		&& _animationFrameScheduler->IsFramePosted();
+}
+
+size_t Window::DispatchPendingAnimationInputSlice()
+{
+	// GetMessage selects registered/posted messages before hardware input.
+	// Service a small input slice while the scheduler's posted token is held,
+	// then commit one animation frame. This keeps both lanes moving without an
+	// unbounded DoEvents-style nested pump.
+	constexpr size_t maximumMessages = 8u;
+	constexpr double timeBudgetMicroseconds = 2'000.0;
+	const ControlWeakReference lifetime(this);
+	PresentationFrameTimingClock elapsed;
+	size_t dispatched = 0;
+	while (dispatched < maximumMessages
+		&& (dispatched == 0u
+			|| elapsed.TotalMicroseconds() < timeBudgetMicroseconds))
+	{
+		if (_animationInputSliceHookForTesting)
+		{
+			if (!_animationInputSliceHookForTesting(
+				_animationInputSliceHookContextForTesting)) break;
+		}
+		else
+		{
+			MSG input{};
+			if (::PeekMessageW(&input, nullptr, 0u, 0u,
+				PM_REMOVE | PM_QS_INPUT) == FALSE) break;
+			if (input.message == WM_QUIT)
+			{
+				::PostQuitMessage(static_cast<int>(input.wParam));
+				break;
+			}
+			::TranslateMessage(&input);
+			::DispatchMessageW(&input);
+			cui::PumpUIThreadCallbacks();
+		}
+		++dispatched;
+		if (!lifetime.Get()) break;
+	}
+	return dispatched;
+}
+
 void Window::InvalidateAnimatedControls(bool immediate)
 {
 	InvalidateAnimatedControlsAt(::GetTickCount64(), immediate);
@@ -8047,6 +8151,8 @@ void Window::CleanupResources()
 		::KillTimer(this->Handle, _animTimerId);
 	_animationUsesLegacyTimer = false;
 	_animIntervalMs = 0;
+	_animationInputSliceHookForTesting = nullptr;
+	_animationInputSliceHookContextForTesting = nullptr;
 	for (const auto& reference : _activeDeclarativeAnimationControls)
 		if (auto* control = reference.Get();
 			control && control->GetPresentationWindow() == this)
@@ -9866,8 +9972,15 @@ LRESULT Window::HandlePlatformWindowMessage(
 		const UINT animationDispatch = CuiAnimationFrameDispatchMessage();
 		if (animationDispatch != 0 && message == animationDispatch)
 		{
-			if (form->_animationFrameScheduler)
-				form->_animationFrameScheduler->Acknowledge(wParam);
+			auto frameLease = form->_animationFrameScheduler
+				? form->_animationFrameScheduler->BeginDispatch(wParam)
+				: AnimationFrameScheduler::DispatchLease{};
+			if (!frameLease) return 0;
+			const ControlWeakReference lifetime(form);
+			(void)form->DispatchPendingAnimationInputSlice();
+			form = dynamic_cast<Window*>(lifetime.Get());
+			if (!form || form->Handle != hWnd
+				|| ::IsWindow(hWnd) == FALSE) return 0;
 			if (::IsWindowEnabled(hWnd) != FALSE)
 			{
 				form->InvalidateAnimatedControls(false);

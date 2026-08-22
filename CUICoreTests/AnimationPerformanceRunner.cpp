@@ -1552,6 +1552,30 @@ namespace
 				AnimationUsesLegacyTimerForTesting(_window);
 		}
 
+		bool AnimationFramePosted() const noexcept
+		{
+			return cui::framework::WindowAccess::
+				AnimationFramePostedForTesting(_window);
+		}
+
+		void SetAnimationInputSliceHookForTesting(
+			cui::framework::WindowAccess::AnimationInputSliceHookForTesting hook,
+			void* context = nullptr) noexcept
+		{
+			cui::framework::WindowAccess::
+				SetAnimationInputSliceHookForTesting(_window, hook, context);
+		}
+
+		bool RequestPauseFromInputForTesting()
+		{
+			return _host && _host->RaiseDeclarativeEvent(BenchmarkPauseEvent());
+		}
+
+		bool HasActiveAnimationsForTesting() const noexcept
+		{
+			return _host && _host->HasActiveVisualStateAnimations();
+		}
+
 		void UseRealtimeClockForTesting()
 		{
 			const auto now = ::GetTickCount64();
@@ -13517,6 +13541,70 @@ void RegisterAnimationPerformanceTests(cui::test::Runner& runner)
 		CUI_EXPECT_FALSE(scene.AnimationFrameSchedulerRunning());
 		CUI_EXPECT_FALSE(scene.AnimationUsesLegacyTimer());
 		CUI_EXPECT_FALSE(scene.RegistryDegraded());
+	});
+
+	runner.Add("Animation frame dispatch services bounded input before clock commit", []
+	{
+		BenchmarkScene scene(37u, 0u, BenchmarkPropertyKind::TransformX);
+		scene.ShowOffscreenWithoutActivationForTesting();
+		scene.UseRealtimeClockForTesting();
+		struct InputContext final
+		{
+			BenchmarkScene* Scene = nullptr;
+			size_t DispatchCount = 0;
+			bool FrameTokenHeld = true;
+			bool PauseAccepted = false;
+		} input{ &scene };
+		auto inputHook = [](void* context) noexcept -> bool
+		{
+			auto& state = *static_cast<InputContext*>(context);
+			++state.DispatchCount;
+			state.FrameTokenHeld = state.FrameTokenHeld
+				&& state.Scene->AnimationFramePosted();
+			if (state.DispatchCount == 1u)
+			{
+				try
+				{
+					state.PauseAccepted =
+						state.Scene->RequestPauseFromInputForTesting();
+				}
+				catch (...)
+				{
+					state.PauseAccepted = false;
+				}
+			}
+			return true;
+		};
+		scene.SetAnimationInputSliceHookForTesting(inputHook, &input);
+		scene.Begin();
+
+		const auto deadline = ::GetTickCount64() + 2'000u;
+		while (input.DispatchCount == 0u && ::GetTickCount64() < deadline)
+		{
+			(void)::MsgWaitForMultipleObjectsEx(
+				0, nullptr, 50u, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+			MSG message{};
+			while (input.DispatchCount == 0u && ::PeekMessageW(
+				&message, nullptr, 0u, 0u, PM_REMOVE) != FALSE)
+			{
+				if (message.message == WM_QUIT)
+				{
+					::PostQuitMessage(static_cast<int>(message.wParam));
+					break;
+				}
+				::TranslateMessage(&message);
+				::DispatchMessageW(&message);
+				cui::PumpUIThreadCallbacks();
+			}
+		}
+		scene.SetAnimationInputSliceHookForTesting(nullptr);
+
+		CUI_EXPECT_EQ(8ULL, input.DispatchCount);
+		CUI_EXPECT_TRUE(input.FrameTokenHeld);
+		CUI_EXPECT_TRUE(input.PauseAccepted);
+		CUI_EXPECT_FALSE(scene.HasActiveAnimationsForTesting());
+		CUI_EXPECT_FALSE(scene.AnimationFrameSchedulerRunning());
+		scene.Stop();
 	});
 
 	runner.Add("Animation Window ticks preserve exact presentation invalidation lanes", []
